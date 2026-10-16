@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import re
 
 
-def attack_path_identity(*, target: str, path_anchor: str) -> str:
+def canonical_category(category: str) -> str:
+    """Normalize a model supplied class without treating qualifiers as new classes."""
+    raw = category.strip()
+    broad_class = re.sub(r"(?:[\s_-]*\([^()]*\))+$", "", raw).strip() or raw
+    return broad_class.lower().replace(" ", "-").replace("_", "-")
+
+
+def _attack_path_identity(*, target: str, path_anchor: str) -> str:
     """Identify one entry path independently from its security violations."""
     normalized = " ".join(path_anchor.lower().split())
     material = "\x1f".join(("attack-path-v1", target, normalized))
@@ -31,7 +39,7 @@ def candidate_identity(
     normalized_file = file.strip().replace("\\", "/")
     normalized_category = category.strip().lower().replace("_", "-")
     normalized_cause = " ".join(root_cause.lower().split())
-    attack_path_id = attack_path_identity(target=target, path_anchor=path_anchor)
+    attack_path_id = _attack_path_identity(target=target, path_anchor=path_anchor)
     location = str(line) if line is not None else ""
     anchor_text = "\x1e".join(map(str, anchor)) if anchor is not None else ""
     material = "\x1f".join(

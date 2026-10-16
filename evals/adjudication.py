@@ -1,4 +1,10 @@
-"""Bind human source assessments to immutable review results."""
+"""Bind source assessment ledgers to recorded review attempts.
+
+An attempt is one review of one benchmark case, recorded as `<project>/<task>/attempt-NN.json`
+under a runs directory. Its ledger, `ledger-NN.json` beside it, assesses every report exactly once
+at the case's pinned source commit and is bound to the attempt bytes, the current answer key, the
+adjudication round that produced it, and the rubric that round used.
+"""
 
 from __future__ import annotations
 
@@ -8,581 +14,261 @@ import re
 import subprocess
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury.finding import finding_from_dict
 from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
-from evals.benchmarks import registry
-from evals.benchmarks.cases import find_repository_case, load_project_diff_cases
-from evals.benchmarks.contract import load_answer_key
-from evals.review.diff.results import reports_from_findings
-from evals.score.engine import score
-from evals.score.report import reports_from_json
+from cyberjury.sources.snapshot import capture_source_snapshot
+from evals.benchmarks.cases import BenchmarkCase, expected_checks
+from evals.benchmarks.validate import validate_document
+from evals.review.source import review_scope, source_root
 
-SCHEMA = "cyberjury.eval-adjudication/v2"
-DIFF_SCHEMA = "cyberjury.eval-diff-adjudication/v1"
-_VERDICTS = {"supported", "not_actionable", "duplicate", "needs_review"}
-_DIGEST = re.compile(r"[0-9a-f]{64}")
+LEDGER_SCHEMA = "cyberjury.eval-ledger/v2"
+VERDICTS = ("duplicate", "needs_review", "not_actionable", "supported")
 _CANDIDATE = re.compile(r"candidate-[0-9a-f]{20}")
 
 
 @dataclass(frozen=True, kw_only=True)
-class AdjudicationResult:
-    """Expose reviewed conclusions without replacing the original score."""
+class Attempt:
+    """One recorded review attempt and the sha256 of its exact bytes."""
 
-    target: str
-    source_commit: str
-    findings_sha256: str
-    ledger_sha256: str
-    machine_confirmed: int
-    independent_verified: int | None
-    counts: dict[str, int]
-    extra_dispositions: dict[str, int]
-    matched_dispositions: dict[str, int]
-    pending: tuple[str, ...]
-    known_found: tuple[str, ...]
-    known_missed: tuple[str, ...]
-    new_supported: tuple[str, ...]
-    mismatched_assignments: tuple[tuple[str, str, str], ...]
-    missing_introductions: tuple[str, ...]
-    introduction_not_ancestor: tuple[str, ...]
-    cross_path_checks: tuple[dict[str, object], ...]
+    path: Path
+    sha256: str
+    case: str
+    number: int
+    complete: bool
+    error: str
+    expected_checks: list
+    findings: dict[str, dict]
 
     @property
-    def report_precision(self) -> float | None:
-        """Count unique source-supported reports only after every report is assessed."""
-        if self.pending:
-            return None
-        total = sum(self.counts.values())
-        return self.counts["supported"] / total if total else 1.0
-
-    @property
-    def introduction_check_count(self) -> int:
-        """Count historical finding projections, including repeated introductions."""
-        return sum(len(check["introduction_tasks"]) for check in self.cross_path_checks)
-
-    @property
-    def machine_status_mismatch(self) -> bool | None:
-        """Compare output labels with the independent verification receipt when supplied."""
-        return self.machine_confirmed != self.independent_verified if self.independent_verified is not None else None
-
-    def to_dict(self) -> dict[str, object]:
-        """Return a stable summary that preserves unresolved work."""
-        return {
-            "schema": SCHEMA,
-            "target": self.target,
-            "source_commit": self.source_commit,
-            "findings_sha256": self.findings_sha256,
-            "ledger_sha256": self.ledger_sha256,
-            "machine_confirmed": self.machine_confirmed,
-            "independent_verified": self.independent_verified,
-            "machine_status_mismatch": self.machine_status_mismatch,
-            "counts": self.counts,
-            "extra_dispositions": self.extra_dispositions,
-            "matched_dispositions": self.matched_dispositions,
-            "pending": list(self.pending),
-            "known_found": list(self.known_found),
-            "known_missed": list(self.known_missed),
-            "new_supported": list(self.new_supported),
-            "mismatched_assignments": [
-                {"check_id": check, "location_match": location, "source_assessment": assessed}
-                for check, location, assessed in self.mismatched_assignments
-            ],
-            "missing_introductions": list(self.missing_introductions),
-            "introduction_not_ancestor": list(self.introduction_not_ancestor),
-            "cross_path_checks": list(self.cross_path_checks),
-            "repository_check_count": len(self.cross_path_checks),
-            "introduction_check_count": self.introduction_check_count,
-            "adjudication_complete": not self.pending,
-            "report_precision": round(self.report_precision, 4) if self.report_precision is not None else None,
-        }
+    def ledger_path(self) -> Path:
+        """Return where the source assessment ledger of this attempt lives."""
+        return self.path.with_name(f"ledger-{self.number:02d}.json")
 
 
 @dataclass(frozen=True, kw_only=True)
-class DiffAdjudicationResult:
-    """Keep recorded mechanical matches beside reviewed exploit-chain matches."""
+class Adjudication:
+    """Reviewed check credit and report verdicts of one attempt."""
 
     case: str
     attempt: int
-    source_commit: str
-    attempt_sha256: str
-    ledger_sha256: str
-    raw_found: tuple[str, ...]
-    raw_missed: tuple[str, ...]
-    reviewed_found: tuple[str, ...]
-    reviewed_missed: tuple[str, ...]
+    found: tuple[str, ...]
+    missed: tuple[str, ...]
     pending: tuple[str, ...]
-    report_counts: dict[str, int]
-
-    @property
-    def report_precision(self) -> float | None:
-        """Withhold report precision until every report has a source assessment."""
-        if self.pending:
-            return None
-        total = sum(self.report_counts.values())
-        return self.report_counts["supported"] / total if total else 1.0
-
-    def to_dict(self) -> dict[str, object]:
-        """Preserve both scores and unresolved source assessments."""
-        return {
-            "schema": DIFF_SCHEMA,
-            "case": self.case,
-            "attempt": self.attempt,
-            "source_commit": self.source_commit,
-            "attempt_sha256": self.attempt_sha256,
-            "ledger_sha256": self.ledger_sha256,
-            "raw_found": list(self.raw_found),
-            "raw_missed": list(self.raw_missed),
-            "reviewed_found": list(self.reviewed_found),
-            "reviewed_missed": list(self.reviewed_missed),
-            "pending": list(self.pending),
-            "report_counts": self.report_counts,
-            "review_complete": not self.pending,
-            "report_precision": round(self.report_precision, 4) if self.report_precision is not None else None,
-        }
+    counts: dict[str, int]
+    round_id: str = ""
+    rubric_sha256: str = ""
 
 
-def _validate_comparable(attempts: Sequence[DiffAdjudicationResult]) -> None:
-    """Require independently identified attempts of one case over one check set."""
-    first = attempts[0]
-    checks = set(first.raw_found) | set(first.raw_missed)
-    if len({attempt.attempt for attempt in attempts}) != len(attempts):
-        raise ValueError(f"{first.case} diff adjudication contains duplicate attempt numbers")
-    if len({attempt.attempt_sha256 for attempt in attempts}) != len(attempts):
-        raise ValueError(f"{first.case} diff adjudication contains duplicate attempt artifacts")
-    for attempt in attempts:
-        if attempt.case != first.case or attempt.source_commit != first.source_commit:
-            raise ValueError(f"{first.case} diff adjudication attempts have different targets")
-        if set(attempt.raw_found) & set(attempt.raw_missed):
-            raise ValueError(f"{first.case} diff adjudication raw check sets overlap")
-        if set(attempt.raw_found) | set(attempt.raw_missed) != checks:
-            raise ValueError(f"{first.case} diff adjudication attempts have different check sets")
-        if set(attempt.reviewed_found) & set(attempt.reviewed_missed):
-            raise ValueError(f"{first.case} diff adjudication reviewed check sets overlap")
-        if set(attempt.reviewed_found) | set(attempt.reviewed_missed) != checks:
-            raise ValueError(f"{first.case} diff adjudication review does not cover the check set")
+def attempt_path(directory: Path, case: str, number: int) -> Path:
+    """Return the attempt record path of one case and run under a runs directory."""
+    project, task = case.split(":", 1)
+    return directory / project / task / f"attempt-{number:02d}.json"
 
 
-def load_diff_adjudications(directory: str | Path) -> dict[str, tuple[DiffAdjudicationResult, ...]]:
-    """Load saved `adjudicate-diff` JSON outputs from one directory, grouped by case and ordered by attempt.
-
-    The outputs are trusted inputs. Only their shape and comparability are checked; the recorded
-    attempt and ledger hashes are not re-verified.
-    """
-    grouped: dict[str, list[DiffAdjudicationResult]] = {}
-    for path in sorted(Path(directory).glob("*.json")):
-        result = _diff_adjudication_from_dict(_read_object(path), path)
-        grouped.setdefault(result.case, []).append(result)
-    if not grouped:
-        raise ValueError(f"{directory} has no diff adjudication results")
-    for attempts in grouped.values():
-        _validate_comparable(attempts)
-    return {case: tuple(sorted(attempts, key=lambda item: item.attempt)) for case, attempts in sorted(grouped.items())}
+def read_json(path: str | Path) -> object:
+    """Read one JSON document."""
+    return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def _diff_adjudication_from_dict(value: dict, path: Path) -> DiffAdjudicationResult:
-    def strings(name: str) -> tuple[str, ...]:
-        items = value.get(name)
-        if not isinstance(items, list) or not all(isinstance(item, str) and item for item in items):
-            raise ValueError(f"{path} {name} must be a list of nonempty strings")
-        return tuple(items)
-
-    counts = value.get("report_counts")
-    attempt = value.get("attempt")
+def load_attempt(path: str | Path) -> Attempt:
+    """Read one attempt record and check the identities a ledger binds to."""
+    path = Path(path)
+    data = read_json(path)
+    number = data.get("attempt") if isinstance(data, dict) else None
     if (
-        value.get("schema") != DIFF_SCHEMA
-        or not isinstance(value.get("case"), str)
-        or isinstance(attempt, bool)
-        or not isinstance(attempt, int)
-        or attempt < 1
-        or not isinstance(counts, dict)
-        or set(counts) != _VERDICTS
-        or any(isinstance(count, bool) or not isinstance(count, int) or count < 0 for count in counts.values())
-    ):
-        raise ValueError(f"{path} is not a diff adjudication result")
-    return DiffAdjudicationResult(
-        case=value["case"],
-        attempt=attempt,
-        source_commit=str(value.get("source_commit") or ""),
-        attempt_sha256=str(value.get("attempt_sha256") or ""),
-        ledger_sha256=str(value.get("ledger_sha256") or ""),
-        raw_found=strings("raw_found"),
-        raw_missed=strings("raw_missed"),
-        reviewed_found=strings("reviewed_found"),
-        reviewed_missed=strings("reviewed_missed"),
-        pending=strings("pending"),
-        report_counts={verdict: counts[verdict] for verdict in sorted(_VERDICTS)},
-    )
-
-
-def _read_object(path: str | Path) -> dict:
-    value = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError(f"{path} must contain a JSON object")
-    return value
-
-
-def _source_commit(root: Path) -> str:
-    changes = subprocess.run(
-        ["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True, check=True
-    )
-    if changes.stdout.strip():
-        raise ValueError("adjudication source checkout has uncommitted changes")
-    result = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
-    return result.stdout.strip()
-
-
-def _source_line(root: Path, value: object, candidate_id: str) -> None:
-    if not isinstance(value, dict) or set(value) != {"file", "line"}:
-        raise ValueError(f"{candidate_id} evidence location must have file and line")
-    file, line = value["file"], value["line"]
-    if not isinstance(file, str) or not file or Path(file).is_absolute() or ".." in Path(file).parts:
-        raise ValueError(f"{candidate_id} evidence file must stay inside the source")
-    if isinstance(line, bool) or not isinstance(line, int) or line < 1:
-        raise ValueError(f"{candidate_id} evidence line must be positive")
-    path = (root / file).resolve()
-    if not path.is_relative_to(root) or not path.is_file():
-        raise ValueError(f"{candidate_id} evidence file does not exist: {file}")
-    if line > sum(1 for _ in path.open(encoding="utf-8", errors="replace")):
-        raise ValueError(f"{candidate_id} evidence line does not exist: {file}:{line}")
-
-
-def _record_check_ids(record: dict) -> tuple[str, ...]:
-    check_ids = record["check_ids"]
-    if not isinstance(check_ids, list) or not all(isinstance(check_id, str) and check_id for check_id in check_ids):
-        raise ValueError("adjudication check_ids must be a list of nonempty strings")
-    if len(check_ids) != len(set(check_ids)):
-        raise ValueError("adjudication check_ids must be unique")
-    return tuple(check_ids)
-
-
-def _validate_record(record: object, root: Path, candidates: dict, checks: dict) -> None:
-    fields = {"candidate_id", "verdict", "canonical_id", "check_ids", "reason", "proof_gap", "evidence"}
-    if not isinstance(record, dict) or set(record) != fields:
-        raise ValueError("adjudication record has an invalid shape")
-    identity = record["candidate_id"]
-    if not isinstance(identity, str) or _CANDIDATE.fullmatch(identity) is None or identity not in candidates:
-        raise ValueError(f"adjudication references an unknown candidate: {identity}")
-    verdict = record["verdict"]
-    if verdict not in _VERDICTS:
-        raise ValueError(f"{identity} has an invalid verdict")
-    if not isinstance(record["reason"], str) or not record["reason"].strip():
-        raise ValueError(f"{identity} needs a source assessment reason")
-    gap = record["proof_gap"]
-    if not isinstance(gap, str) or (verdict == "needs_review" and not gap.strip()):
-        raise ValueError(f"{identity} needs a concrete proof gap")
-    evidence = record["evidence"]
-    if not isinstance(evidence, list) or not evidence:
-        raise ValueError(f"{identity} needs a source location")
-    for location in evidence:
-        _source_line(root, location, identity)
-    canonical = record["canonical_id"]
-    if verdict == "duplicate":
-        if canonical not in candidates or canonical == identity:
-            raise ValueError(f"{identity} needs a distinct existing canonical candidate")
-    elif canonical is not None:
-        raise ValueError(f"{identity} cannot name a canonical candidate")
-    for check_id in _record_check_ids(record):
-        if verdict != "supported" or check_id not in checks:
-            raise ValueError(f"{identity} cannot credit check {check_id!r}")
-
-
-def _validate_duplicates(records: dict[str, dict]) -> None:
-    for identity in records:
-        seen = {identity}
-        current = identity
-        while records[current]["verdict"] == "duplicate":
-            current = records[current]["canonical_id"]
-            if current in seen:
-                raise ValueError(f"duplicate relationship contains a cycle at {identity}")
-            seen.add(current)
-
-
-def _canonical_id(identity: str, records: dict[str, dict]) -> str:
-    while records[identity]["verdict"] == "duplicate":
-        identity = records[identity]["canonical_id"]
-    return identity
-
-
-def _introduction_lineage(case, source_root: Path, commit: str, task_ids: set[str]) -> tuple[str, ...]:
-    """Check that paired finding introductions precede the reviewed repository revision."""
-    if case.manifest is None:
-        return ()
-    manifest = registry.load_project_manifest(case.manifest)
-    tasks = {task["id"]: task for task in manifest["tasks"]}
-    invalid = []
-    for task_id in sorted(task_ids):
-        task = tasks.get(task_id)
-        if task is None or task["kind"] != "diff" or task["expectation"] != "findings":
-            raise ValueError(f"introduction task {task_id} is absent or is not a findings diff")
-        introduced = task["revision"]["commit"]
-        result = subprocess.run(
-            ["git", "-C", str(source_root), "merge-base", "--is-ancestor", introduced, commit],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode not in (0, 1):
-            raise ValueError(f"cannot resolve introduction task {task_id}: {result.stderr.strip()}")
-        if result.returncode == 1:
-            invalid.append(task_id)
-    return tuple(invalid)
-
-
-def adjudicate_diff(
-    manifest: str | Path,
-    case_name: str,
-    *,
-    attempt_json: str | Path,
-    ledger_json: str | Path,
-    source_root: str | Path,
-) -> DiffAdjudicationResult:
-    """Compare a complete diff run with source-reviewed attack-chain assignments."""
-    cases = {case.name: case for case in load_project_diff_cases(manifest)}
-    case = cases.get(case_name)
-    if case is None:
-        raise ValueError(f"unknown diff case {case_name!r}")
-    root = Path(source_root).resolve()
-    commit = _source_commit(root)
-    if commit != case.target.get("ref"):
-        raise ValueError("adjudication source commit does not match the diff target")
-    attempt_path = Path(attempt_json)
-    attempt_sha256 = hashlib.sha256(attempt_path.read_bytes()).hexdigest()
-    attempt = _read_object(attempt_path)
-    number = attempt.get("attempt")
-    if (
-        attempt.get("case") != case_name
-        or attempt.get("complete") is not True
+        not isinstance(data, dict)
+        or not isinstance(data.get("case"), str)
         or isinstance(number, bool)
         or not isinstance(number, int)
         or number < 1
+        or path.name != f"attempt-{number:02d}.json"
+        or not isinstance(data.get("complete"), bool)
+        or not isinstance(data.get("expected_checks"), list)
+        or not isinstance(data.get("findings"), list)
+        or not all(isinstance(item, dict) for item in data["findings"])
     ):
-        raise ValueError("diff attempt is not a complete run of the requested case")
-    raw_findings = attempt.get("findings")
-    if not isinstance(raw_findings, list) or not all(isinstance(item, dict) for item in raw_findings):
-        raise ValueError("diff attempt findings must be a list of records")
-    candidates = {item.get("candidate_id"): item for item in raw_findings}
-    if len(candidates) != len(raw_findings) or any(
-        not isinstance(identity, str) or _CANDIDATE.fullmatch(identity) is None for identity in candidates
+        raise ValueError(f"{path} is not an attempt record")
+    findings = {item.get("candidate_id"): item for item in data["findings"]}
+    if len(findings) != len(data["findings"]) or not all(
+        isinstance(identity, str) and _CANDIDATE.fullmatch(identity) for identity in findings
     ):
-        raise ValueError("diff attempt candidate ids must be unique and valid")
-    checks = {check.id: check for check in case.answer_key.findings}
-    raw_result = attempt.get("result")
-    if not isinstance(raw_result, dict):
-        raise ValueError("diff attempt has no recorded raw score")
-    expected_checks = json.loads(json.dumps([asdict(check) for check in case.answer_key.checks]))
-    if attempt.get("expected_checks") != expected_checks:
-        raise ValueError("diff attempt answer key differs from the current pinned case")
-    if raw_result.get("errors") != 0:
-        raise ValueError("diff attempt raw score contains errors")
-    raw_found = _attempt_check_ids(raw_result.get("found"), case_name)
-    raw_missed = _attempt_check_ids(raw_result.get("missed"), case_name)
-    if set(raw_found) & set(raw_missed) or set(raw_found) | set(raw_missed) != set(checks):
-        raise ValueError("diff attempt raw score does not cover each expected check exactly once")
-    findings = [finding_from_dict(item) for item in raw_findings]
-    if any(finding is None for finding in findings):
-        raise ValueError("diff attempt contains an invalid finding")
-    rescored = score(case.answer_key, reports_from_findings(findings), source_root=str(root))
-    if (
-        raw_result.get("target") != case_name
-        or raw_result.get("n_findings") != rescored.n_findings
-        or set(raw_found) != set(rescored.found)
-        or set(raw_missed) != set(rescored.missed)
-        or raw_result.get("n_reports") != rescored.n_reports
-        or raw_result.get("extra") != rescored.extra
-        or raw_result.get("false_positives") != [f"{case_name}:{check}" for check in rescored.false_positives]
-    ):
-        raise ValueError("diff attempt raw score does not match replayed findings")
-    ledger_path = Path(ledger_json)
-    ledger_sha256 = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
-    ledger = _read_object(ledger_path)
-    if set(ledger) != {"schema", "case", "attempt", "source_commit", "attempt_sha256", "records"}:
-        raise ValueError("diff adjudication ledger has an invalid shape")
-    if (
-        ledger["schema"] != DIFF_SCHEMA
-        or ledger["case"] != case_name
-        or ledger["attempt"] != number
-        or ledger["source_commit"] != commit
-        or ledger["attempt_sha256"] != attempt_sha256
-    ):
-        raise ValueError("diff adjudication ledger does not identify the attempt and source")
-    raw_records = ledger["records"]
-    if not isinstance(raw_records, list):
-        raise ValueError("diff adjudication records must be a list")
-    records: dict[str, dict] = {}
-    for record in raw_records:
-        _validate_record(record, root, candidates, checks)
-        identity = record["candidate_id"]
-        if identity in records:
-            raise ValueError(f"candidate {identity} is adjudicated twice")
-        records[identity] = record
-    if set(records) != set(candidates):
-        raise ValueError("diff adjudication must cover every report exactly once")
-    _validate_duplicates(records)
-    reviewed = [check_id for record in raw_records for check_id in _record_check_ids(record)]
-    if len(reviewed) != len(set(reviewed)):
-        raise ValueError("one benchmark check cannot be credited by two candidate assessments")
-    counts = Counter(record["verdict"] for record in raw_records)
-    return DiffAdjudicationResult(
-        case=case_name,
-        attempt=number,
-        source_commit=commit,
-        attempt_sha256=attempt_sha256,
-        ledger_sha256=ledger_sha256,
-        raw_found=tuple(sorted(raw_found)),
-        raw_missed=tuple(sorted(raw_missed)),
-        reviewed_found=tuple(sorted(reviewed)),
-        reviewed_missed=tuple(sorted(set(checks) - set(reviewed))),
-        pending=tuple(sorted(record["candidate_id"] for record in raw_records if record["verdict"] == "needs_review")),
-        report_counts={verdict: counts[verdict] for verdict in sorted(_VERDICTS)},
+        raise ValueError(f"{path} candidate ids must be unique and valid")
+    return Attempt(
+        path=path,
+        sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        case=data["case"],
+        number=number,
+        complete=data["complete"],
+        error=str(data.get("error") or ""),
+        expected_checks=data["expected_checks"],
+        findings=findings,
     )
 
 
-def _attempt_check_ids(value: object, case_name: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or not all(
-        isinstance(item, str) and item.startswith(f"{case_name}:") for item in value
-    ):
-        raise ValueError("diff attempt raw check ids are invalid")
-    checks = tuple(item.removeprefix(f"{case_name}:") for item in value)
-    if len(checks) != len(set(checks)):
-        raise ValueError("diff attempt raw check ids are duplicated")
-    return checks
+def find_attempts(directory: str | Path) -> list[Attempt]:
+    """Load every attempt record under a runs directory."""
+    attempts = [load_attempt(path) for path in sorted(Path(directory).rglob("attempt-*.json"))]
+    if not attempts:
+        raise ValueError(f"{directory} has no attempt records")
+    return attempts
 
 
-def adjudicate(
-    target: str,
-    *,
-    findings_json: str | Path,
-    ledger_json: str | Path,
-    source_root: str | Path,
-    run_status: str | Path | None = None,
-) -> AdjudicationResult:
-    """Validate one full ledger and compare source judgments with location scoring."""
-    case = find_repository_case(target)
-    root = Path(source_root).resolve()
-    expected_commit = str(case.target.get("ref") or "")
-    commit = _source_commit(root)
-    if not expected_commit or commit != expected_commit:
-        raise ValueError(f"source commit {commit} does not match benchmark commit {expected_commit}")
-    findings_path = Path(findings_json)
-    digest = hashlib.sha256(findings_path.read_bytes()).hexdigest()
-    findings = FindingsArtifact.from_dict(_read_object(findings_path))
-    candidates = {item.id: item for item in findings.findings}
-    machine_confirmed = sum(item.status == "confirmed" for item in findings.findings)
-    independent_verified = None
-    if run_status is not None:
-        status_path = Path(run_status)
-        if status_path.name != "_run.json" or status_path.resolve().parent != findings_path.resolve().parent:
-            raise ValueError("run status must come from the findings workspace")
-        status = _read_object(status_path)
-        expected_hash = status.get("content_sha256")
-        semantic_status = {key: value for key, value in status.items() if key != "content_sha256"}
-        status_hash = hashlib.sha256(
-            json.dumps(semantic_status, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-        ).hexdigest()
-        if expected_hash != status_hash:
-            raise ValueError("run status content hash does not match")
-        outcome = OutcomeArtifact.from_dict(_read_object(status_path.parent / "outcome.json"))
-        if outcome.findings_sha256 != findings.content_sha256 or outcome.source_revision != status.get(
-            "source_revision"
-        ):
-            raise ValueError("run status and outcome do not identify these findings")
-        count = status.get("verified", 0)
-        if isinstance(count, bool) or not isinstance(count, int) or count < 0 or count > len(candidates):
-            raise ValueError("verification status has no valid independent verified count")
-        independent_verified = count
-    ledger_path = Path(ledger_json)
-    ledger_digest = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
-    ledger = _read_object(ledger_path)
-    if set(ledger) != {"schema", "target", "source_commit", "findings_sha256", "records"}:
-        raise ValueError("adjudication ledger has an invalid shape")
-    if ledger["schema"] != SCHEMA or ledger["target"] != target or ledger["source_commit"] != commit:
-        raise ValueError("adjudication ledger target or source does not match")
-    if not isinstance(ledger["findings_sha256"], str) or _DIGEST.fullmatch(ledger["findings_sha256"]) is None:
-        raise ValueError("adjudication ledger findings hash is invalid")
-    if ledger["findings_sha256"] != digest:
-        raise ValueError("adjudication ledger does not identify these findings")
-    key = load_answer_key(case.answer_key, task_id=case.task_id)
-    checks = {item.id: item for item in key.findings}
-    raw_records = ledger["records"]
-    if not isinstance(raw_records, list):
-        raise ValueError("adjudication records must be a list")
-    records: dict[str, dict] = {}
-    for record in raw_records:
-        _validate_record(record, root, candidates, checks)
-        identity = record["candidate_id"]
-        if identity in records:
-            raise ValueError(f"candidate {identity} is adjudicated twice")
-        records[identity] = record
-    if set(records) != set(candidates):
-        raise ValueError("adjudication ledger must cover every finding exactly once")
-    _validate_duplicates(records)
-    credited = [check_id for record in raw_records for check_id in _record_check_ids(record)]
-    if len(credited) != len(set(credited)):
-        raise ValueError("one benchmark check cannot be credited by two candidate assessments")
-    introductions: dict[str, set[str]] = {}
-    for check in load_answer_key(case.answer_key).findings:
-        for task_id in check.applies_to:
-            if task_id.startswith("diff-"):
-                introductions.setdefault(check.id, set()).add(task_id)
-    introduction_tasks = set().union(*introductions.values()) if introductions else set()
-    introduction_not_ancestor = _introduction_lineage(case, root, commit, introduction_tasks)
-    observed: list[dict] = []
-    raw_score = score(key, reports_from_json(findings_path), source_root=str(root), trace=observed.append)
-    if not set(raw_score.extra).issubset(candidates):
-        raise ValueError("location score named an unknown report")
-    location_matches = {event["key"]: event["report"] for event in observed if event.get("kind") == "findings"}
-    source_matches = {
-        check_id: record["candidate_id"] for record in raw_records for check_id in _record_check_ids(record)
-    }
-    mismatched = tuple(
-        (check, location_matches.get(check, ""), source_matches.get(check, ""))
-        for check in sorted(set(location_matches) | set(source_matches))
-        if (_canonical_id(location_matches[check], records) if check in location_matches else "")
-        != source_matches.get(check, "")
-    )
-    counts = Counter(record["verdict"] for record in raw_records)
-    extra_counts = Counter(records[identity]["verdict"] for identity in raw_score.extra)
-    matched_counts = Counter(records[identity]["verdict"] for identity in set(candidates) - set(raw_score.extra))
-    new_supported = tuple(
-        sorted(
-            record["candidate_id"]
-            for record in raw_records
-            if record["verdict"] == "supported" and not _record_check_ids(record)
-        )
-    )
-    cross_path_checks = tuple(
-        {
-            "check_id": check_id,
-            "introduction_tasks": sorted(introductions.get(check_id, set())),
-            "source_supported_candidate": source_matches.get(check_id),
-            "location_matched_candidate": location_matches.get(check_id),
-            "location_canonical_candidate": _canonical_id(location_matches[check_id], records)
-            if check_id in location_matches
-            else None,
-            "location_match_verdict": records[location_matches[check_id]]["verdict"]
-            if check_id in location_matches
-            else None,
+def collect_attempts(directories: Sequence[str | Path]) -> list[Attempt]:
+    """Load the attempts under several runs directories once each, even when the directories overlap."""
+    unique: dict[Path, Attempt] = {}
+    for directory in directories:
+        for attempt in find_attempts(directory):
+            unique.setdefault(attempt.path.resolve(), attempt)
+    return list(unique.values())
+
+
+def recorded_attempt(case: BenchmarkCase, directory: Path, number: int, *, error: str = "") -> dict[str, object]:
+    """Record the product output of one review attempt directory as an adjudicable attempt.
+
+    Diff and Repository Review attempts are recorded the same way, from `findings.json` and
+    `outcome.json`. The review must have read exactly the task source, so its findings can be
+    judged against that revision. An attempt without a result is recorded as incomplete with
+    `error`, the failure the review reported.
+    """
+    findings_path = directory / "findings.json"
+    if not findings_path.is_file():
+        return {
+            "case": case.name,
+            "attempt": number,
+            "complete": False,
+            "error": error or f"{directory} has no review result",
+            "expected_checks": expected_checks(case),
+            "findings": [],
         }
-        for check_id in sorted(checks)
+    findings = read_json(findings_path)
+    artifact = FindingsArtifact.from_dict(findings)
+    outcome = OutcomeArtifact.from_dict(read_json(directory / "outcome.json"))
+    if outcome.target != case.kind or outcome.findings_sha256 != artifact.content_sha256:
+        raise ValueError(f"{directory} outcome does not identify its {case.kind} findings")
+    _require_task_source(case, directory, outcome.source_revision)
+    return {
+        "case": case.name,
+        "attempt": number,
+        "complete": outcome.complete,
+        "error": "" if outcome.complete else outcome.failure_reason or error or "review incomplete",
+        "expected_checks": expected_checks(case),
+        "findings": [{**item, "candidate_id": item["id"]} for item in findings["findings"]],
+    }
+
+
+def _require_task_source(case: BenchmarkCase, directory: Path, source_revision: str) -> None:
+    session = directory.resolve().parent.parent
+    if directory.resolve().parent.name != "attempts":
+        raise ValueError(f"{directory} is not a review attempt directory inside its review session")
+    target, snapshot = read_json(session / "target.json"), read_json(session / "snapshot.json")
+    if not isinstance(target, dict) or target.get("kind") != case.kind:
+        raise ValueError(f"{session} is not a {case.kind} review session")
+    if not isinstance(snapshot, dict) or snapshot.get("snapshot_id") != source_revision:
+        raise ValueError(f"{session} snapshot.json does not identify the reviewed source of {directory}")
+    if case.kind == "diff":
+        git = target.get("git") if isinstance(target.get("git"), dict) else {}
+        if (git.get("patch_base_revision"), git.get("right_revision")) != (case.target["base"], case.target["ref"]):
+            raise ValueError(
+                f"{directory} did not review the change of {case.name}: the task is {case.target['base']}.."
+                f"{case.target['ref']}, but the review compared {git.get('patch_base_revision')}.."
+                f"{git.get('right_revision')}"
+            )
+        return
+    with source_root(case.target) as root:
+        expected = capture_source_snapshot(review_scope(root, case.target))
+    if expected.snapshot_id == source_revision:
+        return
+    wanted = {entry.path: entry.to_dict() for entry in expected.entries}
+    reviewed = {entry["path"]: entry for entry in snapshot["files"]}
+    changed = sorted(path for path in wanted.keys() & reviewed.keys() if wanted[path] != reviewed[path])
+    missing, extra = sorted(wanted.keys() - reviewed.keys()), sorted(reviewed.keys() - wanted.keys())
+    examples = ", ".join([*changed[:2], *missing[:2], *extra[:2]])
+    raise ValueError(
+        f"{directory} did not review the source of {case.name}: the task is commit {case.target['ref']} "
+        f"scope {case.target['path']!r}, but the review read {_describe_root(str(target.get('repository_root')))}. "
+        f"Its source differs in {len(changed)} changed, {len(missing)} missing, and {len(extra)} extra files"
+        + (f", for example {examples}" if examples else "")
     )
-    return AdjudicationResult(
-        target=target,
-        source_commit=commit,
-        findings_sha256=digest,
-        ledger_sha256=ledger_digest,
-        machine_confirmed=machine_confirmed,
-        independent_verified=independent_verified,
-        counts={verdict: counts[verdict] for verdict in sorted(_VERDICTS)},
-        extra_dispositions={verdict: extra_counts[verdict] for verdict in sorted(_VERDICTS)},
-        matched_dispositions={verdict: matched_counts[verdict] for verdict in sorted(_VERDICTS)},
-        pending=tuple(sorted(record["candidate_id"] for record in raw_records if record["verdict"] == "needs_review")),
-        known_found=tuple(sorted(source_matches)),
-        known_missed=tuple(sorted(set(checks) - set(source_matches))),
-        new_supported=new_supported,
-        mismatched_assignments=mismatched,
-        missing_introductions=tuple(sorted(set(checks) - set(introductions))),
-        introduction_not_ancestor=introduction_not_ancestor,
-        cross_path_checks=cross_path_checks,
+
+
+def _describe_root(root: str) -> str:
+    path = Path(root)
+    if not path.is_dir():
+        return f"{root}, which no longer exists"
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(path), *args], check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    try:
+        top = Path(git("rev-parse", "--show-toplevel")).resolve()
+        head = git("rev-parse", "HEAD")
+    except (OSError, subprocess.CalledProcessError):
+        return f"{root}, a plain directory outside any git checkout"
+    scope = path.resolve().relative_to(top).as_posix() if path.resolve().is_relative_to(top) else str(path)
+    dirty = bool(git("status", "--porcelain", "--untracked-files=all", "--", "."))
+    state = " with uncommitted or untracked changes" if dirty else ""
+    return f"{root}, a git checkout of commit {head} scope {scope!r}{state}"
+
+
+def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Path | None) -> Adjudication:
+    """Validate one ledger against its attempt and case, and count reviewed credit and verdicts.
+
+    `source` is the review scope inside a checkout at the pinned commit. When given, every
+    evidence location must name an existing line there.
+    """
+    validate_document(ledger, "ledger-v2.schema.json", attempt.ledger_path)
+    if (
+        ledger["case"] != case.name
+        or attempt.case != case.name
+        or ledger["attempt"] != attempt.number
+        or ledger["source_commit"] != case.target["ref"]
+        or ledger["attempt_sha256"] != attempt.sha256
+    ):
+        raise ValueError(f"{attempt.ledger_path} does not identify this attempt and pinned source")
+    if not attempt.complete:
+        raise ValueError(f"{attempt.path} is not a complete review")
+    if attempt.expected_checks != expected_checks(case):
+        raise ValueError(f"{attempt.path} answer key differs from the current pinned case")
+    records = {record["candidate_id"]: record for record in ledger["records"]}
+    if len(records) != len(ledger["records"]) or set(records) != set(attempt.findings):
+        raise ValueError(f"{attempt.ledger_path} must assess every report of the attempt exactly once")
+    checks = {check.id for check in case.findings}
+    credited = [check_id for record in ledger["records"] for check_id in record["check_ids"]]
+    if not set(credited) <= checks:
+        raise ValueError(f"{attempt.ledger_path} credits checks outside the case: {sorted(set(credited) - checks)}")
+    if len(credited) != len(set(credited)):
+        raise ValueError(f"{attempt.ledger_path} credits one check from two reports")
+    for identity, record in records.items():
+        canonical = record["canonical_id"]
+        if canonical is not None and (
+            canonical == identity or canonical not in records or records[canonical]["verdict"] == "duplicate"
+        ):
+            raise ValueError(f"{identity} needs a distinct canonical report that is not itself a duplicate")
+        if source is not None:
+            for location in record["evidence"]:
+                _source_line(source, location, identity)
+    counts = Counter(record["verdict"] for record in ledger["records"])
+    return Adjudication(
+        case=case.name,
+        attempt=attempt.number,
+        found=tuple(sorted(credited)),
+        missed=tuple(sorted(checks - set(credited))),
+        pending=tuple(sorted(identity for identity, record in records.items() if record["verdict"] == "needs_review")),
+        counts={verdict: counts[verdict] for verdict in VERDICTS},
+        round_id=ledger["round_id"],
+        rubric_sha256=ledger["rubric_sha256"],
     )
+
+
+def _source_line(root: Path, location: dict, identity: str) -> None:
+    file, line = location["file"], location["line"]
+    path = (root / file).resolve()
+    if Path(file).is_absolute() or not path.is_relative_to(root.resolve()) or not path.is_file():
+        raise ValueError(f"{identity} evidence file does not exist in the pinned source: {file}")
+    with path.open(encoding="utf-8", errors="replace") as lines:
+        if line > sum(1 for _ in lines):
+            raise ValueError(f"{identity} evidence line does not exist in the pinned source: {file}:{line}")

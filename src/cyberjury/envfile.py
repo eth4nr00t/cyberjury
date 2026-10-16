@@ -42,18 +42,18 @@ def parse_env(text: str) -> dict[str, str]:
     return out
 
 
-def load_env_file(path: str | os.PathLike = ".env", *, override: bool = False) -> list[str]:
+def load_env_file(path: str | os.PathLike = ".env") -> list[str]:
     """Load `path` into os.environ if it exists, return the names actually set.
 
-    A key already present in the environment is left untouched unless `override`, so a value
-    exported in the shell wins over the file.
+    A key already present in the environment is left untouched, so a value exported in the
+    shell wins over the file.
     """
     p = Path(path)
     if not p.is_file():
         return []
     loaded = []
     for key, value in parse_env(p.read_text(encoding="utf-8")).items():
-        if not override and key in os.environ:
+        if key in os.environ:
             continue
         os.environ[key] = value
         loaded.append(key)

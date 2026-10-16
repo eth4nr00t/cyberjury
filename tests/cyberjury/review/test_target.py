@@ -2,62 +2,37 @@
 
 from __future__ import annotations
 
-import os
-import subprocess
 from pathlib import Path
 
 import pytest
 
 import cyberjury.sources.git as gitmod
-from cyberjury.detection import load_detection
-from cyberjury.profiles.registry import default_profile
-from cyberjury.review.paths import repository_files
 from cyberjury.review.target import (
-    ResolvedTarget,
     TargetResolutionError,
     materialize_diff_target,
     resolve_diff_target,
     resolve_repository_target,
 )
-
-
-def _git(repository: Path, *arguments: str) -> str:
-    environment = {
-        **os.environ,
-        "GIT_AUTHOR_NAME": "Test",
-        "GIT_AUTHOR_EMAIL": "test@example.com",
-        "GIT_COMMITTER_NAME": "Test",
-        "GIT_COMMITTER_EMAIL": "test@example.com",
-    }
-    return subprocess.run(
-        ["git", "-C", str(repository), *arguments],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=environment,
-    ).stdout.strip()
+from tests.support import git
 
 
 def _repository(root: Path) -> tuple[Path, str, str]:
     root.mkdir()
-    _git(root, "init", "--quiet")
+    git(root, "init", "--quiet")
     (root / "app.py").write_text("base\n", encoding="utf-8")
-    _git(root, "add", "app.py")
-    _git(root, "commit", "--quiet", "-m", "base")
-    base = _git(root, "rev-parse", "HEAD")
+    git(root, "add", "app.py")
+    git(root, "commit", "--quiet", "-m", "base")
+    base = git(root, "rev-parse", "HEAD")
     (root / "app.py").write_text("head\n", encoding="utf-8")
-    _git(root, "commit", "--quiet", "-am", "head")
-    head = _git(root, "rev-parse", "HEAD")
+    git(root, "commit", "--quiet", "-am", "head")
+    head = git(root, "rev-parse", "HEAD")
     return root, base, head
 
 
-def test_two_dot_target_round_trips_and_materializes_resolved_head(tmp_path):
+def test_two_dot_target_materializes_resolved_head(tmp_path):
     repository, base, head = _repository(tmp_path / "repo")
 
     target = resolve_diff_target(repository, f"{base}..{head}")
-    restored = ResolvedTarget.from_dict(target.to_dict())
-
-    assert restored == target
     assert target.git is not None
     assert target.git.range_kind == "two-dot"
     assert target.git.left_revision == base
@@ -67,27 +42,27 @@ def test_two_dot_target_round_trips_and_materializes_resolved_head(tmp_path):
     assert "+head" in target.patch.text
     with materialize_diff_target(target) as source_root:
         assert (source_root / "app.py").read_text(encoding="utf-8") == "head\n"
-        assert ".git" not in repository_files(source_root, load_detection(default_profile().paths.detection_file))
+        assert not (source_root / ".git").exists()
 
 
 def test_three_dot_target_keeps_left_endpoint_and_unique_merge_base(tmp_path):
     repository = tmp_path / "repo"
     repository.mkdir()
-    _git(repository, "init", "--quiet")
+    git(repository, "init", "--quiet")
     (repository / "base.txt").write_text("base\n")
-    _git(repository, "add", ".")
-    _git(repository, "commit", "--quiet", "-m", "base")
-    base = _git(repository, "rev-parse", "HEAD")
-    _git(repository, "checkout", "--quiet", "-b", "left")
+    git(repository, "add", ".")
+    git(repository, "commit", "--quiet", "-m", "base")
+    base = git(repository, "rev-parse", "HEAD")
+    git(repository, "checkout", "--quiet", "-b", "left")
     (repository / "left.txt").write_text("left\n")
-    _git(repository, "add", ".")
-    _git(repository, "commit", "--quiet", "-m", "left")
-    left = _git(repository, "rev-parse", "HEAD")
-    _git(repository, "checkout", "--quiet", "-b", "right", base)
+    git(repository, "add", ".")
+    git(repository, "commit", "--quiet", "-m", "left")
+    left = git(repository, "rev-parse", "HEAD")
+    git(repository, "checkout", "--quiet", "-b", "right", base)
     (repository / "right.txt").write_text("right\n")
-    _git(repository, "add", ".")
-    _git(repository, "commit", "--quiet", "-m", "right")
-    right = _git(repository, "rev-parse", "HEAD")
+    git(repository, "add", ".")
+    git(repository, "commit", "--quiet", "-m", "right")
+    right = git(repository, "rev-parse", "HEAD")
 
     target = resolve_diff_target(repository, "left...right")
 
@@ -105,7 +80,7 @@ def test_resolved_target_is_immune_to_later_symbolic_ref_movement(tmp_path):
     repository, base, head = _repository(tmp_path / "repo")
     target = resolve_diff_target(repository, f"{base}..HEAD")
     (repository / "app.py").write_text("later\n", encoding="utf-8")
-    _git(repository, "commit", "--quiet", "-am", "later")
+    git(repository, "commit", "--quiet", "-am", "later")
 
     assert target.git is not None
     assert target.git.right_revision == head
@@ -150,12 +125,12 @@ def test_option_like_git_range_cannot_write_an_output_file(tmp_path):
 def test_operator_git_diff_configuration_does_not_change_patch(tmp_path):
     repository, base, head = _repository(tmp_path / "repo")
     first = resolve_diff_target(repository, f"{base}..{head}")
-    _git(repository, "config", "diff.renames", "true")
-    _git(repository, "config", "diff.external", "/bin/false")
-    _git(repository, "config", "color.ui", "always")
-    _git(repository, "config", "core.abbrev", "4")
-    _git(repository, "config", "diff.indentHeuristic", "true")
-    _git(repository, "config", "diff.interHunkContext", "20")
+    git(repository, "config", "diff.renames", "true")
+    git(repository, "config", "diff.external", "/bin/false")
+    git(repository, "config", "color.ui", "always")
+    git(repository, "config", "core.abbrev", "4")
+    git(repository, "config", "diff.indentHeuristic", "true")
+    git(repository, "config", "diff.interHunkContext", "20")
 
     second = resolve_diff_target(repository, f"{base}..{head}")
 
@@ -166,15 +141,15 @@ def test_operator_git_diff_configuration_does_not_change_patch(tmp_path):
 def test_git_materialization_uses_exact_blobs_without_smudge_filter(tmp_path):
     repository = tmp_path / "repo"
     repository.mkdir()
-    _git(repository, "init", "--quiet")
+    git(repository, "init", "--quiet")
     (repository / ".gitattributes").write_text("*.txt filter=demo\n")
     (repository / "value.txt").write_text("blob-base\n")
-    _git(repository, "add", ".")
-    _git(repository, "commit", "--quiet", "-m", "base")
-    base = _git(repository, "rev-parse", "HEAD")
+    git(repository, "add", ".")
+    git(repository, "commit", "--quiet", "-m", "base")
+    base = git(repository, "rev-parse", "HEAD")
     (repository / "value.txt").write_text("blob-head\n")
-    _git(repository, "commit", "--quiet", "-am", "head")
-    _git(repository, "config", "filter.demo.smudge", "sed s/blob/worktree/")
+    git(repository, "commit", "--quiet", "-am", "head")
+    git(repository, "config", "filter.demo.smudge", "sed s/blob/worktree/")
     target = resolve_diff_target(repository, f"{base}..HEAD")
 
     with materialize_diff_target(target) as source_root:
@@ -184,14 +159,14 @@ def test_git_materialization_uses_exact_blobs_without_smudge_filter(tmp_path):
 def test_canonical_patch_keeps_the_default_rename_representation(tmp_path):
     repository = tmp_path / "repo"
     repository.mkdir()
-    _git(repository, "init", "--quiet")
+    git(repository, "init", "--quiet")
     (repository / "before.py").write_text("value = 1\n")
-    _git(repository, "add", ".")
-    _git(repository, "commit", "--quiet", "-m", "base")
-    base = _git(repository, "rev-parse", "HEAD")
-    _git(repository, "mv", "before.py", "after.py")
-    _git(repository, "commit", "--quiet", "-m", "rename")
-    _git(repository, "config", "diff.renames", "false")
+    git(repository, "add", ".")
+    git(repository, "commit", "--quiet", "-m", "base")
+    base = git(repository, "rev-parse", "HEAD")
+    git(repository, "mv", "before.py", "after.py")
+    git(repository, "commit", "--quiet", "-m", "rename")
+    git(repository, "config", "diff.renames", "false")
 
     target = resolve_diff_target(repository, f"{base}..HEAD")
 
@@ -202,8 +177,8 @@ def test_canonical_patch_keeps_the_default_rename_representation(tmp_path):
 
 def test_diff_target_fails_loud_when_head_contains_unacquired_submodule(tmp_path):
     repository, base, _head = _repository(tmp_path / "repo")
-    _git(repository, "update-index", "--add", "--cacheinfo", f"160000,{base},lib/dependency")
-    _git(repository, "commit", "--quiet", "-m", "gitlink")
+    git(repository, "update-index", "--add", "--cacheinfo", f"160000,{base},lib/dependency")
+    git(repository, "commit", "--quiet", "-m", "gitlink")
 
     with pytest.raises(TargetResolutionError, match="submodules"):
         resolve_diff_target(repository, f"{base}..HEAD")

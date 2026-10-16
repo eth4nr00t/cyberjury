@@ -1,6 +1,6 @@
 """Source and diff gutters expose the line identities consumed by review prompts."""
 
-from cyberjury.numbering import numbered_diff, numbered_source
+from cyberjury.numbering import numbered_diff, numbered_source, split_lines
 
 _TWO_FILES = """diff --git a/a.py b/a.py
 --- a/a.py
@@ -80,3 +80,10 @@ def test_numbered_source_labels_the_block_and_numbers_from_its_first_line():
     assert block.startswith("# file: big.py lines 300-301\n")
     assert "300 | line300" in block
     assert "301 | line301" in block
+
+
+def test_form_feed_and_other_separators_stay_inside_their_numbered_line():
+    source = "def page():\n    pass\n\x0c\nCOLOR = '\x1b[0m'\x1c\n"
+
+    assert split_lines(source) == ["def page():", "    pass", "\x0c", "COLOR = '\x1b[0m'\x1c"]
+    assert numbered_source("pager.py", source, 1).splitlines()[0] == "# file: pager.py lines 1-4"

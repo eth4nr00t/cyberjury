@@ -1,11 +1,11 @@
-"""Finding records and their optional diff change location."""
+"""The one finding record every review target produces, with its optional diff change location."""
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
-from cyberjury.review.identity import attack_path_identity, candidate_identity
+from cyberjury.review.identity import candidate_identity
 from cyberjury.severity import SEVERITIES
 
 
@@ -24,108 +24,70 @@ class ChangeAnchor:
 
 @dataclass(frozen=True, kw_only=True)
 class Finding:
-    """Normalized finding data before adapter-specific reportability checks."""
+    """One reported vulnerability before cross-unit accumulation and verification.
 
+    Every target fills the same fields; only a Diff finding carries a change anchor.
+    """
+
+    title: str
+    category: str
+    severity: str
+    entrypoint: str
     file: str
-    line: int | None = None
-    severity: str = "MEDIUM"
-    category: str = ""
-    source_operation_id: str = field(default="", repr=False, compare=False)
-    entrypoint: str = ""
-    description: str = ""
-    exploit_scenario: str = ""
-    recommendation: str = ""
-    confidence: float = 0.5
+    line: int
+    evidence: str
+    attack_path: str
     change_anchor: ChangeAnchor | None = None
+    source_operation_id: str = field(default="", repr=False, compare=False)
     evidence_refs: tuple[str, ...] = field(default=(), repr=False, compare=False)
     found_by: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     @property
-    def attack_path_id(self) -> str:
-        """Return the shared path identity independent from security category."""
-        return attack_path_identity(target="diff", path_anchor=self.entrypoint)
-
-    @property
     def candidate_id(self) -> str:
         """Return one security violation identity on the shared attack path."""
-        anchor = (
-            (self.change_anchor.file, self.change_anchor.line, self.change_anchor.side)
-            if self.change_anchor is not None
-            else None
-        )
+        anchor = self.change_anchor
         return candidate_identity(
-            target="diff",
+            target="diff" if anchor is not None else "repository",
             file=self.file,
             line=self.line,
             category=self.category,
-            path_anchor=self.entrypoint,
-            anchor=anchor,
-            root_cause=self.description,
+            path_anchor=self.entrypoint or f"{self.file}:{self.line}",
+            anchor=(anchor.file, anchor.line, anchor.side) if anchor is not None else None,
+            root_cause=self.title,
             source_operation_id=self.source_operation_id,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Return the stable wire form consumed by reports and persisted state."""
+        """Return the complete checkpoint form."""
         data = asdict(self)
-        data.pop("source_operation_id", None)
-        data.pop("evidence_refs", None)
-        data.pop("found_by", None)
-        if self.change_anchor is None:
-            data.pop("change_anchor", None)
+        data["evidence_refs"] = list(self.evidence_refs)
+        data["found_by"] = list(self.found_by)
         return data
 
-
-def _to_line(value: object) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else None
-
-
-def _change_anchor(value: object) -> ChangeAnchor | None:
-    if not isinstance(value, dict):
-        return None
-    file = value.get("file")
-    line = _to_line(value.get("line"))
-    side = value.get("side")
-    if not isinstance(file, str) or not file.strip() or line is None or side not in ("old", "new"):
-        return None
-    return ChangeAnchor(file=file.strip(), line=line, side=side)
-
-
-def _evidence_refs(value: object) -> tuple[str, ...]:
-    if not isinstance(value, (list, tuple)):
-        return ()
-    if not all(isinstance(ref, str) and ref for ref in value):
-        return ()
-    return tuple(value)
-
-
-def finding_from_dict(data: dict[str, Any]) -> Finding | None:
-    """Map one finding object when it names the file required by every finding.
-
-    Severity and confidence must already be valid; invalid values raise instead of
-    being replaced with defaults.
-    """
-    if not isinstance(data, dict):
-        return None
-    file = data.get("file")
-    if not isinstance(file, str) or not file.strip():
-        return None
-    severity = data.get("severity")
-    if severity not in SEVERITIES:
-        raise ValueError("finding severity is invalid")
-    confidence = data.get("confidence")
-    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0.0 <= confidence <= 1.0:
-        raise ValueError("finding confidence must be a number between 0 and 1")
-    finding = Finding(
-        file=file.strip(),
-        line=_to_line(data.get("line")),
-        severity=severity,
-        category=str(data.get("category", "")).strip(),
-        entrypoint=str(data.get("entrypoint", "")).strip(),
-        description=str(data.get("description", "")),
-        exploit_scenario=str(data.get("exploit_scenario", "")),
-        recommendation=str(data.get("recommendation", "")),
-        confidence=float(confidence),
-        change_anchor=_change_anchor(data.get("change_anchor")),
-        evidence_refs=_evidence_refs(data.get("evidence_refs", ())),
-    )
-    return finding
+    @classmethod
+    def from_dict(cls, value: object) -> Finding:
+        """Parse one checkpointed finding written by `to_dict`."""
+        names = {item.name for item in fields(cls)}
+        if not isinstance(value, dict) or set(value) != names:
+            raise ValueError("finding fields are invalid")
+        text = names - {"line", "change_anchor", "evidence_refs", "found_by"}
+        if not all(isinstance(value[name], str) for name in text) or value["severity"] not in SEVERITIES:
+            raise ValueError("finding text fields are invalid")
+        line = value["line"]
+        if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+            raise ValueError("finding line must be a positive integer")
+        for name in ("evidence_refs", "found_by"):
+            if not isinstance(value[name], list) or not all(isinstance(item, str) for item in value[name]):
+                raise ValueError(f"finding {name} must be a list of strings")
+        anchor = value["change_anchor"]
+        if anchor is not None:
+            if not isinstance(anchor, dict) or set(anchor) != {"file", "line", "side"}:
+                raise ValueError("finding change anchor is invalid")
+            anchor = ChangeAnchor(file=anchor["file"], line=anchor["line"], side=anchor["side"])
+        return cls(
+            **{name: value[name] for name in text},
+            line=line,
+            change_anchor=anchor,
+            evidence_refs=tuple(value["evidence_refs"]),
+            found_by=tuple(value["found_by"]),
+        )

@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
 
+from cyberjury.providers.base import Provider
 from cyberjury.providers.configuration import ProviderConfiguration, ProviderSeat, provider_for_seat
+from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.review.request import ProviderSeatRecord, endpoint_identity, seat_identity
 from cyberjury.review.verification import Confirmer, ModelRefutationChecker, ModelVerifier
 
-if TYPE_CHECKING:
-    from cyberjury.profiles.base import ContentPaths
-    from cyberjury.providers.metering import UsageMeter
+DRY_RUN_SEAT = ProviderSeat(provider="mock", model="mock")
 
 
 def provider_seat_record(seat: ProviderSeat) -> ProviderSeatRecord:
@@ -49,7 +49,6 @@ def confirmer_seats(configuration: ProviderConfiguration) -> list[ProviderSeat]:
 
 def verification_route(
     configuration: ProviderConfiguration,
-    content: ContentPaths,
     *,
     meter: UsageMeter | None,
 ) -> tuple[ModelVerifier, list[Confirmer]]:
@@ -64,7 +63,6 @@ def verification_route(
             ModelRefutationChecker(
                 provider=provider_for_seat(configuration, seat, meter=meter),
                 model=seat.model,
-                content=content,
                 seat_id=provider_seat_id(seat),
             ),
         )
@@ -74,7 +72,43 @@ def verification_route(
     verifier = ModelVerifier(
         provider=provider_for_seat(configuration, skeptic, meter=meter, require_key=bool(confirmers)),
         model=skeptic.model,
-        content=content,
         seat_id=provider_seat_id(skeptic),
     )
     return verifier, confirmers
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewSeats:
+    """The finder and verification route of one review, identified as they are recorded."""
+
+    finder: Provider
+    finder_model: str
+    finder_label: str
+    verifier: ModelVerifier | None
+    confirmers: tuple[Confirmer, ...]
+
+
+def review_seats(
+    configuration: ProviderConfiguration,
+    *,
+    meter: UsageMeter,
+    dry_run_provider: Provider | None = None,
+) -> ReviewSeats:
+    """Resolve the seats one review calls; a dry run provider replaces the finder and disables verification."""
+    if dry_run_provider is not None:
+        return ReviewSeats(
+            finder=MeteringProvider(dry_run_provider, meter),
+            finder_model=DRY_RUN_SEAT.model,
+            finder_label=provider_seat_id(DRY_RUN_SEAT),
+            verifier=None,
+            confirmers=(),
+        )
+    finder = configuration.finder
+    verifier, confirmers = verification_route(configuration, meter=meter)
+    return ReviewSeats(
+        finder=provider_for_seat(configuration, finder, meter=meter),
+        finder_model=finder.model,
+        finder_label=provider_seat_id(finder),
+        verifier=verifier,
+        confirmers=tuple(confirmers),
+    )

@@ -1,6 +1,6 @@
 ---
 description: Run a Cyberjury security review of a diff or a repository
-argument-hint: <target> [<git-range>] [--profile <name>] [--concurrency <n>] [--workspace <path>]
+argument-hint: <target> [<git-range>] [--concurrency <n>] [--workspace <path>]
 ---
 # Cyberjury Review
 
@@ -34,11 +34,9 @@ security review in this chat.
      or the current directory when neither is present.
    - Without a git range, the first positional path is the Repository Review target.
 3. Collect optional flags and pass each only to the commands that accept it:
-   - Diff flags: `--repository <path>`, `--git-range <range>`, `--profile`, `--workspace`, and
-     `--concurrency`.
-   - Repository scaffold and gate flags: `--profile` and `--workspace`.
-   - Repository run flags: `--profile`, `--workspace`, and `--concurrency`.
-   - `--profile` is `auto` or a profile name listed by `cyberjury review diff --help`.
+   - Diff flags: `--repository <path>`, `--git-range <range>`, `--workspace`, and `--concurrency`.
+   - Repository scaffold flags: `--workspace`.
+   - Repository run flags: `--workspace` and `--concurrency`.
 
 ## Diff Review
 
@@ -61,24 +59,15 @@ After the command:
 
 ## Repository Review
 
-Run these commands in order on the same workspace.
-
-1. Run:
+Use one command.
 
 ```bash
 cyberjury review repository <target> --run [repository run flags]
 ```
 
-If this fails, stop and report the failure. Re-running `--run` resumes open units and retries
-failed verification.
-
-2. Gate:
-
-```bash
-cyberjury review repository <target> --gate [repository gate flags]
-```
-
-If gate fails, report each unmet item. Do not call the review complete until gate passes.
+If this exits nonzero, state that the repository review failed or is incomplete and include the
+error details. Do not call the review complete. Re-running `--run` on the same workspace resumes
+open units and retries failed verification.
 
 Use `--scaffold` separately to inspect the unit plan before model review. Do not edit workspace
 files; findings come only from `--run`.
@@ -90,4 +79,4 @@ Summarize the result in this order:
 - Commands run.
 - Exit status for each step.
 - Findings location or printed findings.
-- Any failures, degraded review warning, or gate blocker.
+- Any failures or degraded review warning.

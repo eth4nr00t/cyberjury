@@ -9,38 +9,30 @@ from pathlib import Path, PurePosixPath
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
 
-from cyberjury.profiles.registry import get_profile
-
 _SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
 _SCHEMA_FILES = {
-    "benchmark.yaml": _SCHEMA_DIR / "benchmark-v1.schema.json",
-    "answer-key.yaml": _SCHEMA_DIR / "answer-key-v1.schema.json",
+    "benchmark.yaml": "benchmark-v2.schema.json",
+    "answer-key.yaml": "answer-key-v1.schema.json",
 }
 _REPOSITORY_ID = re.compile(r"^repository-[0-9a-f]{7}$")
 _DIFF_ID = re.compile(r"^diff-[0-9a-f]{7}-[0-9]+$")
 
 
-def _load_yaml(path: Path) -> dict:
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} is not a mapping")
-    return data
-
-
-def load_validated_document(path: Path) -> dict[str, object]:
-    """Load one versioned document only after its closed schema accepts it."""
-    data = _load_yaml(path)
-    schema_path = _SCHEMA_FILES.get(path.name)
-    if schema_path is None:
-        raise ValueError(f"{path} must be named benchmark.yaml or answer-key.yaml")
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+def validate_document(data: object, schema_name: str, where: object) -> None:
+    """Reject a document that its closed versioned schema does not accept."""
+    schema = json.loads((_SCHEMA_DIR / schema_name).read_text(encoding="utf-8"))
     validator = Draft202012Validator(schema, format_checker=FormatChecker())
     errors = sorted(validator.iter_errors(data), key=lambda error: list(error.absolute_path))
     if errors:
         detail = "; ".join(
             f"{'.'.join(str(part) for part in error.absolute_path) or '<root>'}: {error.message}" for error in errors
         )
-        raise ValueError(f"{path} violates {schema_path.name}: {detail}")
+        raise ValueError(f"{where} violates {schema_name}: {detail}")
+
+
+def _load_validated_yaml(path: Path) -> dict:
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    validate_document(data, _SCHEMA_FILES[path.name], path)
     return data
 
 
@@ -49,7 +41,6 @@ def _validate_semantics(manifest: dict, answer_key: dict, *, source_root: Path |
         raise ValueError("benchmark_id differs between benchmark.yaml and answer-key.yaml")
     source = manifest["source"]
     _scope_parts(source["path"], "source.path")
-    get_profile(str(manifest["profile"]))
     known_tasks = _validate_tasks(source, manifest["tasks"])
     _validate_checks(known_tasks, answer_key["checks"])
     _validate_expectation_coverage(manifest["tasks"], answer_key["checks"])
@@ -170,19 +161,23 @@ def _check_unique(values: list[str], where: str) -> None:
         raise ValueError(f"{where} contains duplicates")
 
 
-def validate_benchmark(path: str | Path, *, source_root: str | Path | None = None) -> None:
-    """Validate one benchmark directory or one manifest and its answer key."""
+def manifest_path(path: str | Path) -> Path:
+    """Resolve a benchmark directory or manifest path to its benchmark.yaml."""
     target = Path(path)
     if target.is_dir():
-        manifest_path = target / "benchmark.yaml"
-        answer_key_path = target / "answer-key.yaml"
-    elif target.name == "benchmark.yaml":
-        manifest_path = target
-        answer_key_path = target.with_name("answer-key.yaml")
-    else:
-        raise ValueError(f"{target} must be a benchmark directory or benchmark.yaml")
-    if not answer_key_path.is_file():
-        raise ValueError(f"{target} has no answer-key.yaml")
-    manifest = load_validated_document(manifest_path)
-    answer_key = load_validated_document(answer_key_path)
+        return target / "benchmark.yaml"
+    if target.name == "benchmark.yaml":
+        return target
+    raise ValueError(f"{target} must be a benchmark directory or benchmark.yaml")
+
+
+def validate_benchmark(path: str | Path, *, source_root: str | Path | None = None) -> tuple[dict, dict]:
+    """Validate one benchmark manifest and its sibling answer key, and return both documents."""
+    manifest_file = manifest_path(path)
+    answer_key_file = manifest_file.with_name("answer-key.yaml")
+    if not answer_key_file.is_file():
+        raise ValueError(f"{path} has no answer-key.yaml")
+    manifest = _load_validated_yaml(manifest_file)
+    answer_key = _load_validated_yaml(answer_key_file)
     _validate_semantics(manifest, answer_key, source_root=Path(source_root) if source_root else None)
+    return manifest, answer_key

@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import os
 import re
-import selectors
 import shutil
 import subprocess
 import tempfile
@@ -20,7 +19,7 @@ from cyberjury.sources.snapshot import (
     safe_link_target,
 )
 
-_OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _MAX_GIT_BLOB_BYTES = 100_000_000
 _MAX_GIT_TREE_BYTES = 2_000_000_000
 _MAX_GIT_SYMLINK_BYTES = 4096
@@ -73,10 +72,6 @@ def _git(repository: str | Path, *arguments: str) -> str:
         raise GitSourceError(f"Git source acquisition failed: {detail}") from exc
 
 
-def _git_bytes(repository: str | Path, *arguments: str) -> bytes:
-    return _git_limited_bytes(repository, arguments, limit=_MAX_GIT_LIST_BYTES, label="Git output")
-
-
 def _git_limited_bytes(
     repository: str | Path,
     arguments: tuple[str, ...],
@@ -85,46 +80,20 @@ def _git_limited_bytes(
     label: str,
 ) -> bytes:
     try:
-        process = subprocess.Popen(
+        completed = subprocess.run(
             ["git", "--no-replace-objects", "-C", str(repository), *arguments],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            check=True,
+            capture_output=True,
             env=_git_environment(),
         )
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr[:_MAX_GIT_ERROR_BYTES].decode("utf-8", errors="replace").strip() or "unknown Git failure"
+        raise GitSourceError(f"Git source acquisition failed: {detail}") from exc
     except OSError as exc:
         raise GitSourceError(f"Git source acquisition failed: {exc}") from exc
-    if process.stdout is None or process.stderr is None:
-        process.kill()
-        raise GitSourceError("Git source acquisition has no output pipes")
-    output = bytearray()
-    error = bytearray()
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ, output)
-    selector.register(process.stderr, selectors.EVENT_READ, error)
-    try:
-        while selector.get_map():
-            for key, _events in selector.select():
-                chunk = os.read(key.fileobj.fileno(), 65_536)
-                if not chunk:
-                    selector.unregister(key.fileobj)
-                    continue
-                buffer = key.data
-                if buffer is output:
-                    output.extend(chunk)
-                    if len(output) > limit:
-                        raise GitSourceError(f"{label} exceeds the byte limit")
-                elif len(error) < _MAX_GIT_ERROR_BYTES:
-                    error.extend(chunk[: _MAX_GIT_ERROR_BYTES - len(error)])
-        if process.wait() != 0:
-            detail = error.decode("utf-8", errors="replace").strip() or "unknown Git failure"
-            raise GitSourceError(f"Git source acquisition failed: {detail}")
-        return bytes(output)
-    except BaseException:
-        process.kill()
-        process.wait()
-        raise
-    finally:
-        selector.close()
+    if len(completed.stdout) > limit:
+        raise GitSourceError(f"{label} exceeds the byte limit")
+    return completed.stdout
 
 
 def resolve_root(repository: str | Path) -> Path:
@@ -149,7 +118,7 @@ def object_format(repository: str | Path) -> str:
 def resolve_commit(repository: str | Path, revision: str) -> str:
     """Resolve one explicit revision to one immutable commit id."""
     value = _git(repository, "rev-parse", "--verify", "--end-of-options", f"{revision}^{{commit}}").strip()
-    if not _OBJECT_ID.fullmatch(value):
+    if not OBJECT_ID.fullmatch(value):
         raise GitSourceError(f"Git revision did not resolve to one commit: {revision}")
     return value
 
@@ -163,6 +132,27 @@ def contains_gitlink(repository: str | Path, revision: str) -> bool:
     """Report whether one committed tree depends on an unacquired submodule tree."""
     tree = _git(repository, "ls-tree", "-r", revision)
     return any(line.startswith("160000 ") for line in tree.splitlines())
+
+
+def worktree_files(repository: str | Path) -> tuple[str, ...]:
+    """List the tracked and unignored untracked files present in one Git work tree."""
+    raw = _git_limited_bytes(
+        repository,
+        ("ls-files", "-z", "--cached", "--others", "--exclude-standard"),
+        limit=_MAX_GIT_LIST_BYTES,
+        label="Git output",
+    )
+    files: list[str] = []
+    for record in raw.split(b"\0"):
+        if not record or record.endswith(b"/"):
+            continue
+        try:
+            path = record.decode("utf-8")
+        except UnicodeError as exc:
+            raise GitSourceError("Git work tree contains a path that is not UTF-8") from exc
+        if os.path.lexists(Path(repository) / path):
+            files.append(path)
+    return tuple(dict.fromkeys(files))
 
 
 def index_contains_gitlink(repository: str | Path) -> bool:
@@ -219,7 +209,12 @@ class _GitBlob:
 
 
 def _git_blobs(repository: str, revision: str) -> tuple[_GitBlob, ...]:
-    raw = _git_bytes(repository, "ls-tree", "-rz", "--full-tree", revision)
+    raw = _git_limited_bytes(
+        repository,
+        ("ls-tree", "-rz", "--full-tree", revision),
+        limit=_MAX_GIT_LIST_BYTES,
+        label="Git output",
+    )
     blobs: list[_GitBlob] = []
     for record in raw.split(b"\0"):
         if not record:
@@ -252,9 +247,6 @@ def _write_git_blobs(repository: str, blobs: tuple[_GitBlob, ...], source_root: 
         )
     except OSError as exc:
         raise GitSourceError(f"Git blob reader could not start: {exc}") from exc
-    if process.stdin is None or process.stdout is None:
-        process.kill()
-        raise GitSourceError("Git blob reader has no pipes")
     total_bytes = 0
     try:
         for blob in blobs:

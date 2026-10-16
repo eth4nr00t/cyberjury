@@ -1,6 +1,5 @@
-schema_version: 1
+schema_version: 2
 benchmark_id: paperless-ngx
-profile: web
 source:
   kind: git
   identity:

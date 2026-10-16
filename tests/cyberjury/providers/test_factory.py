@@ -22,7 +22,6 @@ def test_env_defaults_prefer_openai_when_a_key_is_reachable(monkeypatch):
     defaults = env_defaults()
 
     assert defaults["provider"] == "openai"
-    assert defaults["model"] == "gpt-5.6"
 
 
 def test_env_defaults_fall_back_to_anthropic_without_an_openai_key(monkeypatch):
@@ -35,7 +34,6 @@ def test_env_defaults_fall_back_to_anthropic_without_an_openai_key(monkeypatch):
     defaults = env_defaults()
 
     assert defaults["provider"] == "anthropic"
-    assert defaults["model"] == "claude-opus-5"
 
 
 def test_default_model_is_provider_specific():
@@ -86,3 +84,26 @@ def test_retries_wrap_in_retry_provider_with_one_extra_attempt():
     assert isinstance(provider, RetryProvider)
     assert isinstance(provider._inner, OpenAIProvider)
     assert provider._max_attempts == 3
+
+
+@pytest.mark.parametrize("name", ["CYBERJURY_WIRE_API", "CYBERJURY_SKEPTIC_WIRE_API"])
+def test_env_defaults_reject_an_unknown_wire_api(monkeypatch, name):
+    monkeypatch.setenv(name, "Responses")
+
+    with pytest.raises(ValueError, match=rf"{name} must be one of responses, chat, got 'Responses'"):
+        env_defaults()
+
+
+def test_env_defaults_accept_chat_and_treat_an_empty_wire_api_as_unset(monkeypatch):
+    monkeypatch.setenv("CYBERJURY_WIRE_API", "chat")
+    monkeypatch.setenv("CYBERJURY_FINDER_WIRE_API", "")
+
+    defaults = env_defaults()
+
+    assert defaults["wire_api"] == "chat"
+    assert defaults["role_backends"]["finder"]["wire_api"] is None
+
+
+def test_openai_provider_rejects_an_unknown_wire_api():
+    with pytest.raises(ValueError, match="wire API must be one of responses, chat"):
+        make_provider("openai", wire_api="completions")

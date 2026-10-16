@@ -5,6 +5,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from cyberjury.review.schemas import closed_object, string_array
+from cyberjury.severity import SEVERITIES
+
 
 @dataclass(frozen=True, kw_only=True)
 class PromptPlan:
@@ -60,16 +63,62 @@ instead of reporting it again."""
 
 _EVIDENCE_RULES = """# Evidence
 
-- `seed` cites the code under review. An `ev-*` or `src-*` id cites the source delivered under that id.
+- `seed` cites the code under review. A `src-*` id cites the source delivered under that id.
 - Source delivered under an id, initially or in an evidence exchange, is already read. Cite it directly and do not \
 request it again.
-- The evidence catalog lists published ids whose source is not delivered yet. Request an unread published id \
-through `evidence_requests` before relying on it. Citing an unread published id also requests it, and that finding \
-waits until the source is delivered.
+- The evidence catalog lists published ids. Their source is delivered only on request, in an evidence exchange \
+under the same id; an id whose source was delivered is already read. Request an unread catalog id through \
+`evidence_requests` before relying on it. Citing an unread published id also requests it, and that finding waits \
+until the source is delivered.
 - Use only exact ids published in this review. Search results alone are not finding evidence."""
 
-CATEGORY_FIELD = "- `category`: the broad security property violated or the direct attacker-visible effect."
-SEVERITY_FIELD = "- `severity`: the grade on the severity rubric."
+CHANGE_ANCHOR_SCHEMA = closed_object(
+    {
+        "file": {"type": "string"},
+        "line": {"type": "integer"},
+        "side": {"type": "string", "enum": ["old", "new"]},
+    }
+)
+
+
+def finding_schema(**extension: dict[str, object]) -> dict[str, object]:
+    """Build the one finding schema every target shares, with a target extension after its location."""
+    return closed_object(
+        {
+            "title": {"type": "string"},
+            "category": {"type": "string"},
+            "severity": {"type": "string", "enum": list(SEVERITIES)},
+            "entrypoint": {"type": "string"},
+            "file": {"type": "string"},
+            "line": {"type": "integer"},
+            **extension,
+            "evidence": {"type": "string"},
+            "attack_path": {"type": "string"},
+            "evidence_refs": string_array(),
+        }
+    )
+
+
+def finding_fields(extension: str = "") -> str:
+    """Render the one finding field contract, with a target extension after the location fields."""
+    location = (
+        "- `findings`: one entry per reported vulnerability; empty when there is none.\n"
+        "- `title`: a short name for the vulnerability.\n"
+        "- `category`: the broad security property violated or the direct attacker-visible effect.\n"
+        "- `severity`: the grade on the severity rubric.\n"
+        "- `entrypoint`: the attacker-reachable operation where the exploit path starts.\n"
+        "- `file`, `line`: where the fix must be applied, inside source covered by a cited evidence id."
+    )
+    claim = (
+        "- `evidence`: the delivered source facts, cited by evidence id, that establish the missing or broken "
+        "control and the implementation flaw.\n"
+        "- `attack_path`: the concrete steps from attacker input to impact.\n"
+        "- `evidence_refs`: the evidence ids that establish the exploit path, including one whose source covers "
+        "`file` and `line`."
+    )
+    return "\n".join(part for part in (location, extension, claim) if part)
+
+
 REQUEST_FIELDS = (
     "- `evidence_requests`: unread published ids needed to decide exploitability; empty when none is needed.\n"
     "- `source_queries`: searches needed to decide exploitability; empty when none is needed or source "

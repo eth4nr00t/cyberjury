@@ -7,23 +7,20 @@ from pathlib import Path
 
 import pytest
 
-from cyberjury.review.storage import facts_cache_key_from_snapshot
 from cyberjury.sources.snapshot import SourceSnapshot, SourceSnapshotError, source_snapshot_files
+from tests.support import git
 
 
 def _scope(root: Path) -> tuple[str, ...]:
     return tuple(sorted(path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()))
 
 
-def test_snapshot_id_is_stable_and_round_trips(tmp_path):
+def test_snapshot_id_is_stable(tmp_path):
     (tmp_path / "a.py").write_text("a = 1\n", encoding="utf-8")
     (tmp_path / "b.ts").write_text("export const b = 2\n", encoding="utf-8")
 
     snapshots = [SourceSnapshot.capture(tmp_path, _scope(tmp_path)) for _ in range(3)]
-    restored = SourceSnapshot.from_dict(snapshots[0].to_dict(), root=tmp_path)
-
     assert len({snapshot.snapshot_id for snapshot in snapshots}) == 1
-    assert restored.to_dict() == snapshots[0].to_dict()
 
 
 @pytest.mark.parametrize("change", ["modify", "delete", "add", "rename", "executable"])
@@ -73,18 +70,48 @@ def test_snapshot_records_internal_symlink_identity_and_rejects_external_target(
         ("../outside.py",),
         ("/absolute.py",),
         ("a.py", "a.py"),
-        ("A.py", "a.py"),
         ("dir/./a.py",),
         ("dir\\a.py",),
-        ("CON.py",),
-        ("dir/a:b.py",),
-        ("trailing.",),
-        ("Parent", "parent/child.py"),
     ],
 )
-def test_snapshot_rejects_unsafe_duplicate_or_nonportable_paths(tmp_path, files):
+def test_snapshot_rejects_unsafe_or_duplicate_paths(tmp_path, files):
     with pytest.raises(SourceSnapshotError):
         SourceSnapshot.capture(tmp_path, files)
+
+
+def test_snapshot_accepts_names_that_are_only_unportable_to_other_filesystems(tmp_path):
+    names = ("drivers/aux.c", "include/con.h", "README", "readme", "notes.", "a:b.txt")
+    for name in names:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(name, encoding="utf-8")
+
+    snapshot = SourceSnapshot.capture(tmp_path, source_snapshot_files(tmp_path))
+
+    assert snapshot.files == tuple(sorted(names))
+
+
+def test_git_work_tree_snapshot_lists_tracked_and_unignored_files_without_walking_ignored_trees(tmp_path):
+    git(tmp_path, "init", "--quiet")
+    (tmp_path / ".gitignore").write_text(".venv/\nbuild.log\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text("tracked\n", encoding="utf-8")
+    (tmp_path / "deleted.py").write_text("deleted\n", encoding="utf-8")
+    git(tmp_path, "add", ".")
+    (tmp_path / "deleted.py").unlink()
+    (tmp_path / "new.py").write_text("untracked\n", encoding="utf-8")
+    (tmp_path / "build.log").write_text("ignored\n", encoding="utf-8")
+    venv = tmp_path / ".venv" / "lib"
+    venv.mkdir(parents=True)
+    (tmp_path / ".venv" / "lib64").symlink_to("lib", target_is_directory=True)
+    (venv / "site.py").write_text("ignored\n", encoding="utf-8")
+
+    files = source_snapshot_files(tmp_path)
+    snapshot = SourceSnapshot.capture(tmp_path, files, scope_provider=lambda: source_snapshot_files(tmp_path))
+
+    assert files == (".gitignore", "app.py", "new.py")
+    assert snapshot.matches()
+    (tmp_path / "later.py").write_text("added\n", encoding="utf-8")
+    assert not snapshot.matches()
 
 
 def test_snapshot_rejects_unsupported_file_type(tmp_path):
@@ -93,27 +120,6 @@ def test_snapshot_rejects_unsupported_file_type(tmp_path):
 
     with pytest.raises(SourceSnapshotError, match="regular file"):
         SourceSnapshot.capture(tmp_path, ("events.pipe",))
-
-
-def test_profile_and_backend_change_facts_key_but_not_snapshot_id(tmp_path):
-    (tmp_path / "app.py").write_text("value = 1\n")
-    snapshot = SourceSnapshot.capture(tmp_path, ("app.py",))
-
-    first = facts_cache_key_from_snapshot(
-        snapshot.snapshot_id,
-        "web",
-        profile_content_snapshot_id="1" * 64,
-        backend_identity="backend-one",
-    )
-    second = facts_cache_key_from_snapshot(
-        snapshot.snapshot_id,
-        "other",
-        profile_content_snapshot_id="2" * 64,
-        backend_identity="backend-two",
-    )
-
-    assert first != second
-    assert SourceSnapshot.capture(tmp_path, ("app.py",)).snapshot_id == snapshot.snapshot_id
 
 
 def test_snapshot_policy_is_profile_independent_and_includes_all_source_inputs(tmp_path):
@@ -127,26 +133,13 @@ def test_snapshot_policy_is_profile_independent_and_includes_all_source_inputs(t
     (tmp_path / "node_modules" / "noise.js").write_text("generated\n")
     files = source_snapshot_files(tmp_path)
     snapshot = SourceSnapshot.capture(tmp_path, files)
-    before = facts_cache_key_from_snapshot(
-        snapshot.snapshot_id,
-        "other",
-        profile_content_snapshot_id="1" * 64,
-        backend_identity="backend-two",
-    )
     (tmp_path / "lib" / "dependency.py").write_text("class Dependency:\n    changed = 1\n")
     changed = SourceSnapshot.capture(tmp_path, source_snapshot_files(tmp_path))
-    after = facts_cache_key_from_snapshot(
-        changed.snapshot_id,
-        "other",
-        profile_content_snapshot_id="1" * 64,
-        backend_identity="backend-two",
-    )
 
     assert "lib/dependency.py" in files
     assert "dependencies/math.py" in files
     assert "node_modules/noise.js" in files
     assert changed.snapshot_id != snapshot.snapshot_id
-    assert after != before
 
 
 def test_snapshot_fails_with_the_unreadable_source_path(monkeypatch, tmp_path):

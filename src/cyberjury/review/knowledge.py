@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from cyberjury.review.contract import SECURITY_KERNEL_FILE, SEVERITY_RUBRIC_FILE
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -20,11 +21,6 @@ class ReviewBrief:
             raise ValueError("security kernel must be nonempty")
 
     @property
-    def label(self) -> str:
-        """Name the shared prompt content."""
-        return "security kernel"
-
-    @property
     def content_sha256(self) -> str:
         """Identify the exact prompt content."""
         return hashlib.sha256(self.render().encode("utf-8")).hexdigest()
@@ -33,14 +29,8 @@ class ReviewBrief:
         """Give every judgment the complete, compact kernel."""
         return f"# Security Reasoning Kernel\n{self.kernel}"
 
-    def canonicalize_category(self, category: str) -> str:
-        """Normalize a model supplied class without treating qualifiers as new classes."""
-        raw = category.strip()
-        broad_class = re.sub(r"(?:[\s_-]*\([^()]*\))+$", "", raw).strip() or raw
-        return broad_class.lower().replace(" ", "-").replace("_", "-")
 
-
-def load_review_brief(*, kernel_file: str | Path) -> ReviewBrief:
+def load_review_brief(*, kernel_file: str | Path = SECURITY_KERNEL_FILE) -> ReviewBrief:
     """Load the only security knowledge given to a model judgment."""
     source = Path(kernel_file)
     try:
@@ -48,3 +38,8 @@ def load_review_brief(*, kernel_file: str | Path) -> ReviewBrief:
     except OSError as exc:
         raise ValueError(f"security kernel file {source} could not be loaded: {exc}") from exc
     return ReviewBrief(kernel=kernel)
+
+
+def load_severity_rubric() -> str:
+    """Load the severity rubric shared by every finder judgment."""
+    return SEVERITY_RUBRIC_FILE.read_text(encoding="utf-8")

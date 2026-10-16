@@ -3,17 +3,31 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
 
 from cyberjury.canonical import canonical_sha256
+from cyberjury.finding import Finding
 from cyberjury.review.engine import ReviewOutcome
 from cyberjury.severity import SEVERITIES, index
 
-FINDINGS_SCHEMA = "cyberjury.findings/v4"
-OUTCOME_SCHEMA = "cyberjury.review-outcome/v2"
-RESULT_SCHEMA = "cyberjury.review-result/v1"
+FINDINGS_SCHEMA = "cyberjury.findings/v5"
+OUTCOME_SCHEMA = "cyberjury.review-outcome/v4"
+RESULT_SCHEMA = "cyberjury.review-result/v2"
+SKIP_REASONS = {
+    "noise": "excluded by the noise rules",
+    "binary": "binary file",
+    "not_utf8": "not UTF-8 text",
+    "empty_file": "empty file",
+    "rename_only": "rename only",
+    "copy_only": "copy only",
+    "mode_only": "mode change only",
+    "empty_new_file": "empty new file",
+    "empty_deleted_file": "empty deleted file",
+    "no_hunk": "file section without a hunk",
+}
 
 
 def _digest(value: object, label: str) -> str:
@@ -34,6 +48,37 @@ def _source_path(value: object) -> str:
     if path.is_absolute() or path.as_posix() != value or ".." in path.parts or "." in path.parts:
         raise ValueError("finding file must be a safe relative POSIX path")
     return value
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SkippedFile:
+    """One target file a review did not send to model review, and why."""
+
+    path: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        """Require a named path and a known skip reason."""
+        if not isinstance(self.path, str) or not self.path:
+            raise ValueError("skipped file path must be a nonempty string")
+        if self.reason not in SKIP_REASONS:
+            raise ValueError("skipped file reason is invalid")
+
+    @property
+    def description(self) -> str:
+        """Return the operator wording of the skip reason."""
+        return SKIP_REASONS[self.reason]
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the strict JSON representation."""
+        return {"path": self.path, "reason": self.reason}
+
+    @classmethod
+    def from_dict(cls, value: object) -> SkippedFile:
+        """Parse one strict skipped file record."""
+        if not isinstance(value, dict) or set(value) != {"path", "reason"}:
+            raise ValueError("skipped file record has an invalid shape")
+        return cls(path=value["path"], reason=value["reason"])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -69,15 +114,14 @@ class FindingRecord:
     """One target neutral logical finding ready for output."""
 
     id: str
+    title: str
     category: str
     severity: str
     file: str
     line: int
     entrypoint: str
-    summary: str
     evidence: str
     attack_path: str
-    recommendation: str
     status: Literal["candidate", "confirmed"]
     evidence_refs: tuple[str, ...]
     supporting_reviewers: tuple[str, ...]
@@ -87,18 +131,11 @@ class FindingRecord:
         """Reject findings that cannot be reported or identified."""
         if not isinstance(self.id, str) or re.fullmatch(r"candidate-[0-9a-f]{20}", self.id) is None:
             raise ValueError("finding id must use the candidate namespace")
-        for name in (
-            "category",
-            "entrypoint",
-            "summary",
-            "evidence",
-            "attack_path",
-            "recommendation",
-        ):
+        for name in ("title", "category", "entrypoint", "evidence", "attack_path"):
             if not isinstance(getattr(self, name), str):
                 raise ValueError(f"finding {name} must be a string")
-        if not self.category or not self.summary:
-            raise ValueError("finding category and summary must be nonempty")
+        if not self.title or not self.category:
+            raise ValueError("finding title and category must be nonempty")
         if self.severity not in SEVERITIES:
             raise ValueError("finding severity is invalid")
         _source_path(self.file)
@@ -123,15 +160,14 @@ class FindingRecord:
         """Return the strict JSON representation."""
         return {
             "id": self.id,
+            "title": self.title,
             "category": self.category,
             "severity": self.severity,
             "file": self.file,
             "line": self.line,
             "entrypoint": self.entrypoint,
-            "summary": self.summary,
             "evidence": self.evidence,
             "attack_path": self.attack_path,
-            "recommendation": self.recommendation,
             "status": self.status,
             "evidence_refs": list(self.evidence_refs),
             "supporting_reviewers": list(self.supporting_reviewers),
@@ -143,15 +179,14 @@ class FindingRecord:
         """Parse one strict logical finding."""
         fields = {
             "id",
+            "title",
             "category",
             "severity",
             "file",
             "line",
             "entrypoint",
-            "summary",
             "evidence",
             "attack_path",
-            "recommendation",
             "status",
             "evidence_refs",
             "supporting_reviewers",
@@ -247,6 +282,38 @@ class FindingsArtifact:
         )
 
 
+def findings_artifact(findings: Iterable[Finding], verified_ids: Collection[str]) -> FindingsArtifact:
+    """Map review findings into the shared machine output contract."""
+    return FindingsArtifact.create(
+        tuple(
+            FindingRecord(
+                id=finding.candidate_id,
+                title=finding.title,
+                category=finding.category,
+                severity=finding.severity,
+                file=finding.file,
+                line=finding.line,
+                entrypoint=finding.entrypoint,
+                evidence=finding.evidence,
+                attack_path=finding.attack_path,
+                status="confirmed" if finding.candidate_id in verified_ids else "candidate",
+                evidence_refs=tuple(dict.fromkeys(finding.evidence_refs)),
+                supporting_reviewers=tuple(sorted(set(finding.found_by))),
+                change_anchor=(
+                    ChangeLocation(
+                        file=finding.change_anchor.file,
+                        line=finding.change_anchor.line,
+                        side=finding.change_anchor.side,
+                    )
+                    if finding.change_anchor is not None
+                    else None
+                ),
+            )
+            for finding in findings
+        )
+    )
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OutcomeArtifact:
     """The strict target neutral completion state for one review result."""
@@ -254,7 +321,6 @@ class OutcomeArtifact:
     target: Literal["diff", "repository"]
     source_revision: str
     findings_sha256: str
-    status: Literal["complete", "incomplete"]
     complete: bool
     errors: int
     failures: int
@@ -263,6 +329,7 @@ class OutcomeArtifact:
     grounding_unresolved: int
     limitations: int
     failure_reason: str
+    skipped_files: tuple[SkippedFile, ...]
     content_sha256: str
     schema: str = OUTCOME_SCHEMA
 
@@ -272,8 +339,8 @@ class OutcomeArtifact:
             raise ValueError("review outcome schema or target is invalid")
         _digest(self.source_revision, "review outcome source revision")
         _digest(self.findings_sha256, "review outcome findings hash")
-        if self.status not in {"complete", "incomplete"} or not isinstance(self.complete, bool):
-            raise ValueError("review outcome status is invalid")
+        if not isinstance(self.complete, bool):
+            raise ValueError("review outcome completion is invalid")
         for name in (
             "errors",
             "failures",
@@ -287,6 +354,10 @@ class OutcomeArtifact:
                 raise ValueError(f"review outcome {name} must be a nonnegative integer")
         if not isinstance(self.failure_reason, str):
             raise ValueError("review outcome failure reason must be a string")
+        if not isinstance(self.skipped_files, tuple) or not all(
+            isinstance(item, SkippedFile) for item in self.skipped_files
+        ):
+            raise ValueError("review outcome skipped files are invalid")
         expected_complete = not any(
             (
                 self.errors,
@@ -298,7 +369,7 @@ class OutcomeArtifact:
                 self.failure_reason,
             )
         )
-        if self.complete != expected_complete or self.status != ("complete" if self.complete else "incomplete"):
+        if self.complete != expected_complete:
             raise ValueError("review outcome completion contradicts its counters")
         if self.content_sha256 != canonical_sha256(self.semantic_dict()):
             raise ValueError("review outcome content hash does not match its artifact")
@@ -311,13 +382,13 @@ class OutcomeArtifact:
         source_revision: str,
         findings: FindingsArtifact,
         outcome: ReviewOutcome[T],
+        skipped_files: tuple[SkippedFile, ...] = (),
     ) -> OutcomeArtifact:
         """Create the target neutral terminal state from a review outcome."""
-        semantic = {
+        fields = {
             "target": target,
             "source_revision": source_revision,
             "findings_sha256": findings.content_sha256,
-            "status": "complete" if outcome.complete else "incomplete",
             "complete": outcome.complete,
             "errors": outcome.errors,
             "failures": len(outcome.failures),
@@ -327,7 +398,8 @@ class OutcomeArtifact:
             "limitations": len(outcome.grounding.limitations),
             "failure_reason": outcome.failure_reason,
         }
-        return cls(**semantic, content_sha256=canonical_sha256(semantic))
+        semantic = fields | {"skipped_files": [item.to_dict() for item in skipped_files]}
+        return cls(**fields, skipped_files=tuple(skipped_files), content_sha256=canonical_sha256(semantic))
 
     def semantic_dict(self) -> dict[str, object]:
         """Return the content covered by the artifact hash."""
@@ -335,7 +407,6 @@ class OutcomeArtifact:
             "target": self.target,
             "source_revision": self.source_revision,
             "findings_sha256": self.findings_sha256,
-            "status": self.status,
             "complete": self.complete,
             "errors": self.errors,
             "failures": self.failures,
@@ -344,6 +415,7 @@ class OutcomeArtifact:
             "grounding_unresolved": self.grounding_unresolved,
             "limitations": self.limitations,
             "failure_reason": self.failure_reason,
+            "skipped_files": [item.to_dict() for item in self.skipped_files],
         }
 
     def to_dict(self) -> dict[str, object]:
@@ -358,7 +430,6 @@ class OutcomeArtifact:
             "target",
             "source_revision",
             "findings_sha256",
-            "status",
             "complete",
             "errors",
             "failures",
@@ -367,11 +438,16 @@ class OutcomeArtifact:
             "grounding_unresolved",
             "limitations",
             "failure_reason",
+            "skipped_files",
             "content_sha256",
         }
-        if not isinstance(value, dict) or set(value) != fields:
+        if not isinstance(value, dict) or set(value) != fields or not isinstance(value["skipped_files"], list):
             raise ValueError("review outcome artifact has an invalid shape")
-        return cls(**{key: item for key, item in value.items() if key != "schema"}, schema=value["schema"])
+        return cls(
+            **{key: item for key, item in value.items() if key not in {"schema", "skipped_files"}},
+            skipped_files=tuple(SkippedFile.from_dict(item) for item in value["skipped_files"]),
+            schema=value["schema"],
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

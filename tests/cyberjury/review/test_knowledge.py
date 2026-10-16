@@ -20,12 +20,3 @@ def test_brief_rejects_missing_or_empty_kernel(tmp_path):
         load_review_brief(kernel_file=tmp_path / "missing.md")
     with pytest.raises(ValueError, match="nonempty"):
         ReviewBrief(kernel=" ")
-
-
-def test_category_qualifiers_do_not_create_new_vulnerability_classes():
-    brief = ReviewBrief(kernel="Review the evidence")
-
-    assert brief.canonicalize_category("Authorization Bypass (IDOR)") == "authorization-bypass"
-    assert brief.canonicalize_category("authorization-bypass-(ownership check)") == "authorization-bypass"
-    assert brief.canonicalize_category("race-condition") == "race-condition"
-    assert brief.canonicalize_category("(unknown)") == "(unknown)"

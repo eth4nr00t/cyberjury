@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from cyberjury.providers.base import Message, ResponseSchema, Usage
-from cyberjury.providers.openai import OpenAIProvider, _chat_usage, _responses_usage, _wire_api_for_model
+from cyberjury.providers.openai import OpenAIProvider, _chat_usage, _responses_usage
 
 
 class _FakeClient:
@@ -25,7 +25,7 @@ class _FakeClient:
 
 def test_prepends_system_and_maps_messages():
     client = _FakeClient(reply="hello", model="gpt-4o-mini")
-    result = OpenAIProvider(client=client).complete(
+    result = OpenAIProvider(client=client, wire_api="chat").complete(
         system="be careful",
         messages=[Message(role="user", content="hi")],
         model="gpt-4o",
@@ -42,7 +42,7 @@ def test_prepends_system_and_maps_messages():
 
 def test_omits_system_message_when_empty():
     client = _FakeClient()
-    OpenAIProvider(client=client).complete(
+    OpenAIProvider(client=client, wire_api="chat").complete(
         system="", messages=[Message(role="user", content="x")], model="m", max_tokens=8
     )
     assert client.create_kwargs["messages"] == [{"role": "user", "content": "x"}]
@@ -58,7 +58,7 @@ def test_sdk_exception_propagates():
             raise RuntimeError("rate limited")
 
     with pytest.raises(RuntimeError, match="rate limited"):
-        OpenAIProvider(client=_Boom()).complete(
+        OpenAIProvider(client=_Boom(), wire_api="chat").complete(
             system="s", messages=[Message(role="user", content="x")], model="m", max_tokens=8
         )
 
@@ -135,20 +135,6 @@ def test_usage_defaults_to_zero_when_unreported():
     assert _responses_usage(SimpleNamespace(model="m")) == Usage()
 
 
-@pytest.mark.parametrize("model", ["gpt-5.6", "gpt-5", "o1-preview", "o3-mini", "o4-mini"])
-def test_unset_wire_api_selects_responses_for_reasoning_models(model):
-    assert _wire_api_for_model(None, model) == "responses"
-
-
-def test_unset_wire_api_selects_chat_for_non_reasoning_models():
-    assert _wire_api_for_model(None, "gpt-4o") == "chat"
-
-
-def test_explicit_wire_api_overrides_model_name():
-    assert _wire_api_for_model("chat", "gpt-5.6") == "chat"
-    assert _wire_api_for_model("responses", "gpt-4o") == "responses"
-
-
 def _sent(content: str, *, wire: str = "chat", **kw) -> dict:
     client = _FakeResponsesClient() if wire == "responses" else _FakeClient()
     OpenAIProvider(client=client, wire_api=wire).complete(
@@ -167,7 +153,7 @@ def test_a_cached_prefix_becomes_a_stable_routing_key_on_both_wires():
 
 
 def test_the_routing_key_covers_the_system_prompt():
-    first = OpenAIProvider(client=(client := _FakeClient()))
+    first = OpenAIProvider(client=(client := _FakeClient()), wire_api="chat")
     first.complete(
         system="other",
         messages=[Message(role="user", content="STABLE")],
@@ -215,7 +201,7 @@ def test_empty_content_yields_empty_text():
         def _create(self, **kwargs):
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=None))])
 
-    result = OpenAIProvider(client=_Blank()).complete(
+    result = OpenAIProvider(client=_Blank(), wire_api="chat").complete(
         system="s", messages=[Message(role="user", content="x")], model="m", max_tokens=8
     )
     assert result.text == ""
@@ -240,40 +226,23 @@ class _FakeResponsesClient:
 
 class _DualWireClient:
     def __init__(self):
-        self.chat_kwargs = None
-        self.responses_kwargs = None
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._chat))
         self.responses = SimpleNamespace(create=self._responses)
 
-    def _chat(self, **kwargs):
-        self.chat_kwargs = kwargs
+    def _chat(self, **_kwargs):
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="chat"))])
 
-    def _responses(self, **kwargs):
-        self.responses_kwargs = kwargs
+    def _responses(self, **_kwargs):
         return SimpleNamespace(output_text="responses")
 
 
-def test_unset_wire_api_routes_reasoning_models_to_responses():
-    """Auto wire dispatch sends reasoning models through the Responses client."""
+@pytest.mark.parametrize(("wire_api", "expected"), [(None, "responses"), ("responses", "responses"), ("chat", "chat")])
+def test_responses_is_the_default_wire_and_chat_is_explicit(wire_api, expected):
     client = _DualWireClient()
-    result = OpenAIProvider(client=client).complete(
-        system="s", messages=[Message(role="user", content="c")], model="gpt-5.6", max_tokens=1024
+    result = OpenAIProvider(client=client, wire_api=wire_api).complete(
+        system="s", messages=[Message(role="user", content="c")], model="gpt-6.1-sol", max_tokens=64
     )
-    assert result.text == "responses"
-    assert client.responses_kwargs is not None
-    assert client.chat_kwargs is None
-
-
-def test_unset_wire_api_routes_non_reasoning_models_to_chat():
-    """Auto wire dispatch leaves non reasoning models on the Chat client."""
-    client = _DualWireClient()
-    result = OpenAIProvider(client=client).complete(
-        system="s", messages=[Message(role="user", content="c")], model="gpt-4o", max_tokens=64
-    )
-    assert result.text == "chat"
-    assert client.chat_kwargs is not None
-    assert client.responses_kwargs is None
+    assert result.text == expected
 
 
 def test_responses_wire_api_maps_system_to_instructions_and_returns_output_text():

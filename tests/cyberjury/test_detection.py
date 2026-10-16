@@ -1,81 +1,23 @@
 """Detection config data drives source, noise, and test path classification."""
 
-import pytest
-
 from cyberjury.detection import load_detection
-from cyberjury.profiles.registry import available_profiles, default_profile, get_profile
 
 
-def _web_detection():
-    return load_detection(default_profile().paths.detection_file)
-
-
-def test_detection_config_loads_with_content():
-    d = _web_detection()
-    assert ".py" in d.source_extensions
-    assert ".go" in d.source_extensions
+def test_detection_skips_dependency_directories():
+    d = load_detection()
     assert ".venv" in d.skip_dirs
     assert "node_modules" in d.skip_dirs
 
 
-@pytest.mark.parametrize("profile", available_profiles())
-def test_profile_detection_configs_are_valid(profile):
-    d = load_detection(get_profile(profile).paths.detection_file)
-    assert d.source_extensions
-    assert d.skip_dirs
-
-
-def test_detection_config_rejects_unknown_keys(tmp_path):
-    path = tmp_path / "detection.yaml"
-    path.write_text(_MINIMAL_DETECTION + "source_extension: ['.py']\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="unknown detection keys"):
-        load_detection(path)
-
-
-def test_detection_config_rejects_wrong_field_types(tmp_path):
-    path = tmp_path / "detection.yaml"
-    path.write_text(
-        _MINIMAL_DETECTION.replace("source_extensions: ['.py']", "source_extensions: '.py'"), encoding="utf-8"
-    )
-    with pytest.raises(ValueError, match="source_extensions"):
-        load_detection(path)
-
-
-def test_detection_config_normalizes_extensions(tmp_path):
-    path = tmp_path / "detection.yaml"
-    path.write_text(_MINIMAL_DETECTION.replace("source_extensions: ['.py']", "source_extensions: ['.PY']"))
-    assert load_detection(path).source_extensions == frozenset({".py"})
-
-
-def test_detection_config_rejects_missing_core_fields(tmp_path):
-    path = tmp_path / "detection.yaml"
-    path.write_text(_MINIMAL_DETECTION.replace("lockfiles: []\n", ""), encoding="utf-8")
-    with pytest.raises(ValueError, match="lockfiles"):
-        load_detection(path)
-
-
-def test_detection_mapping_is_immutable_and_reloads_changed_content(tmp_path):
-    from cyberjury.detection import load_detection_mapping
-
-    path = tmp_path / "detection.yaml"
-    path.write_text(_MINIMAL_DETECTION)
-    mapping = load_detection_mapping(path)
-    with pytest.raises(TypeError):
-        mapping["source_extensions"] = (".go",)
-
-    path.write_text(_MINIMAL_DETECTION.replace("['.py']", "['.go']", 1))
-    assert load_detection(path).source_extensions == frozenset({".go"})
-
-
 def test_is_test_path_by_directory_segment():
-    d = _web_detection()
+    d = load_detection()
     assert d.is_test_path("app/tests/views.py")
     assert d.is_test_path("spec/billing.js")
     assert not d.is_test_path("app/views.py")
 
 
 def test_is_test_path_by_naming_convention_across_ecosystems():
-    d = _web_detection()
+    d = load_detection()
     assert d.is_test_path("app/test_views.py")
     assert d.is_test_path("app/views_test.go")
     assert d.is_test_path("app/billing.spec.js")
@@ -83,13 +25,13 @@ def test_is_test_path_by_naming_convention_across_ecosystems():
 
 
 def test_is_test_path_keeps_production_sampleish_names():
-    d = _web_detection()
+    d = load_detection()
     for f in ("app/sample_rate.py", "app/mock_billing.py", "app/example_config.py", "app/latest.py"):
         assert not d.is_test_path(f), f
 
 
 def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
-    d = _web_detection()
+    d = load_detection()
     for f in (
         "README.md",
         "docs/guide.rst",
@@ -112,7 +54,7 @@ def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
 
 
 def test_is_noise_path_keeps_source_and_security_relevant_non_source():
-    d = _web_detection()
+    d = load_detection()
     for f in (
         "app/views.py",
         "src/main.go",
@@ -123,13 +65,3 @@ def test_is_noise_path_keeps_source_and_security_relevant_non_source():
         "config/settings.yaml",
     ):
         assert not d.is_noise_path(f), f
-
-
-_MINIMAL_DETECTION = """\
-skip_dirs: []
-source_extensions: ['.py']
-test_dirs: []
-test_name_patterns: []
-doc_extensions: ['.md']
-lockfiles: []
-"""

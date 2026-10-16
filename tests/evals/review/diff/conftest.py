@@ -1,99 +1,60 @@
-"""Diff evaluation fixtures provide product result and target builders."""
+"""Diff evaluation fixtures run the product review command against a scripted model."""
 
-from contextlib import contextmanager
+import json
+import os
 from types import SimpleNamespace
 
 import pytest
 
-from evals.review.diff import execution
+from cyberjury import cli as climod
+from cyberjury.providers import configuration as configuration_module
+from cyberjury.providers.mock import MockProvider
 
 
-@pytest.fixture(autouse=True)
-def repository_target_for_direct_cases(monkeypatch, tmp_path):
-    """Give isolated direct cases the repository boundary required by production."""
-    original = execution.source_root
-
-    @contextmanager
-    def source_root(target):
-        if target:
-            with original(target) as root:
-                yield root
-            return
-        yield tmp_path
-
-    monkeypatch.setattr(execution, "source_root", source_root)
+def _finder_reply(findings: list[dict]) -> str:
+    return json.dumps({"findings": findings, "evidence_requests": [], "source_queries": []})
 
 
 @pytest.fixture
-def diff_result():
-    def make(findings=None, *, degraded=False, failures=None, errors=0, incomplete=None, failure_reason=""):
-        outcome = SimpleNamespace(
-            findings=list(findings or []),
-            failures=list(failures or []),
-            degraded=degraded,
-            errors=errors,
-            incomplete=list(incomplete or []),
-            failure_reason=failure_reason,
-        )
-        return SimpleNamespace(result=SimpleNamespace(outcome=outcome))
+def scripted_model(monkeypatch):
+    """Serve every product seat from one scripted provider, with no environment file or real key."""
+    for name in list(os.environ):
+        if name.startswith(("CYBERJURY_", "ANTHROPIC_", "OPENAI_")):
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(climod, "load_env_file", lambda: [])
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
 
-    return make
+    def install(findings=(), *, error: BaseException | None = None) -> MockProvider:
+        def respond(system, _messages):
+            if error is not None:
+                raise error
+            if "skeptical security reviewer" in system:
+                return json.dumps(
+                    {"real": True, "reason": "no shown fact refutes it", "control_file": "", "control_line": 0}
+                )
+            return _finder_reply([dict(item) for item in findings])
 
+        provider = MockProvider(responder=respond)
+        monkeypatch.setattr(configuration_module, "make_provider", lambda *args, **kwargs: provider)
+        return provider
 
-@pytest.fixture
-def provider_configuration():
-    def make(*, finder_model="finder-model", skeptic_model=None, confirmer_model=None):
-        from cyberjury.providers.configuration import ProviderConfiguration, ProviderSeat
-
-        finder = ProviderSeat(provider="openai", model=finder_model, api_key="key")
-        return ProviderConfiguration(
-            base=finder,
-            finder=finder,
-            skeptic=ProviderSeat(provider="openai", model=skeptic_model or finder_model, api_key="key"),
-            confirmer=ProviderSeat(provider="openai", model=confirmer_model or finder_model, api_key="key"),
-            retries=0,
-            timeout=10,
-        )
-
-    return make
+    return install
 
 
 @pytest.fixture
-def diff_options(provider_configuration):
-    def make(*, finder_model="m", concurrency=8):
-        from cyberjury.providers.metering import UsageMeter
-        from evals.review.diff import DiffRunOptions
-
-        return DiffRunOptions(
-            configuration=provider_configuration(finder_model=finder_model),
-            meter=UsageMeter(),
-            concurrency=concurrency,
-        )
-
-    return make
-
-
-@pytest.fixture
-def diff_case(monkeypatch):
-    """Build keyed cases whose patch text is served without materializing a git target."""
-    from evals.benchmarks.cases import DiffCase
-    from evals.benchmarks.contract import AnswerKey, ExpectedLocation, KeyCheck
-
-    diffs: dict[str, str] = {}
-    monkeypatch.setattr(execution, "diff_text", lambda case: diffs[case.name])
-
-    def make(name, diff="diff", *, expectation="findings", checks=None, **fields):
-        diffs[name] = diff
-        if checks is None:
-            checks = (
-                KeyCheck(
-                    id=f"{name}-check",
-                    expectation=expectation,
-                    applies_to=(name,),
-                    locations=(ExpectedLocation(file="app.py", line=1),),
-                ),
-            )
-        key = AnswerKey(benchmark_id=name, checks=tuple(checks))
-        return DiffCase(name=name, answer_key=key, expectation=expectation, **fields)
-
-    return make
+def owner_finding():
+    """One complete Finder finding on the benchmark diff's changed line."""
+    return SimpleNamespace(
+        reply={
+            "title": "Create saves without an owner",
+            "category": "missing-authorization",
+            "severity": "HIGH",
+            "entrypoint": "POST /create",
+            "file": "views.py",
+            "line": 2,
+            "change_anchor": {"file": "views.py", "line": 2, "side": "new"},
+            "evidence": "views.py:2 saves with owner=None",
+            "attack_path": "anyone creates an unowned record",
+            "evidence_refs": ["seed"],
+        }
+    )

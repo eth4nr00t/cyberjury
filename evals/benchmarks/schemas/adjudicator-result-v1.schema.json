@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/eth4nr00t/cyberjury/main/evals/benchmarks/schemas/adjudicator-result-v1.schema.json",
+  "title": "Adjudicator Result Schema",
+  "description": "The version 1 schema for the verdicts an adjudicator writes for one adjudication packet.",
+  "type": "array",
+  "items": {"$ref": "#/$defs/case"},
+  "$defs": {
+    "text": {"type": "string", "pattern": "\\S"},
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case", "records"],
+      "properties": {
+        "case": {"type": "string", "minLength": 1},
+        "records": {"type": "array", "items": {"$ref": "#/$defs/record"}},
+        "key_notes": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "verdict", "canonical", "check_ids", "evidence", "reason", "proof_gap"],
+      "properties": {
+        "label": {"type": "string", "minLength": 1},
+        "verdict": {"enum": ["supported", "not_actionable", "duplicate", "needs_review"]},
+        "canonical": {"type": ["string", "null"]},
+        "check_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["file", "line"],
+            "properties": {
+              "file": {"type": "string", "minLength": 1},
+              "line": {"type": "integer", "minimum": 1}
+            }
+          }
+        },
+        "reason": {"$ref": "#/$defs/text"},
+        "proof_gap": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

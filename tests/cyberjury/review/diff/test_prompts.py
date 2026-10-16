@@ -1,7 +1,8 @@
 """Diff prompts keep the review contract in the system prompt and evidence in the user message."""
 
-from cyberjury.review.diff.prompts import DIFF_FINDING_SCHEMA, diff_finder_system, diff_prompt_plan
+from cyberjury.review.diff.prompts import DIFF_FINDING_SCHEMA, diff_finder_system, diff_seed
 from cyberjury.review.navigation import navigation_instructions
+from cyberjury.review.repository.prompts import REPOSITORY_FINDING_SCHEMA, repository_finder_system
 
 _DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
@@ -40,20 +41,27 @@ def test_system_omits_navigation_only_when_navigation_is_unavailable():
     assert "# Source Navigation" not in _system(navigation=False)
 
 
-def test_user_message_keeps_evidence_before_the_changing_controls():
-    plan = diff_prompt_plan(_DIFF, context="def caller(): ...", catalog="Evidence catalog", followup="BUDGET")
+def test_diff_seed_keeps_embedded_markdown_fences_inside_the_numbered_diff():
+    seed = diff_seed("+++ b/app.py\n@@ -0,0 +1 @@\n+marker = '```'\n")
 
-    assert "SELECT * FROM u" in plan.stable_prefix
-    assert "Repository source:\n```\ndef caller(): ...\n```" in plan.stable_prefix
-    assert plan.stable_prefix.endswith("Evidence catalog\n\n")
-    assert plan.text == plan.stable_prefix + "BUDGET"
-    assert "change_anchor" not in plan.text
-    assert "KERNEL" not in plan.text
+    assert seed.startswith("Code under review, cited as `seed` (numbered unified diff):\n~~~diff\n")
+    assert seed.endswith("marker = '```'\n~~~")
 
 
-def test_diff_prompt_keeps_embedded_markdown_fences_inside_source_blocks():
-    diff = "+++ b/app.py\n@@ -0,0 +1 @@\n+marker = '```'\n"
-    prompt = diff_prompt_plan(diff, context="source = '~~~'").text
+def test_diff_and_repository_share_one_finding_contract_except_the_change_anchor():
+    repository = repository_finder_system(
+        review_brief="# Security Reasoning Kernel\nKERNEL-X",
+        severity_rubric="# Severity Rubric\nRUBRIC-X",
+        navigation=navigation_instructions(),
+    )
+    diff_fields = _system().split("# Output Fields")[1]
+    repository_fields = repository.split("# Output Fields")[1]
 
-    assert prompt.startswith("Code change (unified diff):\n~~~diff\n")
-    assert "Repository source:\n```\nsource = '~~~'\n```" in prompt
+    assert [line for line in diff_fields.splitlines() if "`change_anchor`" not in line] == (
+        repository_fields.splitlines()
+    )
+    assert [name for name in DIFF_FINDING_SCHEMA["properties"] if name != "change_anchor"] == list(
+        REPOSITORY_FINDING_SCHEMA["properties"]
+    )
+    for removed in ("recommendation", "confidence", "symbol", "description", "exploit_scenario", "endpoint"):
+        assert f"`{removed}`" not in _system() + repository

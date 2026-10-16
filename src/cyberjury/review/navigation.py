@@ -2,27 +2,27 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, Protocol
 
-from cyberjury.numbering import numbered_source
+from cyberjury.canonical import text_sha256
+from cyberjury.numbering import split_lines
 from cyberjury.review.context import (
     EvidenceBudgetError,
     GroundingCoverage,
     SourceEvidence,
     SourceSpan,
     merge_grounding_coverage,
+    numbered_source_range,
+    source_id,
 )
-from cyberjury.review.definitions import (
-    DefinitionFragment,
-    FactsGraph,
-    definition_fragments,
-)
+from cyberjury.review.definitions import definitions_by_name
+from cyberjury.review.paths import contained_repository_path, normalized_location_path, safe_repository_path
+from cyberjury.review.prompts import fenced_source, inline_source, one_line_source
 from cyberjury.review.relationships import (
     AnalysisObservation,
     CallsiteEvidence,
@@ -37,14 +37,6 @@ _MAX_SEARCHABLE_FILE_BYTES = 2_000_000
 MAX_QUERIES_PER_BATCH = 8
 MAX_UNIQUE_QUERIES_PER_SESSION = 64
 _MAX_SOURCE_TARGET_CHARS = 24_000
-
-
-def source_query_limit_note() -> str:
-    """State the deterministic source query caps the model is held to."""
-    return (
-        f"Send at most {MAX_QUERIES_PER_BATCH} `source_queries` in one response and "
-        f"{MAX_UNIQUE_QUERIES_PER_SESSION} unique queries across this unit."
-    )
 
 
 class SourceNavigationError(RuntimeError):
@@ -96,7 +88,7 @@ class SourceTarget:
     end: int
     preview: str
     definition_id: str = ""
-    source_kind: Literal["production", "test", "documentation"] = "production"
+    source_kind: Literal["production", "documentation"] = "production"
 
     @classmethod
     def create(
@@ -108,13 +100,12 @@ class SourceTarget:
         end: int,
         preview: str,
         definition_id: str = "",
-        source_kind: Literal["production", "test", "documentation"] = "production",
+        source_kind: Literal["production", "documentation"] = "production",
     ) -> SourceTarget:
         """Build an opaque id from one exact repository source range."""
         identity = f"{file}:{name}:{start}:{end}"
-        digest = hashlib.sha256(identity.encode()).hexdigest()[:12]
         return cls(
-            id=f"src-{digest}",
+            id=source_id(identity),
             identity=identity,
             file=file,
             name=name,
@@ -140,53 +131,41 @@ class SourceNavigator:
     """Search verified source identities without inferring language bindings."""
 
     root: Path
-    definitions: tuple[DefinitionFragment, ...]
+    definitions: tuple[DefinitionEvidence, ...]
     files: tuple[str, ...]
     relationship_evidence: RelationshipEvidenceBundle = field(default_factory=RelationshipEvidenceBundle)
-    source_hashes: tuple[tuple[str, str], ...] = ()
-    test_files: frozenset[str] = frozenset()
     documentation_files: frozenset[str] = frozenset()
 
     @classmethod
-    def from_graph(
+    def from_facts(
         cls,
         root: str | Path,
-        graph: FactsGraph,
         *,
         source_files: Iterable[str] = (),
+        import_files: Iterable[str] = (),
         relationship_evidence: RelationshipEvidenceBundle | None = None,
-        test_files: Iterable[str] = (),
         documentation_files: Iterable[str] = (),
     ) -> SourceNavigator | None:
         """Build navigation from shared facts without adding resolver semantics."""
         base = Path(root).resolve()
-        fragments = definition_fragments(graph)
-        all_definitions = tuple(fragment for values in fragments.values() for fragment in values)
         relationships = relationship_evidence or RelationshipEvidenceBundle()
+        all_definitions = definitions_by_name(relationships.definitions)
         relationship_files = (
             *(definition.source.path for definition in relationships.definitions),
             *(callsite.source.path for callsite in relationships.callsites),
             *(source.path for source in relationships.sources),
         )
-        files = _graph_source_files(
+        files = _navigation_files(
             base,
-            graph,
-            all_definitions,
-            (*source_files, *relationship_files),
+            (
+                *(definition.source.path for definition in all_definitions),
+                *source_files,
+                *relationship_files,
+                *import_files,
+            ),
         )
         included = set(files)
-        definitions = tuple(fragment for fragment in all_definitions if fragment.file in included)
-        if not definitions and relationships.definitions:
-            definitions = tuple(
-                DefinitionFragment(
-                    definition.source.path,
-                    definition.name,
-                    definition.source.start,
-                    definition.source.end,
-                )
-                for definition in relationships.definitions
-                if definition.kind != "file" and definition.source.path in included
-            )
+        definitions = tuple(definition for definition in all_definitions if definition.source.path in included)
         if not definitions and not files and not relationships.definitions:
             return None
         return cls(
@@ -194,18 +173,12 @@ class SourceNavigator:
             definitions=definitions,
             files=files,
             relationship_evidence=relationships,
-            source_hashes=tuple((file, _source_hash(base, file)) for file in files),
-            test_files=frozenset(test_files),
             documentation_files=frozenset(documentation_files).intersection(included),
         )
 
     def session(self) -> SourceNavigationSession:
         """Create an isolated target catalog for one model judgment."""
         return SourceNavigationSession(self)
-
-    def source_operation_id(self, file: str, line: int | None) -> str:
-        """Map one source line to one unambiguous outer callsite identity."""
-        return self.session().source_operation_id(file, line)
 
 
 class SourceNavigationSession:
@@ -221,11 +194,6 @@ class SourceNavigationSession:
         self._relationship_definitions = {
             definition.id: definition for definition in navigator.relationship_evidence.definitions
         }
-        self._relationship_definitions_by_identity = {
-            identity: definition
-            for definition in navigator.relationship_evidence.definitions
-            for identity in self._definition_identities(definition)
-        }
         self._callsites = {callsite.id: callsite for callsite in navigator.relationship_evidence.callsites}
         self._call_relationships = {
             relationship.callsite_id: relationship
@@ -234,15 +202,34 @@ class SourceNavigationSession:
         self._structural_relationships = navigator.relationship_evidence.structural_relationships
         self._observations_by_callsite = self._group_callsite_observations(navigator.relationship_evidence.observations)
         self._discovered_definition_ids: set[str] = set()
-        self._source_hashes = dict(navigator.source_hashes)
         self._executed_query_keys: set[str] = set()
-        self._auto_read_ids: set[str] = set()
+        self._delivered: dict[str, tuple[str, int, int] | None] = {}
+
+    def record_delivered(self, evidence: Iterable[SourceEvidence], *, seed_spans: Iterable[SourceSpan] = ()) -> None:
+        """Remember source this judgment already holds, so navigation never delivers it again."""
+        for span in seed_spans:
+            self._delivered.setdefault(f"seed:{len(self._delivered)}", _span_key(span))
+        for item in evidence:
+            self._delivered.setdefault(item.id, _span_key(item.source_span) if item.source_span is not None else None)
+
+    def _delivered_as(self, target: SourceTarget) -> str | None:
+        """Return the id under which this judgment already holds a target's whole source, if any."""
+        if target.id in self._delivered:
+            return target.id
+        source = self._source(target.file)
+        first = source.count("\n", 0, target.start) + 1
+        last = source.count("\n", 0, max(target.start, target.end - 1)) + 1
+        file = normalized_location_path(target.file)
+        for item_id, span in self._delivered.items():
+            if span is not None and span[0] == file and span[1] <= first and last <= span[2]:
+                return "seed" if item_id.startswith("seed:") else item_id
+        return None
 
     def source_operation_id(self, file: str, line: int | None) -> str:
         """Map one source line to one unambiguous outer callsite identity."""
         if line is None or isinstance(line, bool) or not isinstance(line, int) or line < 1:
             return ""
-        normalized = file.strip().replace("\\", "/").removeprefix("./")
+        normalized = normalized_location_path(file)
         callsites = tuple(callsite for callsite in self._callsites.values() if callsite.source.path == normalized)
         if not callsites:
             return ""
@@ -281,7 +268,7 @@ class SourceNavigationSession:
             dict(self._sources),
             set(self._discovered_definition_ids),
             set(self._executed_query_keys),
-            set(self._auto_read_ids),
+            dict(self._delivered),
         )
         try:
             yield
@@ -293,13 +280,13 @@ class SourceNavigationSession:
                 self._sources,
                 self._discovered_definition_ids,
                 self._executed_query_keys,
-                self._auto_read_ids,
+                self._delivered,
             ) = state
             raise
 
     def execute(self, requested: object, *, target_chars: int) -> SourceNavigationResult:
         """Execute a strict batch and fail rather than reinterpret malformed queries."""
-        queries = _queries(requested)
+        queries = parse_source_queries(requested)
         query_keys = tuple(json.dumps(query, sort_keys=True, separators=(",", ":")) for query in queries)
         if len(query_keys) != len(set(query_keys)):
             repeated = next(query for query, key in zip(queries, query_keys, strict=True) if query_keys.count(key) > 1)
@@ -317,19 +304,27 @@ class SourceNavigationSession:
         blocks: list[str] = []
         coverage = GroundingCoverage()
         source_evidence: list[SourceEvidence] = []
+        held_receipts: list[SourceEvidence] = []
         for index, (query, query_key) in enumerate(zip(queries, query_keys, strict=True), start=1):
             self._executed_query_keys.add(query_key)
             kind = query["kind"]
             if kind == "search_symbols":
-                targets, page, more = self._search_symbols(query["query"], query["page"])
-                blocks.append(_render_search(index, kind, query["query"], targets, page, more))
-                exact = self._unique_exact_read(
-                    targets,
-                    page=page,
-                    more=more,
-                    blocks=blocks,
-                    target_chars=target_chars,
-                    label="Unique exact symbol match",
+                targets, page, more, exact_match = self._search_symbols(query["query"], query["page"])
+                held = self._held_targets(targets, held_receipts)
+                blocks.append(
+                    _render_search(index, kind, query["query"], targets, page, more, held, exact_match=exact_match)
+                )
+                exact = (
+                    None
+                    if not exact_match
+                    else self._unique_exact_read(
+                        targets,
+                        page=page,
+                        more=more,
+                        blocks=blocks,
+                        target_chars=target_chars,
+                        label="Unique exact symbol match",
+                    )
                 )
                 if exact is not None:
                     blocks.append(f"Unique exact symbol match:\n{exact.text}")
@@ -337,7 +332,8 @@ class SourceNavigationSession:
                     source_evidence.extend(exact.source_evidence)
             elif kind == "search_text":
                 targets, page, more = self._search_text(query["query"], query["page"])
-                blocks.append(_render_search(index, kind, query["query"], targets, page, more))
+                held = self._held_targets(targets, held_receipts)
+                blocks.append(_render_search(index, kind, query["query"], targets, page, more, held))
                 exact = self._unique_exact_read(
                     targets,
                     page=page,
@@ -368,17 +364,52 @@ class SourceNavigationSession:
                 raise SourceNavigationError(f"source query {index} has unknown kind {kind!r}")
             if len("\n\n".join(blocks)) > target_chars:
                 raise SourceBudgetError(f"source query results exceed the {target_chars} character target")
+        source_evidence.extend(held_receipts)
+        identities = tuple(dict.fromkeys(item.identity for item in held_receipts))
+        coverage = merge_grounding_coverage(
+            (
+                coverage,
+                GroundingCoverage(
+                    required=identities,
+                    included=identities,
+                    references=tuple(dict.fromkeys(item.id for item in held_receipts)),
+                ),
+            )
+        )
         return SourceNavigationResult(
             text="\n\n".join(blocks),
             coverage=coverage,
             source_evidence=tuple(source_evidence),
         )
 
-    def read(self, requested: object, *, target_chars: int) -> SourceNavigationResult:
-        """Read exact targets already discovered by this session."""
-        if not isinstance(requested, list) or not all(isinstance(item, str) for item in requested):
-            raise SourceNavigationError("evidence_requests must contain source target ids")
-        targets = tuple(dict.fromkeys(item.strip() for item in requested if item.strip()))
+    def _held_targets(self, targets: tuple[SourceTarget, ...], receipts: list[SourceEvidence]) -> dict[str, str]:
+        """Map each listed target already held by this judgment to the id it was delivered under.
+
+        A target held under another id gets its own receipt at once, without its source again, so
+        either id can be cited.
+        """
+        held = {}
+        for target in targets:
+            delivered_as = self._delivered_as(target)
+            if delivered_as is None:
+                continue
+            held[target.id] = delivered_as
+            if delivered_as != target.id:
+                receipt = self._receipt(target)
+                receipts.append(receipt)
+                self._delivered[target.id] = _span_key(receipt.source_span)
+        return held
+
+    def _receipt(self, target: SourceTarget) -> SourceEvidence:
+        source = self._source(target.file)
+        if target.end > len(source):
+            raise SourceNavigationError(f"source target {target.id} exceeds {target.file}")
+        text, span = numbered_source_range(target.file, source, target.start, target.end)
+        return SourceEvidence(id=target.id, identity=target.identity, text=text, source_span=span)
+
+    def read(self, requested: Iterable[str], *, target_chars: int) -> SourceNavigationResult:
+        """Read exact targets, validated by `evidence_request_ids`, that this session already discovered."""
+        targets = tuple(dict.fromkeys(requested))
         blocks: list[str] = []
         source_evidence: list[SourceEvidence] = []
         coverage = GroundingCoverage()
@@ -390,28 +421,19 @@ class SourceNavigationSession:
                     f"evidence request {index} references unknown target {target_id!r}. "
                     "Read only target ids returned by an earlier search."
                 )
-            source = self._source(target.file)
-            if target.end > len(source):
-                raise SourceNavigationError(f"source target {target.id} exceeds {target.file}")
-            selected = source[target.start : target.end]
-            text = numbered_source(
-                target.file,
-                selected,
-                source[: target.start].count("\n") + 1,
-            )
-            read_chars += len(text)
-            if read_chars > target_chars:
-                raise SourceBudgetError(f"evidence requests exceed the {target_chars} character target")
+            delivered_as = self._delivered_as(target)
+            receipt = self._receipt(target)
             label = "documentation" if target.source_kind == "documentation" else "source"
-            blocks.append(f"Read {label} `{target.id}` {target.file}:{target.name}:\n{text}")
-            source_evidence.append(
-                SourceEvidence(
-                    id=target.id,
-                    identity=target.identity,
-                    text=text,
-                    source_span=self._source_span(target, source),
-                )
-            )
+            heading = f"{label} `{target.id}` {one_line_source(target.file)}:{one_line_source(target.name)}"
+            if delivered_as is None:
+                read_chars += len(receipt.text)
+                if read_chars > target_chars:
+                    raise SourceBudgetError(f"evidence requests exceed the {target_chars} character target")
+                blocks.append(f"Read {heading}:\n{fenced_source(receipt.text)}")
+            else:
+                blocks.append(_already_delivered(heading, receipt.source_span, target.id, delivered_as))
+            self._delivered[target.id] = _span_key(receipt.source_span)
+            source_evidence.append(receipt)
             coverage = GroundingCoverage(
                 required=(*coverage.required, target.identity),
                 included=(*coverage.included, target.identity),
@@ -434,7 +456,7 @@ class SourceNavigationSession:
         label: str,
     ) -> SourceNavigationResult | None:
         """Read one unambiguous search result when it fits the same response budget."""
-        if page != 0 or len(targets) != 1 or more or targets[0].id in self._auto_read_ids:
+        if page != 0 or len(targets) != 1 or more or self._delivered_as(targets[0]) is not None:
             return None
         exact = self.read(
             [targets[0].id],
@@ -442,8 +464,8 @@ class SourceNavigationSession:
         )
         candidate = "\n\n".join((*blocks, f"{label}:\n{exact.text}"))
         if len(candidate) > target_chars:
+            self._delivered.pop(targets[0].id, None)
             return None
-        self._auto_read_ids.add(targets[0].id)
         return exact
 
     def can_read(self, target: str) -> bool:
@@ -464,16 +486,31 @@ class SourceNavigationSession:
         self,
         query: str,
         page: int,
-    ) -> tuple[tuple[SourceTarget, ...], int, bool]:
-        symbol = query.rsplit(".", 1)[-1]
-        matches = [fragment for fragment in self._navigator.definitions if fragment.name == query]
-        if not matches and symbol != query:
-            matches = [fragment for fragment in self._navigator.definitions if fragment.name == symbol]
-        targets = tuple(target for fragment in matches for target in self._definition_targets(fragment))
+    ) -> tuple[tuple[SourceTarget, ...], int, bool, bool]:
+        """Match a name, or a dotted name by its exact owner chain, else list last segment matches as candidates."""
+        *qualifier, symbol = query.split(".")
+        named = [definition for definition in self._navigator.definitions if definition.name == symbol]
+        matches = [definition for definition in self._navigator.definitions if definition.name == query]
+        if qualifier:
+            matches.extend(definition for definition in named if self._owned_by(definition, tuple(qualifier)))
+        exact = bool(matches)
+        targets = tuple(target for definition in (matches or named) for target in self._definition_targets(definition))
         selected, selected_page, more = _page(targets, page)
         published = tuple(self._register_target(target) for target in selected)
         self._discovered_definition_ids.update(target.definition_id for target in published if target.definition_id)
-        return published, selected_page, more
+        return published, selected_page, more, exact
+
+    def _owned_by(self, definition: DefinitionEvidence, qualifier: tuple[str, ...]) -> bool:
+        """Require the enclosing definitions, innermost last, to end with the exact qualifier names."""
+        owners: list[str] = []
+        owner_id = definition.owner_id
+        while owner_id and len(owners) < len(qualifier):
+            owner = self._relationship_definitions.get(owner_id)
+            if owner is None:
+                break
+            owners.insert(0, owner.name)
+            owner_id = owner.owner_id
+        return tuple(owners) == qualifier
 
     def _search_text(
         self,
@@ -483,7 +520,7 @@ class SourceNavigationSession:
         targets: list[SourceTarget] = []
         for file in self._navigator.files:
             source = self._source(file)
-            for line_no, line in enumerate(source.splitlines(keepends=True), start=1):
+            for line_no, line in enumerate(split_lines(source, keepends=True), start=1):
                 if query in line:
                     start = _line_offset(source, max(1, line_no - 3))
                     end = _line_offset(source, line_no + 4)
@@ -547,7 +584,7 @@ class SourceNavigationSession:
                 relationships.append(relationship)
         relationships = sorted(
             relationships,
-            key=lambda item: (item.source_file, item.source.start, item.kind, item.id),
+            key=lambda item: (item.source.path, item.source.start, item.kind, item.id),
         )
         expanded = tuple(
             (relationship, candidate_id)
@@ -576,22 +613,23 @@ class SourceNavigationSession:
             name=f"{relationship.kind} {relationship.reference}",
         )
         lines = [
-            f"- relationship `{relationship.id}` kind `{relationship.kind}` reference `{relationship.reference}`",
-            f"  syntax source `{relation_target.id}` {relationship.source.path}",
+            f"- relationship `{relationship.id}` kind `{relationship.kind}` reference "
+            f"{inline_source(relationship.reference)}",
+            f"  syntax source `{relation_target.id}` {one_line_source(relationship.source.path)}",
         ]
         if relationship.source_definition_id:
             owner = self._relationship_definitions[relationship.source_definition_id]
             owner_target = self._relationship_target(owner)
-            lines.append(f"  owner `{owner.id}` source `{owner_target.id}` {owner.source.path}:{owner.name}")
+            lines.append(
+                f"  owner `{owner.id}` source `{owner_target.id}` "
+                f"{one_line_source(owner.source.path)}:{one_line_source(owner.name)}"
+            )
         if not candidate_id:
             lines.append("  candidates: no repository definition candidate")
             return lines
         candidate = self._relationship_definitions[candidate_id]
         candidate_target = self._relationship_target(candidate)
-        lines.append(
-            f"  candidate `{candidate.id}` source `{candidate_target.id}` "
-            f"{candidate.source.path}:{candidate.signature or candidate.name}"
-        )
+        lines.append(f"  candidate `{candidate.id}` source `{candidate_target.id}` {_definition_label(candidate)}")
         return lines
 
     def _render_call_candidate(self, callsite: CallsiteEvidence, candidate_ids: tuple[str, ...]) -> list[str]:
@@ -603,13 +641,14 @@ class SourceNavigationSession:
         )
         self._discovered_definition_ids.add(caller.id)
         lines = [
-            f"- callsite `{callsite.id}` `{callsite.expression}`",
-            f"  caller `{caller.id}` source `{caller_target.id}` {caller.source.path}:{caller.name}",
-            f"  call source `{call_target.id}` receiver `{callsite.receiver_expression}`",
+            f"- callsite `{callsite.id}` {inline_source(' '.join(callsite.expression.split()))}",
+            f"  caller `{caller.id}` source `{caller_target.id}` "
+            f"{one_line_source(caller.source.path)}:{one_line_source(caller.name)}",
+            f"  call source `{call_target.id}` receiver {inline_source(callsite.receiver_expression)}",
         ]
         observations = self._observations_by_callsite.get(callsite.id, ())
         for observation in observations:
-            label = f" `{observation.label}`" if observation.label else ""
+            label = f" {inline_source(observation.label)}" if observation.label else ""
             lines.append(f"  observation `{observation.id}` {observation.producer}:{observation.kind}{label}")
         if not candidate_ids:
             lines.append("  candidates: no repository definition candidate")
@@ -618,47 +657,34 @@ class SourceNavigationSession:
             candidate = self._relationship_definitions[candidate_id]
             candidate_target = self._relationship_target(candidate)
             self._discovered_definition_ids.add(candidate.id)
-            lines.append(
-                f"  candidate `{candidate.id}` source `{candidate_target.id}` "
-                f"{candidate.source.path}:{candidate.signature or candidate.name}"
-            )
+            lines.append(f"  candidate `{candidate.id}` source `{candidate_target.id}` {_definition_label(candidate)}")
         return lines
 
-    def _source_span(self, target: SourceTarget, source: str) -> SourceSpan:
-        selected = source[target.start : target.end]
-        start_line = source[: target.start].count("\n") + 1
-        return SourceSpan(
-            file=target.file,
-            start_line=start_line,
-            end_line=start_line + max(1, len(selected.splitlines())) - 1,
-        )
-
-    def _definition_targets(self, fragment: DefinitionFragment) -> tuple[SourceTarget, ...]:
-        source = self._source(fragment.file)
-        if fragment.end > len(source):
-            raise SourceNavigationError(f"definition range exceeds source {fragment.identity}")
-        selected = source[fragment.start : fragment.end]
+    def _definition_targets(self, definition: DefinitionEvidence) -> tuple[SourceTarget, ...]:
+        file, start, end = definition.source.path, definition.source.start, definition.source.end
+        source = self._source(file)
+        if end > len(source):
+            raise SourceNavigationError(f"definition range exceeds source {definition.identity}")
         preview = next(
-            (line.strip() for line in selected.splitlines() if line.strip()),
+            (line.strip() for line in split_lines(source[start:end]) if line.strip()),
             "",
         )
-        relationship = self._relationship_definitions_by_identity.get(fragment.identity)
         ranges = tuple(
-            (start, min(start + _MAX_SOURCE_TARGET_CHARS, fragment.end))
-            for start in range(fragment.start, fragment.end, _MAX_SOURCE_TARGET_CHARS)
+            (page_start, min(page_start + _MAX_SOURCE_TARGET_CHARS, end))
+            for page_start in range(start, end, _MAX_SOURCE_TARGET_CHARS)
         )
         total = len(ranges)
         return tuple(
             SourceTarget.create(
-                file=fragment.file,
-                name=(fragment.name if total == 1 else f"{fragment.name} page {index}/{total}"),
-                start=start,
-                end=end,
+                file=file,
+                name=(definition.name if total == 1 else f"{definition.name} page {index}/{total}"),
+                start=page_start,
+                end=page_end,
                 preview=preview[:240],
-                definition_id=relationship.id if relationship is not None else "",
-                source_kind=self._source_kind(fragment.file),
+                definition_id=definition.id,
+                source_kind=self._source_kind(file),
             )
-            for index, (start, end) in enumerate(ranges, start=1)
+            for index, (page_start, page_end) in enumerate(ranges, start=1)
         )
 
     def _relationship_target(self, definition: DefinitionEvidence) -> SourceTarget:
@@ -677,9 +703,9 @@ class SourceNavigationSession:
         if reference.end > len(source):
             raise SourceNavigationError(f"relationship source exceeds {reference.path}")
         selected = source[reference.start : reference.end]
-        if hashlib.sha256(selected.encode()).hexdigest() != reference.content_sha256:
+        if text_sha256(selected) != reference.content_sha256:
             raise SourceNavigationError(f"relationship source changed at {reference.path}:{reference.start}")
-        preview = next((line.strip() for line in selected.splitlines() if line.strip()), "")
+        preview = next((line.strip() for line in split_lines(selected) if line.strip()), "")
         return self._register_target(
             SourceTarget.create(
                 file=reference.path,
@@ -691,12 +717,6 @@ class SourceNavigationSession:
                 source_kind=self._source_kind(reference.path),
             )
         )
-
-    @staticmethod
-    def _definition_identities(definition: DefinitionEvidence) -> tuple[str, ...]:
-        source = definition.source
-        spellings = tuple(dict.fromkeys((definition.name, definition.signature)))
-        return tuple(f"{source.path}:{spelling}:{source.start}:{source.end}" for spelling in spellings if spelling)
 
     @staticmethod
     def _group_callsite_observations(
@@ -721,10 +741,8 @@ class SourceNavigationSession:
         self._targets_by_identity[registered.identity] = registered
         return registered
 
-    def _source_kind(self, file: str) -> Literal["production", "test", "documentation"]:
-        if file in self._navigator.documentation_files:
-            return "documentation"
-        return "test" if file in self._navigator.test_files else "production"
+    def _source_kind(self, file: str) -> Literal["production", "documentation"]:
+        return "documentation" if file in self._navigator.documentation_files else "production"
 
     def _source(self, file: str) -> str:
         source = self._sources.get(file)
@@ -743,9 +761,8 @@ class SourceNavigationSession:
         source = self._source_bytes.get(file)
         if source is not None:
             return source
-        path = (self._navigator.root / file).resolve()
         try:
-            path.relative_to(self._navigator.root)
+            path = contained_repository_path(self._navigator.root, file)
             if not path.is_file():
                 raise OSError("not a regular file")
             if path.stat().st_size > _MAX_SEARCHABLE_FILE_BYTES:
@@ -753,10 +770,6 @@ class SourceNavigationSession:
             source = path.read_bytes()
         except (OSError, ValueError) as exc:
             raise SourceNavigationError(f"cannot read navigation source {file!r}: {exc}") from exc
-        expected_hash = self._source_hashes.get(file)
-        current_hash = hashlib.sha256(source).hexdigest()
-        if expected_hash is not None and current_hash != expected_hash:
-            raise SourceNavigationError(f"navigation source changed after snapshot: {file}")
         self._source_bytes[file] = source
         return source
 
@@ -769,7 +782,7 @@ class _OperationBindable(Protocol):
 
 def bind_source_operation[T: _OperationBindable](
     finding: T,
-    navigator: SourceNavigator | SourceNavigationSession | None,
+    navigator: SourceNavigationSession | None,
 ) -> T:
     """Bind one report line to an unambiguous shared callsite identity."""
     if navigator is None or finding.source_operation_id:
@@ -782,27 +795,33 @@ def navigation_instructions() -> str:
     """Render the shared source query contract."""
     return (
         "# Source Navigation\n\n"
-        "`source_queries` searches the repository:\n"
-        "- `search_symbols` and `search_text` find source targets by name or by text. Results list `src-*` ids "
-        "and, when relationship evidence exists, `def-*` definition ids. A unique complete match on page 0 also "
-        "delivers its source.\n"
-        "- `search_call_candidates` lists call candidates in the chosen direction for a `def-*` id returned by an "
-        "earlier search.\n"
-        "- `search_structural_candidates` lists inheritance, imports, and other non-call syntax around a `def-*` "
-        "id returned by an earlier search.\n"
+        "`source_queries` searches the repository. Leading and trailing whitespace of `query` is ignored. Each "
+        f"query returns at most {_MAX_RESULTS_PER_PAGE} results per page; `page` starts at 0, and a result list "
+        "states when a next page exists.\n"
+        "- `search_symbols` returns definitions whose name equals `query` exactly. A dotted `query` also matches a "
+        "definition named by its last segment whose enclosing definitions are named by the preceding segments, in "
+        "order. When nothing matches exactly, definitions named by the last segment are listed as candidates.\n"
+        "- `search_text` returns lines that contain `query` as a literal, case-sensitive substring of one line, "
+        "each with up to three surrounding lines on each side. Regular expressions, wildcards, and multi-line text "
+        "are not supported.\n"
+        "- Results list `src-*` ids and, for definitions, `def-*` ids. When page 0 holds exactly one exact match, "
+        "its source is also delivered if it fits the exchange budget.\n"
+        "- `search_call_candidates` lists call candidates for a `def-*` id returned by an earlier search: "
+        "`callees` are calls inside that definition, `callers` are calls whose candidate callee is that "
+        "definition, and `both` lists both.\n"
+        "- `search_structural_candidates` lists inheritance, imports, and other non-call syntax for a `def-*` id "
+        "returned by an earlier search: `outgoing` is syntax inside that definition, `incoming` is syntax that "
+        "names it as a candidate target, and `both` lists both.\n"
         "- Search results and candidates are unverified syntax matches. Read the source before relying on a "
         "relationship.\n"
         "- Batch every independent search and evidence request into one response and never repeat a query. "
-        f"{source_query_limit_note()}"
+        f"Send at most {MAX_QUERIES_PER_BATCH} `source_queries` in one response and "
+        f"{MAX_UNIQUE_QUERIES_PER_SESSION} unique queries across this unit."
     )
 
 
 def parse_source_queries(value: object) -> list[dict[str, object]]:
     """Validate model-facing source searches without accepting exact reads."""
-    return _queries(value)
-
-
-def _queries(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list):
         raise SourceNavigationError("source_queries must be a list")
     if len(value) > MAX_QUERIES_PER_BATCH:
@@ -864,6 +883,12 @@ def _queries(value: object) -> list[dict[str, object]]:
     return queries
 
 
+def _definition_label(definition: DefinitionEvidence) -> str:
+    label = f"{one_line_source(definition.source.path)}:{one_line_source(definition.name)}"
+    signature = " ".join(definition.signature.split())
+    return f"{label} | {inline_source(signature)}" if signature else label
+
+
 def _page[T](targets: tuple[T, ...], page: int) -> tuple[tuple[T, ...], int, bool]:
     start = page * _MAX_RESULTS_PER_PAGE
     selected = targets[start : start + _MAX_RESULTS_PER_PAGE]
@@ -877,14 +902,24 @@ def _render_search(
     targets: tuple[SourceTarget, ...],
     page: int,
     more: bool,
+    held: Mapping[str, str],
+    *,
+    exact_match: bool = True,
 ) -> str:
     lines = [
-        f"Source query {index} `{kind}` for `{query}`, page {page}.",
+        f"Source query {index} `{kind}` for {inline_source(query)}, page {page}.",
     ]
+    if not exact_match and targets:
+        lines.append(
+            "No definition matches the qualified name exactly. These definitions only share its last segment "
+            "and are unverified candidates."
+        )
     lines.extend(
         f"- `{target.id}`"
         + (f" definition `{target.definition_id}`" if target.definition_id else "")
-        + f" [{target.source_kind}] {target.file}:{target.name} | `{target.preview}`"
+        + f" [{target.source_kind}] {one_line_source(target.file)}:{one_line_source(target.name)} | "
+        + inline_source(target.preview)
+        + _held_note(target.id, held.get(target.id))
         for target in targets
     )
     if not targets:
@@ -894,24 +929,32 @@ def _render_search(
     return "\n".join(lines)
 
 
-def _graph_source_files(
-    root: Path,
-    graph: FactsGraph,
-    definitions: tuple[DefinitionFragment, ...],
-    source_files: Iterable[str],
-) -> tuple[str, ...]:
-    candidates = [*(fragment.file for fragment in definitions), *source_files]
-    syntax_imports = graph.get("syntax_imports")
-    if isinstance(syntax_imports, dict):
-        candidates.extend(file for file in syntax_imports if isinstance(file, str))
+def _held_note(target_id: str, delivered_as: str | None) -> str:
+    if delivered_as is None:
+        return ""
+    if delivered_as == target_id:
+        return " | already delivered"
+    return f" | already delivered in `{delivered_as}`"
+
+
+def _already_delivered(heading: str, span: SourceSpan, target_id: str, delivered_as: str) -> str:
+    """Name a requested source this judgment already holds instead of delivering it again."""
+    where = "" if delivered_as == target_id else f" in `{delivered_as}`"
+    return (
+        f"Requested {heading} lines {span.start_line}-{span.end_line} is already delivered{where}. "
+        "It is not repeated; cite it directly."
+    )
+
+
+def _span_key(span: SourceSpan) -> tuple[str, int, int]:
+    return (normalized_location_path(span.file), span.start_line, span.end_line)
+
+
+def _navigation_files(root: Path, candidates: Iterable[str]) -> tuple[str, ...]:
     files = []
     for file in dict.fromkeys(candidates):
-        path = (root / file).resolve()
-        try:
-            path.relative_to(root)
-        except (OSError, ValueError):
-            continue
-        if path.is_file():
+        path = safe_repository_path(root, file)
+        if path is not None and path.is_file():
             files.append(file)
     return tuple(files)
 
@@ -935,12 +978,3 @@ def _line_character_range(source: str, line: int) -> tuple[int, int] | None:
         return None
     end = _line_offset(source, line + 1)
     return (start, end if end > start else len(source))
-
-
-def _source_hash(root: Path, file: str) -> str:
-    path = (root / file).resolve()
-    try:
-        path.relative_to(root)
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except (OSError, ValueError) as exc:
-        raise SourceNavigationError(f"cannot snapshot navigation source {file!r}: {exc}") from exc

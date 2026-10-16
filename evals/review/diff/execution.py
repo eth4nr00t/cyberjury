@@ -1,212 +1,147 @@
-"""Orchestrate benchmark cases through the product Diff Review boundary."""
+"""Run benchmark diff cases through the product Diff Review command and record adjudicable attempts.
+
+Each case run is one `cyberjury review diff` of the pinned two-dot range in its own review
+workspace, so acquisition, the canonical patch, the materialized head tree, and every output
+artifact are the product's. The attempt is recorded from those artifacts by the same recorder
+that records Repository Review attempts.
+"""
 
 from __future__ import annotations
 
-import json
+import contextlib
+import io
+import sys
+import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
+from pathlib import Path
 
-from cyberjury.finding import Finding
-from cyberjury.providers.configuration import (
-    ProviderConfiguration,
-    ProviderCredentialsError,
-    provider_configuration_from_env,
-)
-from cyberjury.providers.metering import UsageMeter
-from cyberjury.review.diff.checkout import DiffCheckoutHooks, review_diff_checkout
-from cyberjury.review.engine import ReviewOutcome
-from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.trace import Trace
-from evals.benchmarks.cases import DiffCase, diff_text
-from evals.review.failures import failure_summary
-from evals.review.source import review_scope, source_root
-from evals.score.result import RepeatedResult, Result
+from cyberjury import cli
+from cyberjury.review.target import resolve_diff_target
+from evals.adjudication import recorded_attempt
+from evals.benchmarks.cases import BenchmarkCase, ensure_git_target_refs, git_target_root, validate_change_anchors
 
-from .progress import CaseProgress, Progress, with_run
-from .results import apply_score, case_result, empty_result, merge, record_failure, score
-
-Attempt = Callable[[dict[str, object]], None]
+type Progress = Callable[[str], None]
 
 
 @dataclass(frozen=True, kw_only=True)
-class DiffRunOptions:
-    """Provider seats, usage meter, and concurrency for one evaluation run."""
+class _CaseProgress:
+    """Report one benchmark case's lifecycle as progress lines."""
 
-    configuration: ProviderConfiguration
-    meter: UsageMeter
-    concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
+    progress: Progress | None
+    prefix: str
+    started: float
+
+    def say(self, text: str) -> None:
+        """Publish one line naming the run and case."""
+        if self.progress is not None:
+            self.progress(f"{self.prefix} {text}")
+
+    def failed(self, error: str) -> None:
+        """Publish a failed case without implying completion."""
+        self.say(f"failed after {self._elapsed()}s: {error}")
+
+    def finished(self, reports: int) -> None:
+        """Publish a complete case with its report count."""
+        self.say(f"finished in {self._elapsed()}s, reports={reports}")
+
+    def _elapsed(self) -> float:
+        return round(time.monotonic() - self.started, 3)
+
+
+class _Tee(io.TextIOBase):
+    """Forward command diagnostics while keeping every failure line the command printed."""
+
+    def __init__(self, stream: io.TextIOBase) -> None:
+        self._stream = stream
+        self._failures: list[str] = []
 
     @property
-    def model(self) -> str:
-        """Return the finder model reported with each case."""
-        return self.configuration.finder.model
+    def failure(self) -> str:
+        """Return the failures the command reported, in order."""
+        return "; ".join(self._failures)
+
+    def write(self, text: str) -> int:
+        self._stream.write(text)
+        self._failures.extend(
+            line.split(": ", 1)[1]
+            for line in text.splitlines()
+            if line.startswith(("error: ", "cyberjury failed: ", "review failed: "))
+        )
+        return len(text)
+
+    def flush(self) -> None:
+        self._stream.flush()
 
 
-@dataclass(frozen=True, kw_only=True)
-class _CaseExecution:
-    outcome: ReviewOutcome[Finding]
-    findings: list[Finding]
-    scored: Result | None
+def case_workspace(workspace: Path, case: BenchmarkCase, number: int) -> Path:
+    """Return the review workspace of one case run."""
+    project, task = case.name.split(":", 1)
+    return workspace / project / task / f"run-{number:02d}"
 
 
 def run(
-    cases: list[DiffCase],
+    cases: list[BenchmarkCase],
     *,
+    workspace: Path,
     model_override: str | None = None,
     runs: int = 1,
-    concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
+    concurrency: int | None = None,
     progress: Progress | None = None,
-    trace: Trace | None = None,
-    meter: UsageMeter | None = None,
-    on_run_calls: Callable[[int, dict[str, object]], None] | None = None,
-    on_attempt: Callable[[int, dict[str, object]], None] | None = None,
-) -> Result | RepeatedResult:
-    """Run diff benchmark cases through the product checkout Diff Review.
+    on_attempt: Callable[[dict[str, object]], None] | None = None,
+) -> list[dict[str, object]]:
+    """Review each diff case once per run and return one attempt record per case and run.
 
-    `on_attempt` receives the run number and one adjudicable attempt record per case.
+    `on_attempt` receives each record as soon as its case finishes. Each run keeps its review
+    session, including `model-calls.json`, under `workspace`.
     """
-    from cyberjury.envfile import load_env_file
-
     if runs < 1:
         raise ValueError("diff benchmark runs must be at least 1")
-    load_env_file()
-    meter = meter if meter is not None else UsageMeter()
-    options = DiffRunOptions(
-        configuration=provider_configuration_from_env(model_override=model_override),
-        meter=meter,
-        concurrency=concurrency,
-    )
-    results = []
-    for run_index in range(1, runs + 1):
-        completed_calls = len(meter.call_snapshot()) if on_run_calls is not None else 0
-        result = run_diff_cases(
-            cases,
-            options=options,
-            progress=with_run(progress, run_index, runs),
-            trace=with_run(trace, run_index, runs),
-            on_attempt=_numbered(on_attempt, run_index),
-        )
-        result.target = "diff"
-        results.append(result)
-        if on_run_calls is not None:
-            on_run_calls(run_index, meter.document_from(completed_calls))
-    if runs == 1:
-        return results[0]
-    return RepeatedResult.from_runs("diff", results)
+    records = []
+    for number in range(1, runs + 1):
+        for index, case in enumerate(cases, 1):
+            run_prefix = f"run {number}/{runs} " if runs > 1 else ""
+            status = _CaseProgress(
+                progress=progress,
+                prefix=f"{run_prefix}[{index}/{len(cases)}] {case.name}",
+                started=time.monotonic(),
+            )
+            status.say("started")
+            record = _review_case(case, number, case_workspace(workspace, case, number), model_override, concurrency)
+            if record["complete"]:
+                status.finished(len(record["findings"]))
+            else:
+                status.failed(str(record["error"]))
+            records.append(record)
+            if on_attempt is not None:
+                on_attempt(record)
+    return records
 
 
-def _numbered(on_attempt: Callable[[int, dict[str, object]], None] | None, run: int) -> Attempt | None:
-    if on_attempt is None:
-        return None
-
-    def write(record: dict[str, object]) -> None:
-        on_attempt(run, {"case": record["case"], "attempt": run, **record})
-
-    return write
-
-
-def run_diff_cases(
-    cases: list[DiffCase],
-    *,
-    options: DiffRunOptions,
-    progress: Progress | None = None,
-    trace: Trace | None = None,
-    on_attempt: Attempt | None = None,
-) -> Result:
-    """Run each diff case and fold its result into one batch score."""
-    result = empty_result()
-    total = len(cases)
-    for index, case in enumerate(cases, 1):
-        merge(result, _run_diff_case(case, index, total, options, progress, trace, on_attempt))
-    return result
-
-
-def _run_diff_case(
-    case: DiffCase,
-    index: int,
-    total: int,
-    options: DiffRunOptions,
-    progress: Progress | None,
-    trace: Trace | None,
-    on_attempt: Attempt | None = None,
-) -> Result:
-    result = case_result(case)
-    status = CaseProgress.start(progress, trace, case, index, total, options.model)
-    try:
-        execution = _execute_case(case, options, status)
-    except ProviderCredentialsError:
-        raise
-    except Exception as exc:
-        error = record_failure(result, case, exc)
-        status.failed(error)
-        _record_attempt(on_attempt, case, options.model, [], None, error)
-        return result
-    if execution.scored is None:
-        error = record_failure(result, case, failure_summary(execution.outcome))
-        status.failed(error)
-        _record_attempt(on_attempt, case, options.model, execution.findings, None, error)
-        return result
-    apply_score(result, execution.scored, scope=case.name)
-    status.scored(execution.scored)
-    _record_attempt(on_attempt, case, options.model, execution.findings, execution.scored, "")
-    return result
-
-
-def _record_attempt(
-    on_attempt: Attempt | None,
-    case: DiffCase,
-    model: str,
-    findings: list[Finding],
-    scored: Result | None,
-    error: str,
-) -> None:
-    """Publish the attempt record that `adjudicate-diff` binds a source assessment ledger to."""
-    if on_attempt is None:
-        return
-    record: dict[str, object] = {
-        "case": case.name,
-        "complete": scored is not None,
-        "error": error,
-        "expectation": case.expectation,
-        "model": model,
-        "expected_checks": json.loads(json.dumps([asdict(check) for check in case.answer_key.checks])),
-        "findings": [
-            {
-                **finding.to_dict(),
-                "candidate_id": finding.candidate_id,
-                "evidence_refs": list(finding.evidence_refs),
-                "found_by": list(finding.found_by),
-            }
-            for finding in findings
-        ],
-    }
-    if scored is not None:
-        result = case_result(case)
-        apply_score(result, scored, scope=case.name)
-        result.target = case.name
-        record["result"] = result.to_dict()
-    on_attempt(record)
-
-
-def _execute_case(case: DiffCase, options: DiffRunOptions, status: CaseProgress) -> _CaseExecution:
-    from cyberjury.profiles.registry import get_profile
-
-    with source_root(case.target) as root:
-        review = review_diff_checkout(
-            diff_text(case),
-            root=root,
-            scope=review_scope(root, case.target),
-            profile=get_profile(case.profile),
-            configuration=options.configuration,
-            meter=options.meter,
-            concurrency=options.concurrency,
-            hooks=DiffCheckoutHooks(
-                on_batch=status.batch_finished,
-                on_judgment=status.judgment_finished,
-                trace=status.trace(),
-            ),
-        )
-        outcome = review.result.outcome
-        findings = list(outcome.findings)
-        scored = score(case, findings, root, status.trace()) if not outcome.degraded else None
-        return _CaseExecution(outcome=outcome, findings=findings, scored=scored)
+def _review_case(
+    case: BenchmarkCase,
+    number: int,
+    workspace: Path,
+    model_override: str | None,
+    concurrency: int | None,
+) -> dict[str, object]:
+    if case.target["path"] != ".":
+        raise ValueError(f"diff case {case.name!r} must review the whole repository, not {case.target['path']!r}")
+    if workspace.exists():
+        raise ValueError(f"diff review workspace already exists: {workspace}")
+    root = git_target_root(case.target)
+    ensure_git_target_refs(case.target, root)
+    git_range = f"{case.target['base']}..{case.target['ref']}"
+    validate_change_anchors(case, resolve_diff_target(root, git_range).patch.text)
+    argv = ["review", "diff", "--repository", str(root), "--git-range", git_range, "--workspace", str(workspace)]
+    if model_override:
+        argv += ["--model", model_override]
+    if concurrency:
+        argv += ["--concurrency", str(concurrency)]
+    diagnostics = _Tee(sys.stderr)
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(diagnostics):
+        cli.main(argv)
+    attempts = sorted(workspace.glob("reviews/*/attempts/*/attempt.json"))
+    if len(attempts) != 1:
+        return recorded_attempt(case, workspace, number, error=diagnostics.failure or "the review recorded no attempt")
+    return recorded_attempt(case, attempts[0].parent, number, error=diagnostics.failure)

@@ -9,5 +9,3 @@ __pycache__/
 
 /.venv/
 .env
-
-/evals/local.yaml

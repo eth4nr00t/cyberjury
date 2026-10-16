@@ -44,15 +44,17 @@ jobs:
           /tmp/smoke/bin/cyberjury review diff --help
           /tmp/smoke/bin/cyberjury review repository --help
           /tmp/smoke/bin/python - <<'PY'
-          from cyberjury.resources import SLASH_COMMAND_FILE
-          from cyberjury.profiles.base import profile_binding
-          from cyberjury.profiles.registry import get_profile
-          from cyberjury.review.knowledge import load_review_brief
-          from cyberjury.profiles.web.facts import TreeSitterFacts
+          from cyberjury.cli import SLASH_COMMAND_FILE
+          from cyberjury.detection import load_detection
+          from cyberjury.review.contract import ContractReceipt
+          from cyberjury.review.knowledge import load_review_brief, load_severity_rubric
+          from cyberjury.syntax.facts import syntax_backend_id
           assert SLASH_COMMAND_FILE.is_file()
-          profile = get_profile("web")
-          profile_binding(profile)
-          assert load_review_brief(kernel_file=profile.paths.security_kernel_file).render()
+          ContractReceipt.capture()
+          assert load_review_brief().render()
+          assert load_severity_rubric()
+          assert load_detection().skip_dirs
+          assert syntax_backend_id()
           PY
       - uses: actions/upload-artifact@v4
         with:

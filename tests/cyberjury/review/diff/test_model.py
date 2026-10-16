@@ -3,47 +3,27 @@
 import pytest
 
 from cyberjury.detection import load_detection
-from cyberjury.profiles.registry import default_profile
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.diff.model import (
     DiffUnit,
-    changed_definition_fragments,
+    changed_definitions,
     changed_line_ranges,
-    changed_paths,
     chunk_path,
     diff_line_ranges,
     diff_paths,
-    diff_unit_plan_receipt,
+    diff_unit_plan_record,
     pack_diff_chunks,
     prepare_diff_units,
     split_diff_by_file,
     strip_unreviewable_files,
 )
-from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
-from cyberjury.review.relationships import RelationshipEvidenceBundle
+from tests.cyberjury.review.support import definition
 
-_DETECTION = load_detection(default_profile().paths.detection_file)
+_DETECTION = load_detection()
 
 _FILE_A = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
 
 _FILE_B = "diff --git a/b.py b/b.py\n@@ -0,0 +1 @@\n+y = 2\n"
-
-
-def _facts_resolution() -> FactsResolutionReceipt:
-    native = NativeAnalysisReceipt.create(
-        producer="test",
-        producer_version="1",
-        source_count=0,
-        definition_count=0,
-        callsite_count=0,
-        limitation_count=0,
-        evidence={},
-    )
-    return FactsResolutionReceipt.create(
-        native_analysis=native,
-        relationship_evidence=RelationshipEvidenceBundle().to_data(),
-        limitations=(),
-    )
 
 
 def test_split_diff_by_file():
@@ -61,7 +41,7 @@ def test_pack_diff_chunks_empty_is_no_batches():
 
 
 def test_diff_unit_planners_return_an_empty_worklist_for_empty_input(tmp_path):
-    assert prepare_diff_units("", root=tmp_path, detection=_DETECTION, graph={}) == []
+    assert prepare_diff_units("", root=tmp_path, detection=_DETECTION, definitions=()) == []
 
 
 def test_diff_unit_planning_rejects_repeated_file_sections_before_losing_a_hunk(tmp_path):
@@ -70,12 +50,12 @@ def test_diff_unit_planning_rejects_repeated_file_sections_before_losing_a_hunk(
     second = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -2 +2 @@\n+y = 2\n"
 
     with pytest.raises(ValueError, match=r"repeated file sections for a\.py"):
-        prepare_diff_units(first + second, root=tmp_path, detection=_DETECTION, graph={})
+        prepare_diff_units(first + second, root=tmp_path, detection=_DETECTION, definitions=())
 
 
 def test_diff_unit_planning_rejects_an_unidentified_file_section(tmp_path):
     with pytest.raises(ValueError, match="without a source path"):
-        prepare_diff_units("@@ -1 +1 @@\n+unbound source\n", root=tmp_path, detection=_DETECTION, graph={})
+        prepare_diff_units("@@ -1 +1 @@\n+unbound source\n", root=tmp_path, detection=_DETECTION, definitions=())
 
 
 def test_diff_unit_planning_rejects_a_malformed_hunk_after_a_valid_one(tmp_path):
@@ -83,7 +63,7 @@ def test_diff_unit_planning_rejects_a_malformed_hunk_after_a_valid_one(tmp_path)
     diff = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -0,0 +1 @@\n+x = 1\n@@ corrupted @@\n+hidden = 2\n"
 
     with pytest.raises(ValueError, match="malformed unified diff hunk header"):
-        prepare_diff_units(diff, root=tmp_path, detection=_DETECTION, graph={})
+        prepare_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=())
 
 
 def test_diff_unit_planning_rejects_an_unprefixed_line_inside_a_hunk(tmp_path):
@@ -91,7 +71,7 @@ def test_diff_unit_planning_rejects_an_unprefixed_line_inside_a_hunk(tmp_path):
     diff = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -0,0 +1,2 @@\n+x = 1\nnot a diff line\n+hidden = 2\n"
 
     with pytest.raises(ValueError, match="malformed unified diff hunk body"):
-        prepare_diff_units(diff, root=tmp_path, detection=_DETECTION, graph={})
+        prepare_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=())
 
 
 def test_pack_diff_chunks_greedily_combines_files():
@@ -129,7 +109,7 @@ def test_pack_diff_chunks_splits_one_large_hunk_without_dropping_changed_lines()
     assert observed == added
 
 
-def test_diff_unit_plan_receipt_exposes_patch_ownership_and_over_target_units():
+def test_diff_unit_plan_record_exposes_patch_ownership():
     unit = DiffUnit(
         index=1,
         total=1,
@@ -138,23 +118,22 @@ def test_diff_unit_plan_receipt_exposes_patch_ownership_and_over_target_units():
         definition_plan=DefinitionUnitPlan(seed_files=("a.py",)),
     )
 
-    receipt = diff_unit_plan_receipt([unit], _facts_resolution(), expected_owned_paths=("a.py",))
+    record = diff_unit_plan_record(unit)
 
-    assert receipt.expected_seed_ids == ("patch:a.py",)
-    assert receipt.unowned_seed_ids == ()
-    assert receipt.units[0].owned_paths == ("a.py",)
-    assert receipt.units[0].patch_chars == len(_FILE_A)
+    assert record.kind == "diff"
+    assert record.owned_paths == ("a.py",)
+    assert record.patch_sha256 is not None
 
 
 def test_diff_model_excludes_test_files_before_review():
     """Diff unit construction applies the same test exclusion as repository units."""
-    production = "diff --git a/app/views.py b/app/views.py\n+++ b/app/views.py\n+x = 1\n"
-    test = "diff --git a/tests/test_views.py b/tests/test_views.py\n+++ b/tests/test_views.py\n+x = 1\n"
+    production = "diff --git a/app/views.py b/app/views.py\n+++ b/app/views.py\n@@ -0,0 +1 @@\n+x = 1\n"
+    test = "diff --git a/tests/test_views.py b/tests/test_views.py\n+++ b/tests/test_views.py\n@@ -0,0 +1 @@\n+x = 1\n"
 
     kept, skipped = strip_unreviewable_files(production + test, _DETECTION)
 
     assert kept == production
-    assert skipped == ("tests/test_views.py",)
+    assert [(item.path, item.reason) for item in skipped] == [("tests/test_views.py", "noise")]
 
 
 _SRC = "diff --git a/app.py b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
@@ -167,7 +146,7 @@ _LOCK = "diff --git a/package-lock.json b/package-lock.json\n@@ -0,0 +1 @@\n+{}\
 def test_strip_unreviewable_files_drops_docs_and_lockfiles_keeps_source():
     kept, skipped = strip_unreviewable_files(_SRC + _DOC + _LOCK, _DETECTION)
     assert kept == _SRC
-    assert set(skipped) == {"README.md", "package-lock.json"}
+    assert {item.path for item in skipped} == {"README.md", "package-lock.json"}
 
 
 def test_strip_unreviewable_files_uses_the_profile_patch_boundary():
@@ -178,7 +157,7 @@ def test_strip_unreviewable_files_uses_the_profile_patch_boundary():
 
     kept, skipped = strip_unreviewable_files(translation + style + template + query, _DETECTION)
 
-    assert set(skipped) == {"messages.xlf", "theme.scss"}
+    assert {item.path for item in skipped} == {"messages.xlf", "theme.scss"}
     assert "view.html" in kept
     assert "data.sql" in kept
 
@@ -189,7 +168,7 @@ def test_strip_unreviewable_files_skips_binary_without_excluding_unknown_source(
 
     kept, skipped = strip_unreviewable_files(binary + source, _DETECTION)
 
-    assert skipped == ("logo.unknown",)
+    assert [(item.path, item.reason) for item in skipped] == [("logo.unknown", "binary")]
     assert kept == source
 
 
@@ -230,16 +209,6 @@ def test_pack_diff_chunks_preserves_source_order_within_bound():
     assert chunk_path(batches[1]) == "helper.ts"
 
 
-def test_changed_paths_filters_noise_files():
-    diff = (
-        "diff --git a/app.py b/app.py\n+++ b/app.py\n+print(1)\n"
-        "diff --git a/catalog.json b/catalog.json\n+++ b/catalog.json\n+{}\n"
-        "diff --git a/README.md b/README.md\n+++ b/README.md\n+hi\n"
-        "diff --git a/tests/test_app.py b/tests/test_app.py\n+++ b/tests/test_app.py\n+def test_x(): pass\n"
-    )
-    assert changed_paths(diff, _DETECTION) == ("app.py",)
-
-
 @pytest.mark.parametrize(
     "header",
     [
@@ -251,7 +220,6 @@ def test_diff_paths_and_ranges_preserve_git_paths_with_spaces(header):
     diff = header + "@@ -0,0 +7,2 @@\n+def route():\n+    return sink()\n"
 
     assert diff_paths(diff) == ("app route.py",)
-    assert changed_paths(diff, _DETECTION) == ("app route.py",)
     assert changed_line_ranges(diff, _DETECTION) == {"app route.py": ((7, 8),)}
 
 
@@ -299,21 +267,17 @@ def test_diff_line_ranges_keep_reportable_non_source_files():
     assert ranges.current == {"policy.yaml": ((1, 1),)}
     assert ranges.old == {"policy.yaml": ((1, 1),)}
     assert ranges.new == {"policy.yaml": ((1, 1),)}
-    assert changed_line_ranges(diff, _DETECTION) == {}
+    assert changed_line_ranges(diff, _DETECTION) == {"policy.yaml": ((1, 1),)}
 
 
 def test_changed_definition_mapping_keeps_deletion_and_enclosing_definitions(tmp_path):
     source = "class View(Base):\n    def handle(self):\n        require_admin(self)\n        return sensitive()\n"
     (tmp_path / "view.py").write_text(source)
     method_start = source.index("    def")
-    graph = {
-        "callgraph": {
-            "view.py": {
-                "View": [{"range": [0, len(source)], "calls": []}],
-                "handle": [{"range": [method_start, len(source)], "calls": ["sensitive"]}],
-            }
-        }
-    }
+    definitions = (
+        definition("view.py", "View", 0, len(source), source=source),
+        definition("view.py", "handle", method_start, len(source), source=source),
+    )
     diff = (
         "diff --git a/view.py b/view.py\n--- a/view.py\n+++ b/view.py\n"
         "@@ -2,3 +2,2 @@ class View(Base):\n"
@@ -322,25 +286,21 @@ def test_changed_definition_mapping_keeps_deletion_and_enclosing_definitions(tmp
         "         return sensitive()\n"
     )
 
-    fragments = changed_definition_fragments(tmp_path, ("view.py",), changed_line_ranges(diff, _DETECTION), graph)
+    changed = changed_definitions(tmp_path, ("view.py",), changed_line_ranges(diff, _DETECTION), definitions)
 
-    assert [fragment.name for fragment in fragments] == ["View", "handle"]
+    assert [item.name for item in changed] == ["View", "handle"]
 
 
 def test_adjacent_definition_end_does_not_claim_the_next_line(tmp_path):
     first = "def a():\n    return 1\n"
     second = "def b():\n    return 2\n"
     (tmp_path / "app.py").write_text(first + second)
-    graph = {
-        "callgraph": {
-            "app.py": {
-                "a": [{"range": [0, len(first)], "calls": []}],
-                "b": [{"range": [len(first), len(first + second)], "calls": []}],
-            }
-        }
-    }
+    definitions = (
+        definition("app.py", "a", 0, len(first), source=first + second),
+        definition("app.py", "b", len(first), len(first + second), source=first + second),
+    )
     diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -3 +3 @@\n-def b():\n+def b(x):\n"
 
-    fragments = changed_definition_fragments(tmp_path, ("app.py",), changed_line_ranges(diff, _DETECTION), graph)
+    changed = changed_definitions(tmp_path, ("app.py",), changed_line_ranges(diff, _DETECTION), definitions)
 
-    assert [fragment.name for fragment in fragments] == ["b"]
+    assert [item.name for item in changed] == ["b"]

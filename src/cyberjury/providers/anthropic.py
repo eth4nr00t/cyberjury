@@ -12,8 +12,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema, Usage
-from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
+from cyberjury.providers.base import (
+    REQUEST_TIMEOUT_SECONDS,
+    CompletionResult,
+    Message,
+    Provider,
+    ResponseSchema,
+    Usage,
+)
 
 
 class AnthropicProvider(Provider):
@@ -26,7 +32,7 @@ class AnthropicProvider(Provider):
         api_base: str | None = None,
         client: Any | None = None,
         temperature: float | None = 0.0,
-        timeout: float = DEFAULT_PROVIDER_SETTINGS.request_timeout_seconds,
+        timeout: float = REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         """Store Anthropic connection settings without constructing the client eagerly."""
         self._api_key = api_key
@@ -50,17 +56,6 @@ class AnthropicProvider(Provider):
                 kwargs["base_url"] = self._api_base
             self._client = anthropic.Anthropic(**kwargs)
         return self._client
-
-    def checkpoint_fingerprint(self) -> ProviderFingerprint:
-        """Identify Anthropic response settings without credentials."""
-        return ProviderFingerprint(
-            backend=f"{type(self).__module__}.{type(self).__qualname__}",
-            settings=(
-                ("api_base", self._api_base or ""),
-                ("temperature", "none" if self._temperature is None else str(self._temperature)),
-                ("timeout", str(self._timeout)),
-            ),
-        )
 
     def complete(
         self,

@@ -6,16 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from evals.benchmarks.contract import load_answer_key
 from evals.benchmarks.validate import validate_benchmark
 
 
 def _write_benchmark(root: Path, *, safe_task: bool = True) -> None:
     root.mkdir()
     (root / "benchmark.yaml").write_text(
-        """schema_version: 1
+        """schema_version: 2
 benchmark_id: example-project
-profile: web
 source:
   kind: git
   identity:
@@ -127,31 +125,6 @@ def test_validate_benchmark_rejects_two_diff_tasks_with_the_same_revision(tmp_pa
         validate_benchmark(root)
 
 
-def test_validate_benchmark_rejects_removed_review_rationale(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    manifest = root / "benchmark.yaml"
-    text = manifest.read_text(encoding="utf-8").replace(
-        "    expectation: clean\n",
-        "    expectation: clean\n    review:\n      rationale: no\n",
-    )
-    manifest.write_text(text, encoding="utf-8")
-    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
-        validate_benchmark(root)
-
-
-def test_validate_benchmark_rejects_a_task_path_outside_source(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    manifest = root / "benchmark.yaml"
-    text = manifest.read_text(encoding="utf-8").replace(
-        "  - id: diff-a1b2c3d-1\n", "  - id: diff-a1b2c3d-1\n    path: .\n"
-    )
-    manifest.write_text(text, encoding="utf-8")
-    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
-        validate_benchmark(root)
-
-
 @pytest.mark.parametrize("source_path", ["foo//bar", "foo/./bar", "foo/", "./foo"])
 def test_validate_benchmark_rejects_a_noncanonical_source_path(tmp_path, source_path):
     root = tmp_path / "example"
@@ -170,7 +143,7 @@ def test_validate_benchmark_rejects_unknown_manifest_fields(tmp_path):
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace("tasks:\n", "unknown: value\ntasks:\n"), encoding="utf-8"
     )
-    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
+    with pytest.raises(ValueError, match=r"benchmark-v2\.schema"):
         validate_benchmark(root)
 
 
@@ -204,19 +177,6 @@ def test_validate_benchmark_rejects_duplicate_check_scopes(tmp_path):
         validate_benchmark(root)
 
 
-def test_validate_benchmark_rejects_duplicate_locations(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    key = root / "answer-key.yaml"
-    text = key.read_text(encoding="utf-8").replace(
-        "      - {file: models/records.py, symbol: Record.owner}\n",
-        "      - {file: models/records.py, symbol: Record.owner}\n" * 2,
-    )
-    key.write_text(text, encoding="utf-8")
-    with pytest.raises(ValueError, match=r"answer-key-v1\.schema"):
-        validate_benchmark(root)
-
-
 def test_validate_benchmark_rejects_diff_changes_on_repository_tasks(tmp_path):
     root = tmp_path / "example"
     _write_benchmark(root)
@@ -232,31 +192,3 @@ def test_validate_benchmark_rejects_diff_changes_on_repository_tasks(tmp_path):
 
     with pytest.raises(ValueError, match="changes require exactly one diff task"):
         validate_benchmark(root)
-
-
-def test_validate_benchmark_rejects_an_unknown_profile(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    manifest = root / "benchmark.yaml"
-    text = manifest.read_text(encoding="utf-8").replace("profile: web", "profile: unknown")
-    manifest.write_text(text, encoding="utf-8")
-
-    with pytest.raises(ValueError, match="unknown or unavailable review profile"):
-        validate_benchmark(root)
-
-
-@pytest.mark.parametrize(
-    ("old", "new"),
-    [
-        ("    applies_to: [diff-a1b2c3d-1]\n", "    applies_to: []\n"),
-        ("    expectation: clean\n", "    expectation: clean\n    unknown: value\n"),
-    ],
-)
-def test_load_answer_key_enforces_the_versioned_schema(tmp_path, old, new):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    key = root / "answer-key.yaml"
-    key.write_text(key.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
-
-    with pytest.raises(ValueError, match=r"answer-key-v1\.schema"):
-        load_answer_key(key)

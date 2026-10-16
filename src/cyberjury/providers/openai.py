@@ -1,8 +1,7 @@
-"""OpenAIProvider: Provider backed by the OpenAI API, Chat Completions or Responses.
+"""OpenAIProvider: Provider backed by the OpenAI API, Responses or Chat Completions.
 
-When the caller leaves ``wire_api`` unset, reasoning model names select Responses and
-other names select Chat Completions. An explicit ``wire_api`` value overrides that
-selection.
+The Responses API is the default. ``wire_api="chat"`` selects Chat Completions for
+compatible endpoints that only serve that API.
 With ``cache`` set, the system prompt and ``cache_prefix`` become one stable routing key so
 every request that repeats that prefix can reuse the provider's automatic prefix cache.
 The client is injectable so the mapping can be tested without the SDK or a key.
@@ -13,8 +12,17 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema, Usage
-from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
+from cyberjury.providers.base import (
+    REQUEST_TIMEOUT_SECONDS,
+    CompletionResult,
+    Message,
+    Provider,
+    ResponseSchema,
+    Usage,
+)
+
+WIRE_APIS = ("responses", "chat")
+_RESPONSES_MIN_OUTPUT_TOKENS = 8_000
 
 
 class OpenAIProvider(Provider):
@@ -27,13 +35,15 @@ class OpenAIProvider(Provider):
         api_base: str | None = None,
         client: Any | None = None,
         wire_api: str | None = None,
-        timeout: float = DEFAULT_PROVIDER_SETTINGS.request_timeout_seconds,
+        timeout: float = REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         """Store OpenAI connection settings without constructing the client eagerly."""
+        if wire_api is not None and wire_api not in WIRE_APIS:
+            raise ValueError(f"OpenAI wire API must be one of {', '.join(WIRE_APIS)}, got {wire_api!r}")
         self._api_key = api_key
         self._api_base = api_base
         self._client = client
-        self._wire_api = wire_api
+        self._wire_api = wire_api or "responses"
         self._timeout = timeout
 
     def _get_client(self) -> Any:
@@ -50,17 +60,6 @@ class OpenAIProvider(Provider):
             self._client = openai.OpenAI(**kwargs)
         return self._client
 
-    def checkpoint_fingerprint(self) -> ProviderFingerprint:
-        """Identify the OpenAI routing configuration without credentials."""
-        return ProviderFingerprint(
-            backend=f"{type(self).__module__}.{type(self).__qualname__}",
-            settings=(
-                ("api_base", self._api_base or ""),
-                ("timeout", str(self._timeout)),
-                ("wire_api", self._wire_api or ""),
-            ),
-        )
-
     def complete(
         self,
         *,
@@ -74,7 +73,7 @@ class OpenAIProvider(Provider):
     ) -> CompletionResult:
         """Return one provider completion with optional usage accounting."""
         routing = _routing_hint(cache, system, cache_prefix)
-        if _wire_api_for_model(self._wire_api, model) == "responses":
+        if self._wire_api == "responses":
             return self._complete_responses(
                 system=system,
                 messages=messages,
@@ -125,7 +124,7 @@ class OpenAIProvider(Provider):
         routing: dict[str, str],
         response_schema: ResponseSchema | None,
     ) -> CompletionResult:
-        """The Responses API path the GPT-5 reasoning models use.
+        """The default Responses API path.
 
         The budget covers reasoning plus output, so it is generous: a budget too small yields
         empty output, which reads as an unusable reply upstream and keeps the finding, never a
@@ -149,7 +148,7 @@ class OpenAIProvider(Provider):
             model=model,
             instructions=system or None,
             input=[{"role": message.role, "content": message.content} for message in messages],
-            max_output_tokens=max(max_tokens, DEFAULT_PROVIDER_SETTINGS.openai_responses_min_output_token_budget),
+            max_output_tokens=max(max_tokens, _RESPONSES_MIN_OUTPUT_TOKENS),
             timeout=self._timeout,
             **routing,
             **output_format,
@@ -171,16 +170,6 @@ def _routing_hint(cache: bool, system: str, cache_prefix: str) -> dict[str, str]
         return {}
     material = f"{system}\x00{cache_prefix}".encode()
     return {"prompt_cache_key": hashlib.sha256(material).hexdigest()[:32]}
-
-
-def _wire_api_for_model(wire_api: str | None, model: str) -> str:
-    """Choose the OpenAI wire API unless the caller explicitly chose one."""
-    if wire_api:
-        return wire_api
-    name = model.lower()
-    if name.startswith(("gpt-5", "o1", "o3", "o4")):
-        return "responses"
-    return "chat"
 
 
 def _chat_usage(response: Any) -> Usage:

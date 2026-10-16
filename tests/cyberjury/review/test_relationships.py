@@ -49,42 +49,17 @@ def _bundle():
 
 
 def test_relationship_evidence_has_stable_ids_and_explicit_source_hashes():
-    from cyberjury.review.relationships import relationship_evidence_from_data
-
     bundle = _bundle()
 
     assert bundle == _bundle()
     data = bundle.to_data()
-    assert data["schema"] == "cyberjury.relationship-evidence/v2"
-    assert data["call_relationships"][0]["target_status"] == "candidate"
-    assert data["call_relationships"][0]["candidate_callee_definition_ids"] == [
-        next(item.id for item in bundle.definitions if item.name == "load")
-    ]
-    assert data["definitions"][0]["source"]["offset_unit"] == "normalized_character"
+    assert data["schema"] == "cyberjury.relationship-evidence/v4"
+    assert bundle.call_relationships[0].target_status == "candidate"
+    assert bundle.call_relationships[0].candidate_callee_definition_ids == (
+        next(item.id for item in bundle.definitions if item.name == "load"),
+    )
     assert len(data["definitions"][0]["source"]["content_sha256"]) == 64
-    assert relationship_evidence_from_data(data) == bundle
-
-
-def test_relationship_evidence_loader_rejects_tampered_source_identity():
-    from cyberjury.review.facts import BackendUnavailable
-    from cyberjury.review.relationships import relationship_evidence_from_data
-
-    data = _bundle().to_data()
-    data["callsites"][0]["source"]["range"][0] += 1
-
-    with pytest.raises(BackendUnavailable, match="id does not match"):
-        relationship_evidence_from_data(data)
-
-
-def test_relationship_evidence_loader_rejects_an_unsafe_source_path():
-    from cyberjury.review.facts import BackendUnavailable
-    from cyberjury.review.relationships import relationship_evidence_from_data
-
-    data = _bundle().to_data()
-    data["definitions"][0]["source"]["path"] = "../route.py"
-
-    with pytest.raises(BackendUnavailable, match="normalized repository path"):
-        relationship_evidence_from_data(data)
+    assert bundle.canonical().to_data() == data
 
 
 def test_relationship_evidence_rejects_conflicting_content_at_one_coordinate():
@@ -115,44 +90,3 @@ def test_relationship_evidence_rejects_a_callsite_outside_its_caller():
             definitions=(caller, DefinitionEvidence.create(source=target.source, kind="function", name="load")),
             callsites=(callsite,),
         )
-
-
-def test_relationship_evidence_loader_rejects_a_forged_target_status():
-    from cyberjury.review.facts import BackendUnavailable
-    from cyberjury.review.relationships import relationship_evidence_from_data
-
-    data = _bundle().to_data()
-    data["call_relationships"][0]["target_status"] = "unresolved"
-
-    with pytest.raises(BackendUnavailable, match="target status"):
-        relationship_evidence_from_data(data)
-
-
-def test_relationship_evidence_rebases_paths_and_every_referenced_id(tmp_path):
-    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
-    from cyberjury.review.relationships import (
-        rebase_relationship_evidence,
-        relationship_evidence_from_data,
-    )
-
-    package = tmp_path / "pkg"
-    package.mkdir()
-    (package / "service.py").write_text("def load(x):\n    return x\n")
-    (package / "route.py").write_text("from service import load\n\ndef route(x):\n    return load(x)\n")
-    bundle = relationship_evidence_from_data(TreeSitterFacts().extract(package).data["relationship_evidence"])
-
-    rebased = rebase_relationship_evidence(
-        bundle,
-        "pkg",
-        lambda rel: (tmp_path / rel).read_text(),
-    )
-
-    assert all(definition.source.path.startswith("pkg/") for definition in rebased.definitions)
-    assert all(callsite.source.path.startswith("pkg/") for callsite in rebased.callsites)
-    assert rebased.callsites[0].caller_definition_id in {item.id for item in rebased.definitions}
-    source_ids = {
-        *(item.id for item in rebased.sources),
-        *(item.source.id for item in rebased.definitions),
-        *(item.source.id for item in rebased.callsites),
-    }
-    assert all(set(observation.provenance_source_ids) <= source_ids for observation in rebased.observations)

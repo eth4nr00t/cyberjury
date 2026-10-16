@@ -1,30 +1,11 @@
 """Grounding receipts bind Stage 06 units to exact initial evidence."""
 
-import pytest
-
+from cyberjury.canonical import text_sha256
 from cyberjury.review.context import EvidenceItem, GroundingContext, SourceEvidence, SourceSpan
-from cyberjury.review.facts import FactsResolutionReceipt, NativeAnalysisReceipt
+from cyberjury.review.facts import Facts, FactsReceipt
 from cyberjury.review.grounding import GroundingReceipt
-from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.unit_plans import UnitPlanReceipt, UnitPlanRecord, UnitSourceSlice
 from cyberjury.sources.snapshot import SourceSnapshot
-
-
-def _facts() -> FactsResolutionReceipt:
-    native = NativeAnalysisReceipt.create(
-        producer="test",
-        producer_version="1",
-        source_count=1,
-        definition_count=1,
-        callsite_count=0,
-        limitation_count=0,
-        evidence={},
-    )
-    return FactsResolutionReceipt.create(
-        native_analysis=native,
-        relationship_evidence=RelationshipEvidenceBundle().to_data(),
-        limitations=(),
-    )
 
 
 def _plan(source_chars: int) -> UnitPlanReceipt:
@@ -33,17 +14,15 @@ def _plan(source_chars: int) -> UnitPlanReceipt:
         name="app.py",
         owned_paths=("app.py",),
         source_slices=(UnitSourceSlice(path="app.py", start=0, end=source_chars),),
-        seed_ids=("source:app.py",),
     )
     return UnitPlanReceipt.create(
-        facts_resolution=_facts(),
+        facts=FactsReceipt.create(backend_id="test", facts=Facts()),
         units=(unit,),
         expected_owned_paths=("app.py",),
-        expected_seed_ids=("source:app.py",),
     )
 
 
-def test_grounding_receipt_round_trips_and_binds_the_unit_plan(tmp_path):
+def test_grounding_receipt_binds_the_unit_plan_and_exact_evidence_content(tmp_path):
     source = "def route():\n    return 1\n"
     (tmp_path / "app.py").write_text(source)
     snapshot = SourceSnapshot.capture(tmp_path, ("app.py",))
@@ -55,8 +34,9 @@ def test_grounding_receipt_round_trips_and_binds_the_unit_plan(tmp_path):
         source_span=SourceSpan(file="app.py", start_line=1, end_line=2),
     )
     context = GroundingContext(
-        text=source,
-        facts="definition route",
+        text="call candidates",
+        seed=source,
+        syntax_hints="definition route",
         files=("app.py",),
         evidence=(evidence,),
         source_spans=(SourceSpan(file="app.py", start_line=1, end_line=2),),
@@ -66,11 +46,16 @@ def test_grounding_receipt_round_trips_and_binds_the_unit_plan(tmp_path):
 
     receipt = GroundingReceipt.create(unit_plan=unit_plan, contexts=(context,))
 
-    assert receipt.unit_plan_receipt_sha256 == unit_plan.receipt_sha256
-    assert receipt.contexts[0].context_chars == len(source)
-    assert receipt.contexts[0].facts_chars == len("definition route")
-    assert receipt.contexts[0].evidence[0].content_sha256
-    assert GroundingReceipt.from_dict(receipt.to_dict()) == receipt
+    artifact = receipt.to_dict()
+    record = artifact["contexts"][0]
+    assert artifact["unit_plan_receipt_sha256"] == unit_plan.receipt_sha256
+    assert artifact["receipt_sha256"] == receipt.receipt_sha256
+    assert artifact["schema"] == "cyberjury.grounding/v5"
+    assert record["seed_chars"] == len(source)
+    assert record["seed_sha256"] == text_sha256(source)
+    assert record["context_chars"] == len("call candidates")
+    assert record["syntax_hints_chars"] == len("definition route")
+    assert record["evidence"][0]["content_sha256"] == text_sha256(source)
 
 
 def test_grounding_receipt_binds_source_the_agent_delivered_before_the_first_call(tmp_path):
@@ -95,35 +80,7 @@ def test_grounding_receipt_binds_source_the_agent_delivered_before_the_first_cal
 
     receipt = GroundingReceipt.create(unit_plan=_plan(len(source)), contexts=(context,))
 
-    record = receipt.contexts[0]
-    assert record.revision_id == context.revision.id
-    assert record.source_evidence[0].id == delivered.id
-    assert record.source_evidence[0].content_chars == len(callee)
-    assert GroundingReceipt.from_dict(receipt.to_dict()) == receipt
-
-
-def test_grounding_receipt_rejects_tampered_context_metadata(tmp_path):
-    source = "source"
-    (tmp_path / "app.py").write_text(source)
-    snapshot = SourceSnapshot.capture(tmp_path, ("app.py",))
-    context = GroundingContext(text=source, source_snapshot=snapshot, snapshot_files=("app.py",))
-    artifact = GroundingReceipt.create(unit_plan=_plan(len(source)), contexts=(context,)).to_dict()
-    artifact["contexts"][0]["context_chars"] = 999
-
-    with pytest.raises(ValueError, match="record hash"):
-        GroundingReceipt.from_dict(artifact)
-
-
-def test_grounding_receipt_rejects_a_context_from_the_wrong_review_path(tmp_path):
-    source = "source"
-    (tmp_path / "app.py").write_text(source)
-    snapshot = SourceSnapshot.capture(tmp_path, ("app.py",))
-    context = GroundingContext(
-        text=source,
-        source="diff",
-        source_snapshot=snapshot,
-        snapshot_files=("app.py",),
-    )
-
-    with pytest.raises(ValueError, match="source does not match unit"):
-        GroundingReceipt.create(unit_plan=_plan(len(source)), contexts=(context,))
+    record = receipt.to_dict()["contexts"][0]
+    assert record["context_sha256"] == text_sha256(context.text)
+    assert record["source_evidence"][0]["id"] == delivered.id
+    assert record["source_evidence"][0]["content_chars"] == len(callee)

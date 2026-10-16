@@ -12,6 +12,8 @@ from cyberjury.review.relationships import (
     RelationshipEvidenceBundle,
     SourceReference,
 )
+from tests.cyberjury.review.support import navigator_from_callgraph
+from tests.cyberjury.syntax.support import syntax_facts
 
 
 def _graph(*, first_end: int, second_end: int) -> dict[str, object]:
@@ -27,13 +29,21 @@ def test_default_navigation_contract_publishes_the_query_batch_limit():
     assert "Send at most 8 `source_queries`" in navigation_instructions()
 
 
+def test_navigation_contract_states_the_exact_search_semantics():
+    instructions = navigation_instructions()
+
+    assert "whose name equals `query` exactly" in instructions
+    assert "literal, case-sensitive substring of one line" in instructions
+    assert "Regular expressions, wildcards, and multi-line text are not supported" in instructions
+    assert "at most 20 results per page; `page` starts at 0" in instructions
+
+
 def test_documentation_navigation_preserves_its_source_kind(tmp_path):
     (tmp_path / "app.py").write_text("def app(): pass\n", encoding="utf-8")
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "development.md").write_text("Use start_services.sh only for development.\n", encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
+    navigator = SourceNavigator.from_facts(
         tmp_path,
-        {"callgraph": {}},
         source_files=("app.py", "docs/development.md"),
         documentation_files=("docs/development.md",),
     )
@@ -72,9 +82,8 @@ def _navigator_with_calls(tmp_path, source: str, spans: tuple[tuple[int, int], .
         )
         for index, (start, end) in enumerate(spans)
     )
-    navigator = SourceNavigator.from_graph(
+    navigator = SourceNavigator.from_facts(
         tmp_path,
-        {"callgraph": {}},
         relationship_evidence=RelationshipEvidenceBundle.create(
             definitions=(definition,),
             callsites=callsites,
@@ -88,21 +97,20 @@ def test_source_operation_identity_maps_nested_multiline_calls_to_the_outer_call
     source = "def reviewed():\n    return search(\n        compile(pattern), text\n    )\n"
     outer = (source.index("search("), source.rindex(")") + 1)
     inner = (source.index("compile("), source.index("), text") + 1)
-    navigator = _navigator_with_calls(tmp_path, source, (outer, inner))
+    session = _navigator_with_calls(tmp_path, source, (outer, inner)).session()
 
-    assert navigator.source_operation_id("app.py", 2)
-    assert navigator.source_operation_id("app.py", 2) == navigator.source_operation_id("app.py", 3)
-    assert navigator.source_operation_id("app.py", 3) != ""
+    assert session.source_operation_id("app.py", 2)
+    assert session.source_operation_id("app.py", 2) == session.source_operation_id("app.py", 3)
 
 
 def test_source_operation_identity_rejects_ambiguous_sibling_calls_on_one_line(tmp_path):
     source = "def reviewed():\n    first(); second()\n"
     first = (source.index("first()"), source.index("first()") + len("first()"))
     second = (source.index("second()"), source.index("second()") + len("second()"))
-    navigator = _navigator_with_calls(tmp_path, source, (first, second))
+    session = _navigator_with_calls(tmp_path, source, (first, second)).session()
 
-    assert navigator.source_operation_id("app.py", 2) == ""
-    assert navigator.source_operation_id("app.py", 1) == ""
+    assert session.source_operation_id("app.py", 2) == ""
+    assert session.source_operation_id("app.py", 1) == ""
 
 
 def test_symbol_search_returns_every_real_candidate_without_evidence(tmp_path):
@@ -112,7 +120,7 @@ def test_symbol_search_returns_every_real_candidate_without_evidence(tmp_path):
     (tmp_path / "plugins").mkdir()
     (tmp_path / "src/one.py").write_text(first, encoding="utf-8")
     (tmp_path / "plugins/two.py").write_text(second, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(tmp_path, _graph(first_end=len(first), second_end=len(second)))
+    navigator = navigator_from_callgraph(tmp_path, _graph(first_end=len(first), second_end=len(second)))
 
     assert navigator is not None
     result = navigator.session().execute(
@@ -130,7 +138,7 @@ def test_symbol_search_returns_every_real_candidate_without_evidence(tmp_path):
 def test_unique_symbol_search_delivers_exact_source_in_the_same_exchange(tmp_path):
     source = "class Record:\n    owner = 'user'\n"
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
+    navigator = navigator_from_callgraph(
         tmp_path,
         {"callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
     )
@@ -143,15 +151,60 @@ def test_unique_symbol_search_delivers_exact_source_in_the_same_exchange(tmp_pat
 
     assert "Unique exact symbol match" in result.text
     assert "owner = 'user'" in result.text
+    assert f"Read source `{result.source_evidence[0].id}` model.py:Record:\n```\n# file: model.py" in result.text
     assert result.coverage.included == (f"model.py:Record:0:{len(source)}",)
     assert len(result.source_evidence) == 1
+
+
+def _python_navigator(tmp_path, source: str) -> SourceNavigator:
+
+    (tmp_path / "store.py").write_text(source, encoding="utf-8")
+    facts = syntax_facts(tmp_path)
+    navigator = SourceNavigator.from_facts(
+        tmp_path,
+        import_files=facts.import_files,
+        relationship_evidence=facts.relationships,
+    )
+    assert navigator is not None
+    return navigator
+
+
+def test_dotted_symbol_search_is_exact_only_for_the_enclosing_definition_name(tmp_path):
+    navigator = _python_navigator(
+        tmp_path,
+        "class Repo:\n    def save(self):\n        return 1\n\nclass Other:\n    def save(self):\n        return 2\n",
+    )
+
+    result = navigator.session().execute(
+        [{"kind": "search_symbols", "query": "Repo.save", "page": 0}],
+        target_chars=10_000,
+    )
+
+    assert "Unique exact symbol match" in result.text
+    assert "return 1" in result.text
+    assert "return 2" not in result.text
+    assert "unverified candidates" not in result.text
+
+
+def test_dotted_symbol_search_lists_last_segment_matches_as_unread_candidates(tmp_path):
+    navigator = _python_navigator(tmp_path, "def save():\n    return 3\n")
+
+    result = navigator.session().execute(
+        [{"kind": "search_symbols", "query": "Repo.save", "page": 0}],
+        target_chars=10_000,
+    )
+
+    assert "No definition matches the qualified name exactly" in result.text
+    assert "store.py:save" in result.text
+    assert "Unique exact symbol match" not in result.text
+    assert result.source_evidence == ()
 
 
 def test_last_symbol_page_is_not_mistaken_for_a_unique_result(tmp_path):
     source = "value = 1\n" * 21
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
     definitions = [{"range": [index * 10, index * 10 + 9], "calls": []} for index in range(21)]
-    navigator = SourceNavigator.from_graph(
+    navigator = navigator_from_callgraph(
         tmp_path,
         {"callgraph": {"model.py": {"Repeated": definitions}}},
     )
@@ -182,10 +235,8 @@ def test_navigation_cannot_read_a_target_that_was_not_published_on_the_requested
         )
         for index in range(21)
     )
-    graph_definitions = [{"range": [index * 10, index * 10 + 9], "calls": []} for index in range(21)]
-    navigator = SourceNavigator.from_graph(
+    navigator = SourceNavigator.from_facts(
         tmp_path,
-        {"callgraph": {"model.py": {"Repeated": graph_definitions}}},
         relationship_evidence=RelationshipEvidenceBundle.create(definitions=definitions),
     )
     assert navigator is not None
@@ -232,7 +283,7 @@ def test_source_target_ids_are_stable_across_sessions_and_query_order(tmp_path):
             }
         },
     }
-    navigator = SourceNavigator.from_graph(tmp_path, graph)
+    navigator = navigator_from_callgraph(tmp_path, graph)
     assert navigator is not None
 
     first = navigator.session().execute(
@@ -261,7 +312,7 @@ def test_source_target_ids_are_stable_across_sessions_and_query_order(tmp_path):
 def test_navigation_rejects_more_than_eight_queries_per_batch(tmp_path):
     source = "class Record:\n    pass\n"
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
+    navigator = navigator_from_callgraph(
         tmp_path,
         {
             "callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}},
@@ -276,23 +327,10 @@ def test_navigation_rejects_more_than_eight_queries_per_batch(tmp_path):
         )
 
 
-def test_source_query_limit_note_states_the_enforced_caps():
-    from cyberjury.review.navigation import (
-        MAX_QUERIES_PER_BATCH,
-        MAX_UNIQUE_QUERIES_PER_SESSION,
-        source_query_limit_note,
-    )
-
-    note = source_query_limit_note()
-    assert str(MAX_QUERIES_PER_BATCH) in note
-    assert str(MAX_UNIQUE_QUERIES_PER_SESSION) in note
-    assert "source_queries" in note
-
-
 def test_navigation_rejects_more_than_the_session_query_budget(tmp_path):
     source = "class Record:\n    pass\n"
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
+    navigator = navigator_from_callgraph(
         tmp_path,
         {"callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
     )
@@ -314,7 +352,7 @@ def test_navigation_rejects_more_than_the_session_query_budget(tmp_path):
 def test_navigation_rejects_a_repeated_query_in_one_session(tmp_path):
     source = "class Record:\n    pass\n"
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
+    navigator = navigator_from_callgraph(
         tmp_path,
         {"callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
     )
@@ -330,7 +368,7 @@ def test_navigation_rejects_a_repeated_query_in_one_session(tmp_path):
 def test_navigation_rejects_a_duplicate_batch_before_committing_any_query(tmp_path):
     source = "class Record:\n    pass\n"
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
+    navigator = navigator_from_callgraph(
         tmp_path,
         {"callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
     )
@@ -346,30 +384,10 @@ def test_navigation_rejects_a_duplicate_batch_before_committing_any_query(tmp_pa
     assert "model.py:Record" in result.text
 
 
-def test_navigation_fails_when_source_changes_after_snapshot(tmp_path):
-    source = "class Record:\n    pass\n"
-    path = tmp_path / "model.py"
-    path.write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        {
-            "callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}},
-        },
-    )
-    assert navigator is not None
-    path.write_text(source + "changed = True\n", encoding="utf-8")
-
-    with pytest.raises(SourceNavigationError, match="changed after snapshot"):
-        navigator.session().execute(
-            [{"kind": "search_symbols", "query": "Record", "page": 0}],
-            target_chars=10_000,
-        )
-
-
 def test_large_definition_search_publishes_bounded_page_targets(tmp_path):
     source = "def large():\n" + "    value = 1\n" * 5_000
     (tmp_path / "large.py").write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
+    navigator = navigator_from_callgraph(
         tmp_path,
         {
             "callgraph": {"large.py": {"large": [{"range": [0, len(source)], "calls": []}]}},
@@ -390,33 +408,13 @@ def test_large_definition_search_publishes_bounded_page_targets(tmp_path):
     assert len(first_page.text) <= 48_000
 
 
-def test_navigation_labels_test_source(tmp_path):
-    source = "def test_policy():\n    pass\n"
-    (tmp_path / "test_policy.py").write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        {
-            "callgraph": {"test_policy.py": {"test_policy": [{"range": [0, len(source)], "calls": []}]}},
-        },
-        test_files=("test_policy.py",),
-    )
-    assert navigator is not None
-
-    result = navigator.session().execute(
-        [{"kind": "search_symbols", "query": "test_policy", "page": 0}],
-        target_chars=10_000,
-    )
-
-    assert "[test] test_policy.py:test_policy" in result.text
-
-
 def test_search_requires_the_documented_page_field(tmp_path):
     source = "class Record:\n    pass\n"
     (tmp_path / "src").mkdir()
     (tmp_path / "src/one.py").write_text(source, encoding="utf-8")
     graph = _graph(first_end=len(source), second_end=len(source))
     graph["callgraph"] = {"src/one.py": graph["callgraph"]["src/one.py"]}
-    navigator = SourceNavigator.from_graph(tmp_path, graph)
+    navigator = navigator_from_callgraph(tmp_path, graph)
 
     assert navigator is not None
     with pytest.raises(SourceNavigationError, match="must include page"):
@@ -432,7 +430,7 @@ def test_read_source_requires_a_target_returned_by_the_same_session(tmp_path):
     (tmp_path / "src/one.py").write_text(source, encoding="utf-8")
     graph = _graph(first_end=len(source), second_end=len(source))
     graph["callgraph"] = {"src/one.py": graph["callgraph"]["src/one.py"]}
-    navigator = SourceNavigator.from_graph(tmp_path, graph)
+    navigator = navigator_from_callgraph(tmp_path, graph)
 
     assert navigator is not None
     session = navigator.session()
@@ -459,7 +457,9 @@ def test_read_source_requires_a_target_returned_by_the_same_session(tmp_path):
 
     read = session.read([target.group(1)], target_chars=10_000)
 
-    assert "owner = 'user'" in read.text
+    assert "owner = 'user'" in searched.text
+    assert "owner = 'user'" not in read.text
+    assert f"`{target.group(1)}` src/one.py:Record lines 1-2 is already delivered" in read.text
     assert read.coverage.included == (f"src/one.py:Record:0:{len(source)}",)
     with pytest.raises(SourceNavigationError, match="unknown target"):
         session.read(["src-invented"], target_chars=10_000)
@@ -475,7 +475,7 @@ def test_definition_navigation_uses_normalized_character_ranges(tmp_path):
     graph = {
         "callgraph": {"app.py": {"target": [{"range": [start, end], "calls": []}]}},
     }
-    navigator = SourceNavigator.from_graph(tmp_path, graph)
+    navigator = navigator_from_callgraph(tmp_path, graph)
 
     assert navigator is not None
     session = navigator.session()
@@ -488,9 +488,10 @@ def test_definition_navigation_uses_normalized_character_ranges(tmp_path):
 
     read = session.read([target.group(1)], target_chars=10_000)
 
-    assert "2 | def target():" in read.text
-    assert "return 'ok'" in read.text
-    assert prefix.strip() not in read.text
+    assert "2 | def target():" in searched.text
+    assert "return 'ok'" in searched.text
+    assert prefix.strip() not in searched.text
+    assert "return 'ok'" not in read.text
     assert read.coverage.included == (f"app.py:target:{start}:{end}",)
     assert read.source_evidence[0].source_span is not None
     assert read.source_evidence[0].source_span.file == "app.py"
@@ -507,7 +508,7 @@ def test_definition_navigation_uses_normalized_newlines(tmp_path):
     graph = {
         "callgraph": {"app.py": {"target": [{"range": [start, end], "calls": []}]}},
     }
-    navigator = SourceNavigator.from_graph(tmp_path, graph)
+    navigator = navigator_from_callgraph(tmp_path, graph)
 
     assert navigator is not None
     session = navigator.session()
@@ -519,46 +520,16 @@ def test_definition_navigation_uses_normalized_newlines(tmp_path):
     assert target is not None
     read = session.read([target.group(1)], target_chars=10_000)
 
-    assert "2 | def target():" in read.text
-    assert "3 |     return 'ok'" in read.text
-    assert "header" not in read.text
+    assert "2 | def target():" in searched.text
+    assert "3 |     return 'ok'" in searched.text
+    assert "header" not in searched.text
     assert read.source_evidence[0].source_span == SourceSpan(file="app.py", start_line=2, end_line=3)
-
-
-def test_navigation_rejects_the_removed_resolved_relationship_query(tmp_path):
-    source = "def caller():\n    return 1\n"
-    (tmp_path / "caller.py").write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
-        tmp_path,
-        {"callgraph": {"caller.py": {"caller": [{"range": [0, len(source)], "calls": []}]}}},
-    )
-
-    assert navigator is not None
-    with pytest.raises(SourceNavigationError, match="unknown kind 'related_sources'"):
-        navigator.session().execute(
-            [{"kind": "related_sources", "target": "src-1", "direction": "callees", "page": 0}],
-            target_chars=10_000,
-        )
-
-
-def test_navigation_excludes_graph_paths_that_escape_the_source_root(tmp_path):
-    from cyberjury.review.facts import BackendUnavailable
-
-    outside = tmp_path.parent / "outside.py"
-    outside.write_text("def leaked(): pass\n", encoding="utf-8")
-    graph = {
-        "callgraph": {"../outside.py": {"leaked": [{"range": [0, len(outside.read_text())], "calls": []}]}},
-    }
-
-    with pytest.raises(BackendUnavailable, match="normalized repository path"):
-        SourceNavigator.from_graph(tmp_path, graph)
 
 
 def test_unique_text_search_delivers_verified_source_without_a_graph_definition(tmp_path):
     (tmp_path / "routes.yaml").write_text("handler: dynamic_route\n", encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
+    navigator = SourceNavigator.from_facts(
         tmp_path,
-        {},
         source_files=("routes.yaml",),
     )
 
@@ -577,9 +548,8 @@ def test_unique_text_search_delivers_verified_source_without_a_graph_definition(
 def test_ambiguous_text_search_publishes_choices_without_reading_them(tmp_path):
     (tmp_path / "one.txt").write_text("handler: dynamic_route\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("handler: dynamic_route\n", encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
+    navigator = SourceNavigator.from_facts(
         tmp_path,
-        {},
         source_files=("one.txt", "two.txt"),
     )
 
@@ -595,18 +565,16 @@ def test_ambiguous_text_search_publishes_choices_without_reading_them(tmp_path):
 
 
 def test_call_candidate_navigation_keeps_binding_with_the_model(tmp_path):
-    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
-    from cyberjury.review.relationships import relationship_evidence_from_data
 
     service = "def target(value):\n    return value\n"
     route = "from service import target\n\ndef route(value):\n    return target(value)\n"
     (tmp_path / "service.py").write_text(service, encoding="utf-8")
     (tmp_path / "route.py").write_text(route, encoding="utf-8")
-    facts = TreeSitterFacts().extract(tmp_path).data
-    relationships = relationship_evidence_from_data(facts["relationship_evidence"])
-    navigator = SourceNavigator.from_graph(
+    facts = syntax_facts(tmp_path)
+    relationships = facts.relationships
+    navigator = SourceNavigator.from_facts(
         tmp_path,
-        facts["graph"],
+        import_files=facts.import_files,
         relationship_evidence=relationships,
     )
 
@@ -636,16 +604,14 @@ def test_call_candidate_navigation_keeps_binding_with_the_model(tmp_path):
 
 
 def test_structural_candidate_navigation_keeps_binding_with_the_model(tmp_path):
-    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
-    from cyberjury.review.relationships import relationship_evidence_from_data
 
     source = "class Base:\n    pass\n\nclass Child(Base):\n    pass\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
-    facts = TreeSitterFacts().extract(tmp_path).data
-    relationships = relationship_evidence_from_data(facts["relationship_evidence"])
-    navigator = SourceNavigator.from_graph(
+    facts = syntax_facts(tmp_path)
+    relationships = facts.relationships
+    navigator = SourceNavigator.from_facts(
         tmp_path,
-        facts["graph"],
+        import_files=facts.import_files,
         relationship_evidence=relationships,
     )
 
@@ -695,17 +661,15 @@ def test_structural_candidate_navigation_keeps_binding_with_the_model(tmp_path):
     assert "models.py:Child" in incoming.text
 
 
-def test_web_inheritance_without_a_local_target_stays_an_unbound_source_clue(tmp_path):
-    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
-    from cyberjury.review.relationships import relationship_evidence_from_data
+def test_inheritance_without_a_local_target_stays_an_unbound_source_clue(tmp_path):
 
     source = "class Child(ExternalBase):\n    pass\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
-    facts = TreeSitterFacts().extract(tmp_path).data
-    relationships = relationship_evidence_from_data(facts["relationship_evidence"])
-    navigator = SourceNavigator.from_graph(
+    facts = syntax_facts(tmp_path)
+    relationships = facts.relationships
+    navigator = SourceNavigator.from_facts(
         tmp_path,
-        facts["graph"],
+        import_files=facts.import_files,
         relationship_evidence=relationships,
     )
 
@@ -764,7 +728,6 @@ def test_structural_candidate_navigation_pages_expanded_same_name_candidates(tmp
     base_start = child_source.index("Base")
     relationship = StructuralRelationshipEvidence.create(
         kind="inheritance",
-        source_file="child.py",
         source=SourceReference.create(
             path="child.py",
             start=base_start,
@@ -780,13 +743,7 @@ def test_structural_candidate_navigation_pages_expanded_same_name_candidates(tmp
         definitions=(child, *bases),
         structural_relationships=(relationship,),
     )
-    graph = {
-        "callgraph": {
-            "child.py": {"Child": [{"range": [0, len(child_source)], "calls": []}]},
-            **{item.source.path: {"Base": [{"range": [0, item.source.end], "calls": []}]} for item in bases},
-        }
-    }
-    navigator = SourceNavigator.from_graph(tmp_path, graph, relationship_evidence=relationships)
+    navigator = SourceNavigator.from_facts(tmp_path, relationship_evidence=relationships)
 
     assert navigator is not None
     session = navigator.session()
@@ -825,40 +782,10 @@ def test_structural_candidate_navigation_pages_expanded_same_name_candidates(tmp
     assert "more results" not in second.text
 
 
-def test_overloaded_signature_search_keeps_its_shared_definition_id(tmp_path):
-    from cyberjury.review.relationships import DefinitionEvidence, RelationshipEvidenceBundle, SourceReference
-
-    source = "function withdraw(uint256 amount) external {}"
-    (tmp_path / "Vault.sol").write_text(source, encoding="utf-8")
-    definition = DefinitionEvidence.create(
-        source=SourceReference.create(path="Vault.sol", start=0, end=len(source), content=source),
-        kind="function",
-        name="withdraw",
-        signature="withdraw(uint256)",
-    )
-    relationships = RelationshipEvidenceBundle.create(definitions=(definition,))
-    graph = {
-        "callgraph": {
-            "Vault.sol": {
-                "withdraw(uint256)": [{"range": [0, len(source)], "calls": []}],
-            }
-        }
-    }
-    navigator = SourceNavigator.from_graph(tmp_path, graph, relationship_evidence=relationships)
-
-    assert navigator is not None
-    result = navigator.session().execute(
-        [{"kind": "search_symbols", "query": "withdraw(uint256)", "page": 0}],
-        target_chars=10_000,
-    )
-
-    assert f"definition `{definition.id}`" in result.text
-
-
 def test_navigation_transaction_rolls_back_an_oversized_query(tmp_path):
     source = "class Record:\n    value = 1\n"
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_graph(
+    navigator = navigator_from_callgraph(
         tmp_path,
         {"callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
     )
@@ -871,3 +798,61 @@ def test_navigation_transaction_rolls_back_an_oversized_query(tmp_path):
 
     assert session.query_was_executed(query) is False
     assert "Record" in session.execute([query], target_chars=10_000).text
+
+
+def _target_navigator(tmp_path, body: str = ""):
+    prefix = "header = 1\n"
+    definition = f"def target():\n{body}    return 'ok'\n"
+    (tmp_path / "app.py").write_text(prefix + definition, encoding="utf-8")
+    start = len(prefix)
+    graph = {"callgraph": {"app.py": {"target": [{"range": [start, start + len(definition)], "calls": []}]}}}
+    navigator = navigator_from_callgraph(tmp_path, graph)
+    assert navigator is not None
+    return navigator
+
+
+def test_navigation_lists_source_inside_the_seed_as_delivered_with_its_own_receipt(tmp_path):
+    session = _target_navigator(tmp_path).session()
+    session.record_delivered((), seed_spans=(SourceSpan(file="app.py", start_line=1, end_line=3),))
+
+    searched = session.execute([{"kind": "search_symbols", "query": "target", "page": 0}], target_chars=10_000)
+
+    assert "| already delivered in `seed`" in searched.text
+    assert "Unique exact symbol match" not in searched.text
+    assert "return 'ok'" not in searched.text
+    [receipt] = searched.source_evidence
+    assert receipt.id in searched.coverage.references
+    assert (receipt.source_span.start_line, receipt.source_span.end_line) == (2, 3)
+
+
+def test_navigation_never_delivers_initial_or_earlier_source_again(tmp_path):
+    from cyberjury.review.context import SourceEvidence
+
+    session = _target_navigator(tmp_path).session()
+    initial = SourceEvidence(
+        id="src-000000000001",
+        identity="app.py:lines 1-3:0:39",
+        text="# file: app.py lines 1-3\n1 | header = 1\n2 | def target():\n3 |     return 'ok'",
+        source_span=SourceSpan(file="app.py", start_line=1, end_line=3),
+    )
+    session.record_delivered((initial,))
+
+    searched = session.execute([{"kind": "search_text", "query": "return 'ok'", "page": 0}], target_chars=10_000)
+    target = re.search(r"`(src-[0-9a-f]+)`", searched.text).group(1)
+    read = session.read([target], target_chars=10_000)
+
+    assert f"| already delivered in `{initial.id}`" in searched.text
+    assert "Unique exact text match" not in searched.text
+    assert "already delivered" in read.text
+    assert "header = 1" not in read.text
+
+
+def test_an_auto_read_source_is_not_delivered_again_by_a_later_search(tmp_path):
+    session = _target_navigator(tmp_path, body="    value = 1\n" * 10).session()
+
+    first = session.execute([{"kind": "search_symbols", "query": "target", "page": 0}], target_chars=10_000)
+    second = session.execute([{"kind": "search_text", "query": "return 'ok'", "page": 0}], target_chars=10_000)
+
+    assert "Unique exact symbol match" in first.text
+    assert "Unique exact text match" not in second.text
+    assert "already delivered in `src-" in second.text

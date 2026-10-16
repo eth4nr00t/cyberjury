@@ -6,12 +6,13 @@ from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
-from cyberjury.review.definitions import DefinitionFragment, DefinitionUnitPlan, definition_fragments
-from cyberjury.review.facts import FactsResolutionReceipt
+from cyberjury.numbering import split_lines
+from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.paths import safe_repository_path
+from cyberjury.review.relationships import DefinitionEvidence
 from cyberjury.review.repository.context import Unit
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.unit_plans import UnitPlanReceipt, UnitPlanRecord, UnitSourceSlice
+from cyberjury.review.unit_plans import UnitPlanRecord, UnitSourceSlice
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 
@@ -30,7 +31,7 @@ def construct_boundaries(text: str) -> list[int]:
     starts: list[int] = []
     decorated = False
     offset = 0
-    for line in text.splitlines(keepends=True):
+    for line in split_lines(text, keepends=True):
         stripped = line.lstrip()
         top_level = bool(stripped) and len(stripped) == len(line)
         if top_level and stripped.startswith("@"):
@@ -47,19 +48,19 @@ def construct_boundaries(text: str) -> list[int]:
     return starts
 
 
-def char_spans(text: str) -> list[tuple[int, int] | None]:
+def char_spans(text: str) -> list[tuple[int, int]]:
     """The char windows that cover `text`.
 
-    Text that fits one window is reviewed intact, span None. Larger text is split at top-
-    level construct boundaries so each class or function lands intact in one window. A single
-    construct longer than a window is hard split with an overlap, so even then no boundary
-    silently drops a construct's tail.
+    Text that fits one window is reviewed intact. Larger text is split at top-level construct
+    boundaries so each class or function lands intact in one window. A single construct
+    longer than a window is hard split with an overlap, so even then no boundary silently
+    drops a construct's tail.
     """
     size = len(text)
     if size <= _SETTINGS.max_source_chars_per_unit:
-        return [None]
+        return [(0, size)]
     boundaries = construct_boundaries(text)
-    spans: list[tuple[int, int] | None] = []
+    spans: list[tuple[int, int]] = []
     start = 0
     while True:
         target = start + _SETTINGS.max_source_chars_per_unit
@@ -92,150 +93,67 @@ def _unit_source_text(root: str | Path, rel: str) -> str:
 def build_units(
     root: str | Path,
     candidate_files: Sequence[str],
-    facts_graph: dict[str, object] | None = None,
+    definitions: tuple[DefinitionEvidence, ...],
 ) -> list[Unit]:
-    """Cover every repository seed file with source windows bound to its exact definitions."""
+    """Cover every repository source file with windows bound to its exact definitions."""
     root = str(root)
-    source_files = tuple(dict.fromkeys(candidate_files))
-    units = _bind_source_definition_plans(_source_units(root, source_files), facts_graph)
-    for unit in units:
-        _unit_source_slices(Path(root), unit)
-    names = [unit.name for unit in units]
-    if len(names) != len(set(names)):
-        raise ValueError("repository unit names must be unique")
-    return units
-
-
-def _bind_source_definition_plans(units: list[Unit], graph: dict[str, object] | None) -> list[Unit]:
-    """Bind source windows to exact definitions without creating duplicate review work."""
-    by_file: dict[str, list[DefinitionFragment]] = {}
-    for fragments in definition_fragments(graph or {}).values():
-        for fragment in fragments:
-            if fragment.name != "<file>":
-                by_file.setdefault(fragment.file, []).append(fragment)
-    assigned: dict[int, list[DefinitionFragment]] = {}
-    for file, fragments in by_file.items():
-        candidates = [(index, unit) for index, unit in enumerate(units) if unit.files == (file,)]
-        for fragment in fragments:
-            ranked = [
-                (_source_unit_overlap(unit, fragment), -index, index)
-                for index, unit in candidates
-                if _source_unit_overlap(unit, fragment) > 0
-            ]
-            if ranked:
-                _overlap, _position, owner = max(ranked)
-                assigned.setdefault(owner, []).append(fragment)
-    bound = []
-    for index, unit in enumerate(units):
-        seeds = tuple(sorted(assigned.get(index, ()), key=lambda value: (value.start, value.end, value.name)))
-        plan = DefinitionUnitPlan(seeds=seeds, seed_files=(unit.files[0],)) if seeds else None
-        bound.append(replace(unit, definition_plan=plan))
-    return bound
-
-
-def _source_unit_overlap(unit: Unit, fragment: DefinitionFragment) -> int:
-    """Measure exact source overlap for deterministic single unit ownership."""
-    if unit.files[0] != fragment.file:
-        return 0
-    start, end = unit.span or (0, fragment.end)
-    return max(0, min(end, fragment.end) - max(start, fragment.start))
-
-
-def _source_units(root: str, source_files: tuple[str, ...]) -> list[Unit]:
     units: list[Unit] = []
-    for source_file in source_files:
-        text = _unit_source_text(root, source_file)
-        if not text:
-            continue
-        spans = char_spans(text)
+    for source_file in dict.fromkeys(candidate_files):
+        spans = char_spans(_unit_source_text(root, source_file))
         units.extend(
             Unit(
                 name=source_file if len(spans) == 1 else f"{source_file}#{index}",
                 root=root,
-                files=(source_file,),
-                owned_paths=(source_file,),
+                file=source_file,
                 span=span,
             )
             for index, span in enumerate(spans, 1)
         )
-    return units
+    return _bind_source_definition_plans(units, definitions)
 
 
-def repository_unit_plan_receipt(
-    root: str | Path,
-    units: Sequence[Unit],
-    facts_resolution: FactsResolutionReceipt,
-    *,
-    expected_owned_paths: tuple[str, ...],
-) -> UnitPlanReceipt:
-    """Project repository units into the shared observable planning schema."""
-    base = Path(root)
-    records: list[UnitPlanRecord] = []
-    for unit in units:
-        slices = _unit_source_slices(base, unit)
-        source_chars = sum(source.end - source.start for source in slices)
-        over_target = (
-            (f"source chars exceed {_SETTINGS.max_source_chars_per_unit}",)
-            if source_chars > _SETTINGS.max_source_chars_per_unit
-            else ()
-        )
-        plan = unit.definition_plan
-        labels = tuple(f"definition:{seed.identity}" for seed in plan.seeds) if plan is not None else ()
-        records.append(
-            UnitPlanRecord.create(
-                kind="source",
-                name=unit.name,
-                labels=labels,
-                owned_paths=unit.owned_paths,
-                source_slices=slices,
-                seed_ids=tuple(f"source:{path}" for path in unit.owned_paths),
-                over_target_reasons=over_target,
+def _bind_source_definition_plans(units: list[Unit], definitions: tuple[DefinitionEvidence, ...]) -> list[Unit]:
+    """Bind source windows to exact definitions without creating duplicate review work."""
+    by_file: dict[str, list[DefinitionEvidence]] = {}
+    for definition in definitions:
+        if definition.kind != "file":
+            by_file.setdefault(definition.source.path, []).append(definition)
+    assigned: dict[int, list[DefinitionEvidence]] = {}
+    for file, file_definitions in by_file.items():
+        candidates = [(index, unit) for index, unit in enumerate(units) if unit.file == file]
+        for definition in file_definitions:
+            ranked = [
+                (overlap, -index, index)
+                for index, unit in candidates
+                if (overlap := _source_unit_overlap(unit, definition)) > 0
+            ]
+            if ranked:
+                _overlap, _position, owner = max(ranked)
+                assigned.setdefault(owner, []).append(definition)
+    bound = []
+    for index, unit in enumerate(units):
+        seeds = tuple(
+            sorted(
+                assigned.get(index, ()),
+                key=lambda value: (value.source.start, value.source.end, value.name),
             )
         )
-    expected_paths = tuple(dict.fromkeys(expected_owned_paths))
-    empty_paths = tuple(path for path in expected_paths if not _unit_source_text(base, path))
-    _validate_repository_source_coverage(base, tuple(records), expected_paths, empty_paths)
-    receipt = UnitPlanReceipt.create(
-        facts_resolution=facts_resolution,
-        units=tuple(records),
-        expected_owned_paths=expected_paths,
-        excluded_empty_paths=empty_paths,
-        expected_seed_ids=tuple(f"source:{path}" for path in expected_paths if path not in empty_paths),
+        plan = DefinitionUnitPlan(seeds=seeds, seed_files=(unit.file,)) if seeds else None
+        bound.append(replace(unit, definition_plan=plan))
+    return bound
+
+
+def _source_unit_overlap(unit: Unit, definition: DefinitionEvidence) -> int:
+    """Measure exact source overlap for deterministic single unit ownership."""
+    start, end = unit.span
+    return max(0, min(end, definition.source.end) - max(start, definition.source.start))
+
+
+def repository_unit_plan_record(unit: Unit) -> UnitPlanRecord:
+    """Project one repository unit into the shared observable planning schema."""
+    return UnitPlanRecord.create(
+        kind="source",
+        name=unit.name,
+        owned_paths=(unit.file,),
+        source_slices=(UnitSourceSlice(path=unit.file, start=unit.span[0], end=unit.span[1]),),
     )
-    if receipt.unowned_paths or receipt.unowned_seed_ids:
-        raise ValueError("repository unit planning left expected paths or seeds unowned")
-    return receipt
-
-
-def _validate_repository_source_coverage(
-    root: Path,
-    units: tuple[UnitPlanRecord, ...],
-    expected_paths: tuple[str, ...],
-    empty_paths: tuple[str, ...],
-) -> None:
-    """Require source units to cover every nonempty input byte."""
-    by_path: dict[str, list[tuple[int, int]]] = {}
-    for unit in units:
-        if unit.kind != "source":
-            continue
-        for source in unit.source_slices:
-            by_path.setdefault(source.path, []).append((source.start, source.end))
-    empty = set(empty_paths)
-    for path in expected_paths:
-        if path in empty:
-            continue
-        size = len(_unit_source_text(root, path))
-        cursor = 0
-        for start, end in sorted(by_path.get(path, ())):
-            if start > cursor:
-                raise ValueError(f"repository unit planning left source range {path}:{cursor}:{start} uncovered")
-            cursor = max(cursor, end)
-        if cursor < size:
-            raise ValueError(f"repository unit planning left source range {path}:{cursor}:{size} uncovered")
-
-
-def _unit_source_slices(root: Path, unit: Unit) -> tuple[UnitSourceSlice, ...]:
-    file = unit.files[0]
-    text = _unit_source_text(root, file)
-    start, end = unit.span or (0, len(text))
-    return (UnitSourceSlice(path=file, start=start, end=end),) if end > start else ()

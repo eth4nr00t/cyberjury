@@ -30,8 +30,7 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from cyberjury.json_parse import parse_json_object
-from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderFingerprint, ResponseSchema, Usage
-from cyberjury.providers.settings import DEFAULT_PROVIDER_SETTINGS
+from cyberjury.providers.base import CompletionResult, Message, Provider, ResponseSchema, Usage
 
 
 class EmptyResponseError(RuntimeError):
@@ -120,13 +119,12 @@ class RetryProvider(Provider):
         self,
         inner: Provider,
         *,
-        max_attempts: int = DEFAULT_PROVIDER_SETTINGS.retries_after_failure + 1,
-        base_delay: float = DEFAULT_PROVIDER_SETTINGS.retry_initial_delay_seconds,
-        max_delay: float = DEFAULT_PROVIDER_SETTINGS.retry_max_delay_seconds,
+        max_attempts: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 60.0,
         hard_timeout: float | None = None,
         sleep: Callable[[float], None] = time.sleep,
         rand: Callable[[float, float], float] = random.uniform,
-        retryable: tuple[type[BaseException], ...] = (Exception,),
     ) -> None:
         """Bind retry limits, delay policy, and timeout wrapping around one provider."""
         self._inner = inner
@@ -136,30 +134,12 @@ class RetryProvider(Provider):
         self._hard_timeout = hard_timeout
         self._sleep = sleep
         self._rand = rand
-        self._retryable = retryable
 
     def _call_inner(self, **kwargs) -> CompletionResult:
         """Invoke the wrapped provider, bounded by the hard deadline when one is set."""
         if self._hard_timeout is None:
             return self._inner.complete(**kwargs)
         return _call_with_deadline(lambda: self._inner.complete(**kwargs), self._hard_timeout)
-
-    def checkpoint_fingerprint(self) -> ProviderFingerprint:
-        """Identify the retry policy and wrapped response provider."""
-        return ProviderFingerprint(
-            backend=f"{type(self).__module__}.{type(self).__qualname__}",
-            settings=(
-                ("base_delay", str(self._base_delay)),
-                ("hard_timeout", "none" if self._hard_timeout is None else str(self._hard_timeout)),
-                ("max_attempts", str(self._max_attempts)),
-                ("max_delay", str(self._max_delay)),
-                (
-                    "retryable",
-                    ",".join(f"{item.__module__}.{item.__qualname__}" for item in self._retryable),
-                ),
-            ),
-            inner=self._inner.checkpoint_fingerprint(),
-        )
 
     def _backoff(self, exc: BaseException, attempt: int) -> float:
         """Seconds to wait before the next attempt.
@@ -200,7 +180,7 @@ class RetryProvider(Provider):
                     cache_prefix=cache_prefix,
                     response_schema=response_schema,
                 )
-            except self._retryable as exc:
+            except Exception as exc:
                 if attempt == self._max_attempts:
                     with contextlib.suppress(Exception):
                         exc.cyberjury_attempts = attempt
@@ -218,4 +198,3 @@ class RetryProvider(Provider):
                 error.cyberjury_attempts = attempt
                 raise error
             self._sleep(self._base_delay * attempt)
-        raise EmptyResponseError("retry provider was configured with no attempts")

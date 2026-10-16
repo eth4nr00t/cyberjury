@@ -11,16 +11,15 @@ from cyberjury.review.context import (
     SourceSpan,
     candidate_call_context,
     definition_evidence,
-    definition_plan_source_files,
     evidence_index,
     evidence_request_ids,
     merge_grounding_coverage,
-    select_evidence,
+    source_id,
     source_location_receipt,
     with_scoped_fact_limitations,
     with_source_evidence,
 )
-from cyberjury.review.definitions import DefinitionFragment, DefinitionUnitPlan
+from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.facts import FactLimitation
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.relationships import (
@@ -29,12 +28,12 @@ from cyberjury.review.relationships import (
     RelationshipEvidenceBundle,
     SourceReference,
 )
-from cyberjury.sources.snapshot import SourceSnapshot, source_snapshot_files
+from cyberjury.sources.snapshot import SourceSnapshot
+from tests.cyberjury.review.support import definition
 
 
 def test_grounding_context_marks_its_source_boundary():
-    context = GroundingContext(text="source", files=("app.py",), source="diff")
-    assert context.source == "diff"
+    context = GroundingContext(text="source", files=("app.py",))
     assert context.files == ("app.py",)
 
 
@@ -53,27 +52,24 @@ def test_evidence_index_keeps_untrusted_labels_and_previews_on_one_line():
     assert "declaration: `` class `Item`:\\n    pass ``" in index
 
 
-def test_candidate_call_relationships_remain_clues_with_searchable_callees(tmp_path):
-    caller_text = "def route(value): return load(value)"
-    callee_text = "def load(value): return execute(value)"
+def _candidate_call_fixture(tmp_path):
+    caller_text = "import service\n\ndef route(value):\n    return load(value)\n"
+    callee_text = "def load(value):\n    return execute(value)\n"
     call_text = "load(value)"
     call_start = caller_text.index(call_text)
     (tmp_path / "route.py").write_text(caller_text, encoding="utf-8")
     (tmp_path / "service.py").write_text(callee_text, encoding="utf-8")
-    caller_source = SourceReference.create(
-        path="route.py",
-        start=0,
-        end=len(caller_text),
-        content=caller_text,
+    caller = DefinitionEvidence.create(
+        source=SourceReference.create(path="route.py", start=0, end=len(caller_text), content=caller_text),
+        kind="function",
+        name="route",
+        signature="def route(\n    value,\n)",
     )
-    callee_source = SourceReference.create(
-        path="service.py",
-        start=0,
-        end=len(callee_text),
-        content=callee_text,
+    callee = DefinitionEvidence.create(
+        source=SourceReference.create(path="service.py", start=0, end=len(callee_text), content=callee_text),
+        kind="function",
+        name="load",
     )
-    caller = DefinitionEvidence.create(source=caller_source, kind="function", name="route")
-    callee = DefinitionEvidence.create(source=callee_source, kind="function", name="load")
     callsite = CallsiteEvidence.create(
         caller_definition_id=caller.id,
         source=SourceReference.create(
@@ -102,22 +98,36 @@ def test_candidate_call_relationships_remain_clues_with_searchable_callees(tmp_p
         definitions=(caller, callee),
         callsites=(callsite, callee_callsite),
     )
-    plan = DefinitionUnitPlan(
-        seeds=(DefinitionFragment("route.py", "route", 0, len(caller_text)),),
-    )
+    return DefinitionUnitPlan(seeds=(caller,)), relationships
+
+
+def test_candidate_call_clues_use_line_numbers_and_name_only_usable_receipts(tmp_path):
+    plan, relationships = _candidate_call_fixture(tmp_path)
 
     context = candidate_call_context(tmp_path, plan, relationships, max_chars=10_000)
-    rendered = context.text
 
-    assert rendered.startswith("Unverified direct call candidates")
-    assert f"caller `{caller.id}`" in rendered
-    assert f"relationship `{relationships.call_relationships[0].id}`" in rendered
-    assert f"callsite `{callsite.id}`" in rendered
-    assert f"`{callee.id}`" in rendered
-    assert "service.py:load" in rendered
-    assert "candidate callee calls: execute" in rendered
-    assert len(context.source_evidence) == 1
-    assert "def load(value)" in context.source_evidence[0].text
+    [published] = context.published
+    assert context.delivered == ()
+    assert published.label == "candidate callee service.py:load lines 1-2"
+    assert published.preview == "def load(value):"
+    assert "def load(value)" in published.text
+    assert context.text.splitlines()[1:] == [
+        "- caller route.py: `def route( value, )`",
+        f"  - `load(value)` at route.py:4; candidate callee service.py:load lines 1-2, source `{published.id}` in "
+        "the evidence catalog; candidate callee calls: `execute`",
+    ]
+    assert not any(prefix in context.text for prefix in ("def-", "callrel-", "call-"))
+
+
+def test_candidate_callee_source_delivered_initially_names_its_source_receipt(tmp_path):
+    plan, relationships = _candidate_call_fixture(tmp_path)
+
+    context = candidate_call_context(tmp_path, plan, relationships, max_chars=10_000, deliver_chars=10_000)
+
+    [delivered] = context.delivered
+    assert context.published == ()
+    assert f"source `{delivered.id}` delivered below" in context.text
+    assert context.source_files == ("service.py",)
 
 
 def test_candidate_call_source_is_not_delivered_when_its_clue_exceeds_the_budget(tmp_path):
@@ -153,12 +163,12 @@ def test_candidate_call_source_is_not_delivered_when_its_clue_exceeds_the_budget
             ),
         ),
     )
-    plan = DefinitionUnitPlan(seeds=(DefinitionFragment("route.py", "route", 0, len(caller_text)),))
+    plan = DefinitionUnitPlan(seeds=(caller,))
 
     context = candidate_call_context(tmp_path, plan, relationships, max_chars=1)
 
     assert context.text == ""
-    assert context.source_evidence == ()
+    assert context.delivered == context.published == ()
 
 
 def test_candidate_call_source_is_not_duplicated_when_the_callee_is_a_unit_seed(tmp_path):
@@ -196,15 +206,15 @@ def test_candidate_call_source_is_not_duplicated_when_the_callee_is_a_unit_seed(
     )
     plan = DefinitionUnitPlan(
         seeds=(
-            DefinitionFragment("route.py", "route", 0, len(caller_text)),
-            DefinitionFragment("service.py", "load", 0, len(callee_text)),
+            caller,
+            callee,
         ),
     )
 
     context = candidate_call_context(tmp_path, plan, relationships, max_chars=10_000)
 
-    assert "service.py:load" in context.text
-    assert context.source_evidence == ()
+    assert "service.py:load lines 1-1, source in the code under review" in context.text
+    assert context.delivered == context.published == ()
 
 
 @pytest.mark.parametrize("receiver", ["service", "self"])
@@ -242,12 +252,12 @@ def test_receiver_calls_remain_in_navigation_instead_of_becoming_initial_binding
             ),
         ),
     )
-    plan = DefinitionUnitPlan(seeds=(DefinitionFragment("route.py", "route", 0, len(caller_text)),))
+    plan = DefinitionUnitPlan(seeds=(caller,))
 
     context = candidate_call_context(tmp_path, plan, relationships, max_chars=10_000)
 
     assert context.text == ""
-    assert context.source_evidence == ()
+    assert context.delivered == context.published == ()
 
 
 def test_ambiguous_calls_remain_in_navigation_instead_of_becoming_initial_bindings(tmp_path):
@@ -287,12 +297,12 @@ def test_ambiguous_calls_remain_in_navigation_instead_of_becoming_initial_bindin
             ),
         ),
     )
-    plan = DefinitionUnitPlan(seeds=(DefinitionFragment("route.py", "route", 0, len(caller_text)),))
+    plan = DefinitionUnitPlan(seeds=(caller,))
 
     context = candidate_call_context(tmp_path, plan, relationships, max_chars=10_000)
 
     assert context.text == ""
-    assert context.source_evidence == ()
+    assert context.delivered == context.published == ()
 
 
 def test_candidate_call_source_fails_when_the_analyzed_content_changed(tmp_path):
@@ -328,35 +338,21 @@ def test_candidate_call_source_fails_when_the_analyzed_content_changed(tmp_path)
             ),
         ),
     )
-    plan = DefinitionUnitPlan(seeds=(DefinitionFragment("route.py", "route", 0, len(caller_text)),))
+    plan = DefinitionUnitPlan(seeds=(caller,))
     (tmp_path / "service.py").write_text("def load(value): return other", encoding="utf-8")
 
     with pytest.raises(BackendUnavailable, match="candidate call source content changed"):
         candidate_call_context(tmp_path, plan, relationships, max_chars=10_000)
 
 
-def test_evidence_revision_changes_with_every_model_visible_input():
-    evidence = EvidenceItem.create(identity="app.py:a:0:10", label="a", text="def a(): pass")
-    source = SourceEvidence(id="src-a", identity="app.py:a:0:10", text="1 | def a(): pass")
-    base = GroundingContext(text="seed", evidence=(evidence,))
+def test_one_source_range_has_one_id_whoever_publishes_it():
+    from cyberjury.review.navigation import SourceTarget
 
-    assert base.revision.id == GroundingContext(text="seed", evidence=(evidence,)).revision.id
-    assert base.revision.id != GroundingContext(text="changed", evidence=(evidence,)).revision.id
-    assert (
-        base.revision.id
-        != GroundingContext(
-            text="seed",
-            evidence=(evidence,),
-            source_evidence=(source,),
-        ).revision.id
-    )
+    published = EvidenceItem.create(identity="app.py:a:0:10", label="a", text="first")
+    navigated = SourceTarget.create(file="app.py", name="a", start=0, end=10, preview="")
 
-
-def test_evidence_id_changes_when_exact_content_changes():
-    first = EvidenceItem.create(identity="app.py:a:0:10", label="a", text="first")
-    second = EvidenceItem.create(identity="app.py:a:0:10", label="a", text="other")
-
-    assert first.id != second.id
+    assert published.id == navigated.id == source_id("app.py:a:0:10")
+    assert published.id.startswith("src-")
 
 
 def test_source_location_receipt_returns_the_canonical_cited_source():
@@ -420,9 +416,6 @@ def test_grounding_context_rejects_duplicate_evidence_ids():
 
     with pytest.raises(ValueError, match="ids must be unique"):
         GroundingContext(text="seed", evidence=(evidence, evidence))
-
-    with pytest.raises(EvidenceRequestError, match="duplicate ids or identities"):
-        select_evidence((evidence, evidence), [evidence.id], target_chars=1_000)
 
 
 def test_evidence_request_ids_collapse_repeated_identical_requests():
@@ -489,25 +482,6 @@ def test_navigated_source_extends_a_scoped_snapshot_without_narrowing_a_full_sna
 
     assert scoped.snapshot_files == ("entry.py", "related.py")
     assert whole.snapshot_files == ()
-    related.write_text("related = 2\n", encoding="utf-8")
-    with pytest.raises(BackendUnavailable, match="source changed"):
-        scoped.validate_snapshot()
-    with pytest.raises(BackendUnavailable, match="source changed"):
-        whole.validate_snapshot()
-
-
-def test_grounding_snapshot_rejects_new_source_files_outside_the_unit(tmp_path):
-    (tmp_path / "entry.py").write_text("entry = 1\n", encoding="utf-8")
-    snapshot = SourceSnapshot.capture(
-        tmp_path,
-        source_snapshot_files(tmp_path),
-        scope_provider=lambda: source_snapshot_files(tmp_path),
-    )
-    context = GroundingContext(text="entry", source_snapshot=snapshot, snapshot_files=("entry.py",))
-    (tmp_path / "new.py").write_text("new = 2\n", encoding="utf-8")
-
-    with pytest.raises(BackendUnavailable, match="source changed"):
-        context.validate_snapshot()
 
 
 def test_source_evidence_allows_reference_aliases_for_identical_source():
@@ -555,19 +529,11 @@ def test_fact_limitations_are_scoped_to_sources_published_by_the_unit():
     assert "unrelated.py" not in context.text
 
 
-def test_definition_plan_source_scope_includes_seed_and_evidence_files():
-    source = DefinitionFragment("app.py", "route", 0, 20)
-    target = DefinitionFragment("service.py", "load", 0, 20)
-    plan = DefinitionUnitPlan(seeds=(source,), seed_files=("app.py",), evidence=(source, target))
-
-    assert definition_plan_source_files(plan) == ("app.py", "service.py")
-
-
 def test_definition_evidence_index_exposes_a_declaration_not_its_body(tmp_path):
     source = "class Rule(ModelWithOwner):\n    secret = load_secret()\n"
     (tmp_path / "models.py").write_text(source)
-    rule = DefinitionFragment("models.py", "Rule", 0, len(source))
-    plan = DefinitionUnitPlan(seeds=(rule,), evidence=(rule,))
+    rule = definition("models.py", "Rule", 0, len(source))
+    plan = DefinitionUnitPlan(seeds=(rule,))
 
     item = definition_evidence(tmp_path, plan)[0]
 
@@ -577,12 +543,12 @@ def test_definition_evidence_index_exposes_a_declaration_not_its_body(tmp_path):
 
 def test_definition_evidence_receipt_uses_normalized_character_ranges(tmp_path):
     prefix = "label = 'é'\n"
-    definition = "def load():\n    return secret\n"
-    source = prefix + definition
+    body = "def load():\n    return secret\n"
+    source = prefix + body
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
     start = len(prefix)
-    target = DefinitionFragment("models.py", "load", start, start + len(definition))
-    plan = DefinitionUnitPlan(seeds=(target,), evidence=(target,))
+    target = definition("models.py", "load", start, start + len(body))
+    plan = DefinitionUnitPlan(seeds=(target,))
 
     item = definition_evidence(tmp_path, plan)[0]
 
@@ -595,11 +561,11 @@ def test_definition_evidence_receipt_uses_normalized_character_ranges(tmp_path):
 def test_definition_evidence_does_not_publish_a_file_scope_container(tmp_path):
     source = "send_webhook(url)\n" + "setting = True\n" * 4_000
     (tmp_path / "settings.py").write_text(source, encoding="utf-8")
-    file_scope = DefinitionFragment("settings.py", "<file>", 0, len(source))
+    file_scope = definition("settings.py", "<file>", 0, len(source))
 
     evidence = definition_evidence(
         tmp_path,
-        DefinitionUnitPlan(seeds=(file_scope,), evidence=(file_scope,)),
+        DefinitionUnitPlan(seeds=(file_scope,)),
     )
 
     assert evidence == ()

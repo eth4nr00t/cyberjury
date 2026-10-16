@@ -82,12 +82,3 @@ def test_an_exported_value_wins_over_the_file(tmp_path, monkeypatch):
     loaded = load_env_file(p)
     assert loaded == []
     assert os.environ["CYBERJURY_MODEL"] == "from-shell"
-
-
-def test_override_replaces_an_existing_value(tmp_path, monkeypatch):
-    monkeypatch.setenv("CYBERJURY_MODEL", "from-shell")
-    p = tmp_path / ".env"
-    p.write_text("CYBERJURY_MODEL=from-file\n")
-    loaded = load_env_file(p, override=True)
-    assert loaded == ["CYBERJURY_MODEL"]
-    assert os.environ["CYBERJURY_MODEL"] == "from-file"

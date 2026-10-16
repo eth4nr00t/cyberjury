@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
 from dataclasses import dataclass
 
 from cyberjury.providers.base import Provider
@@ -66,40 +65,37 @@ def resolve_provider_seat(base: ProviderSeat, override: ProviderSeatOverride) ->
     )
 
 
-def provider_configuration(
-    base: ProviderSeat,
-    overrides: Mapping[str, ProviderSeatOverride],
+def provider_configuration_from_env(
     *,
-    retries: int,
-    timeout: float,
+    provider: str | None = None,
+    model: str | None = None,
+    wire_api: str | None = None,
+    retries: int | None = None,
+    timeout: float | None = None,
 ) -> ProviderConfiguration:
-    """Resolve every role seat against the base seat with shared client policy."""
-    roles = {role: resolve_provider_seat(base, overrides[role]) for role in ROLES}
+    """Resolve the environment seats, with optional base seat and client policy overrides.
+
+    Keys, endpoints, and role overrides come only from the environment.
+    """
+    defaults = env_defaults()
+    base_provider = provider or defaults["provider"]
+    base = ProviderSeat(
+        provider=base_provider,
+        model=model or defaults["model"] or default_model_for_provider(base_provider),
+        api_key=defaults["api_key"],
+        api_base=defaults["api_base"],
+        wire_api=wire_api or defaults["wire_api"],
+    )
+    roles = {
+        role: resolve_provider_seat(base, ProviderSeatOverride(**defaults["role_backends"][role])) for role in ROLES
+    }
     return ProviderConfiguration(
         base=base,
         finder=roles["finder"],
         skeptic=roles["skeptic"],
         confirmer=roles["confirmer"],
-        retries=retries,
-        timeout=timeout,
-    )
-
-
-def provider_configuration_from_env(*, model_override: str | None = None) -> ProviderConfiguration:
-    """Resolve environment defaults into the same seat contract used by the CLI."""
-    defaults = env_defaults()
-    base = ProviderSeat(
-        provider=defaults["provider"],
-        model=model_override or defaults["model"],
-        api_key=defaults["api_key"],
-        api_base=defaults["api_base"],
-        wire_api=defaults["wire_api"],
-    )
-    return provider_configuration(
-        base,
-        {role: ProviderSeatOverride(**fields) for role, fields in defaults["role_backends"].items()},
-        retries=defaults["retries"],
-        timeout=defaults["timeout"],
+        retries=defaults["retries"] if retries is None else retries,
+        timeout=timeout or defaults["timeout"],
     )
 
 
@@ -112,7 +108,7 @@ def require_provider_key(seat: ProviderSeat) -> None:
     key_name = sdk_key or "the provider SDK key"
     raise ProviderCredentialsError(
         f"the {seat.provider} seat has no reachable API key. Set CYBERJURY_API_KEY, {key_name}, "
-        "or a role-specific API key."
+        "or the role's CYBERJURY_<ROLE>_API_KEY."
     )
 
 

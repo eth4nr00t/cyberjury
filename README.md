@@ -6,7 +6,7 @@ The tool has two review paths:
 
 - **Diff Review** audits a git range against its repository in one command.
 - **Repository Review** fans out across a repository, reviews focused units, deduplicates
-  candidates, verifies findings, and checks the result with a gate.
+  candidates, and verifies findings.
 
 Diff Review is fast and reports findings at post change lines shown in the patch. Every finding keeps
 an exact old or new change anchor, so added behavior and removed controls use one scope contract. Each
@@ -14,10 +14,15 @@ diff unit is grounded with repository source context while its reportable bounda
 Repository Review covers the complete repository as focused units, so a clean Diff Review does not
 by itself clear the repository.
 
-The review contract is data. Each review profile keeps its security reasoning kernel and severity
-rubric under its content directory, for example `src/cyberjury/profiles/web/`. The `web` profile
-covers Web Application Security and is the default. Select a profile with `--profile` or let the
-tool detect it automatically.
+The review contract is data. One language-independent security reasoning kernel, one severity
+rubric, and the file classification rules live in `src/cyberjury/review/contract/`. Language
+support is the Tree-sitter query data in `src/cyberjury/syntax/queries.yaml`; a language without
+queries is still reviewed from its raw source. Each review records a hash of these files in
+`contract.json`.
+
+A Repository Review of a Git work tree covers the tracked files and the untracked files Git does not
+ignore. A plain directory is covered completely. Files that are not UTF-8 text, binary, or empty are
+listed as skipped in `outcome.json`.
 
 ## Quick Review
 
@@ -25,18 +30,14 @@ tool detect it automatically.
 cyberjury review diff --repository /path/to/app --git-range origin/main...HEAD
 cyberjury review repository /path/to/repo --scaffold
 cyberjury review repository /path/to/repo --run
-cyberjury review repository /path/to/repo --gate
 ```
-
-Add `--poc` to repository `--run` only when local proof generation is required.
-PoC generation is disabled by default.
 
 Re-running repository `--run` resumes open work. Use `--fresh` to start a new review session.
 
 ## Output and Exit Codes
 
 Review commands print a JSON result and return a process style exit code. `0` means the requested
-action completed. Exit code `1` means the run was degraded or incomplete, or the gate is unmet.
+action completed. Exit code `1` means the run was degraded or incomplete.
 In machine findings, `candidate` means a finding was retained without an independent verification
 vote. `confirmed` requires a completed independent verification vote. A complete review can contain
 retained candidates, so completion does not assert that every reported issue was independently
@@ -70,7 +71,10 @@ export CYBERJURY_TIMEOUT=240
 ```
 
 Role specific overrides use `CYBERJURY_FINDER_*`, `CYBERJURY_SKEPTIC_*`, and
-`CYBERJURY_CONFIRMER_*`.
+`CYBERJURY_CONFIRMER_*`. API keys, API bases, and role seats are read only from the environment, so
+no key appears on a command line. The `--provider`, `--model`, `--wire-api`, `--retries`, and
+`--timeout` flags override the base seat for one command. OpenAI calls use the Responses API unless
+`CYBERJURY_WIRE_API=chat` or `--wire-api chat` selects Chat Completions.
 
 ## Model Guidance
 

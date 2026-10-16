@@ -18,15 +18,9 @@ class DiffReviewSettings:
     target_repository_context_chars_per_unit: int = 24_000
     max_full_source_chars_per_context_file: int = 12_000
     max_changed_source_prefix_chars: int = 3_000
-    max_facts_chars_per_context_file: int = 1_200
-    related_context_first_min_changed_files: int = 5
-    target_definition_context_chars_per_file: int = 6_000
-    max_caller_definition_chars: int = 6_000
-    max_related_context_fraction: float = 0.5
     hunk_context_lines_per_side: int = 5
     max_relationship_chars_per_unit: int = 60_000
     max_definition_evidence_items_per_unit: int = 64
-    default_batch_concurrency: int = 4
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -36,7 +30,6 @@ class RepositoryReviewSettings:
     max_source_chars_per_unit: int = 24_000
     hard_split_overlap_chars: int = 2_000
     max_relationship_chars_per_unit: int = 60_000
-    max_facts_chars_per_unit: int = 16_000
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -56,6 +49,8 @@ class ReviewExecutionSettings:
     default_model_call_concurrency: int = 8
     target_evidence_request_chars: int = 48_000
     max_source_navigation_followups: int = 8
+    max_initial_candidate_source_chars: int = 4_000
+    max_syntax_hint_chars_per_file: int = 1_200
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -69,10 +64,3 @@ class ReviewSettings:
 
 
 DEFAULT_REVIEW_SETTINGS = ReviewSettings()
-
-
-def positive_concurrency(value: object, label: str) -> int:
-    """Return a strict positive worker count or reject it before any work starts."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ValueError(f"{label} must be positive")
-    return value

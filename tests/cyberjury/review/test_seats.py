@@ -1,7 +1,10 @@
 """Seat identities and the verification route are shared by every review entry."""
 
+from cyberjury.providers import configuration as configuration_module
 from cyberjury.providers.configuration import ProviderConfiguration, ProviderSeat
-from cyberjury.review.seats import confirmer_seats, provider_seat_id
+from cyberjury.providers.metering import UsageMeter
+from cyberjury.providers.mock import MockProvider
+from cyberjury.review.seats import DRY_RUN_SEAT, confirmer_seats, provider_seat_id, review_seats
 
 
 def _configuration(*, skeptic: ProviderSeat, confirmer: ProviderSeat, finder: ProviderSeat) -> ProviderConfiguration:
@@ -25,3 +28,21 @@ def test_seat_identity_ignores_credentials():
 
     assert provider_seat_id(seat) == provider_seat_id(ProviderSeat(provider="openai", model="m", api_key="two"))
     assert provider_seat_id(seat).startswith("seat-")
+
+
+def test_review_seats_label_the_configured_finder_and_route_independent_confirmers(monkeypatch):
+    monkeypatch.setattr(configuration_module, "make_provider", lambda *args, **kwargs: MockProvider(default="{}"))
+    skeptic = ProviderSeat(provider="openai", model="skeptic", api_key="k")
+    confirmer = ProviderSeat(provider="openai", model="confirmer", api_key="k")
+    finder = ProviderSeat(provider="openai", model="finder", api_key="k")
+    configuration = _configuration(skeptic=skeptic, confirmer=confirmer, finder=finder)
+
+    seats = review_seats(configuration, meter=UsageMeter())
+    dry = review_seats(configuration, meter=UsageMeter(), dry_run_provider=MockProvider(default="{}"))
+
+    assert (seats.finder_model, seats.finder_label) == ("finder", provider_seat_id(finder))
+    assert [label for label, _checker in seats.confirmers] == [provider_seat_id(confirmer)]
+    assert seats.verifier is not None
+    assert (dry.finder_model, dry.finder_label) == ("mock", provider_seat_id(DRY_RUN_SEAT))
+    assert dry.verifier is None
+    assert dry.confirmers == ()

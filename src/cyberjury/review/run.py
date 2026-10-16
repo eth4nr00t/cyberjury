@@ -1,0 +1,137 @@
+"""Review prepared units, verify their union, and build the result artifacts for every target.
+
+With a work directory, each completed unit and each completed verification decision is
+saved as soon as it finishes, so a resume, even after a crash, repeats only open work.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+from cyberjury.finding import Finding
+from cyberjury.review.checkpoint import CheckpointStore
+from cyberjury.review.context import GroundingCoverage
+from cyberjury.review.engine import ReviewCycle, ReviewOutcome, extend_review_outcome, run_review_units
+from cyberjury.review.finder import GroundedUnit, ReviewTarget, UnitFinder
+from cyberjury.review.prepare import PreparedReview
+from cyberjury.review.result import FindingsArtifact, OutcomeArtifact, findings_artifact
+from cyberjury.review.seats import ReviewSeats
+from cyberjury.review.union import finding_accumulator
+from cyberjury.review.verification import VerifyResult, verification_failure_reason, verify_findings
+
+type Progress = Callable[[int, int, float], None]
+
+_UNIT_SCHEMA = "cyberjury.unit-review/v2"
+_VERIFICATION_SCHEMA = "cyberjury.verification-decision/v1"
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReviewRun:
+    """One review result for the caller to bind and report."""
+
+    outcome: ReviewOutcome[Finding]
+    verification: VerifyResult[Finding]
+    findings: FindingsArtifact
+    outcome_artifact: OutcomeArtifact
+
+
+def _unit_cycle(value: object) -> ReviewCycle[Finding]:
+    """Parse one checkpointed unit cycle; a failed one counts as one error so it is reviewed again."""
+    if not isinstance(value, dict) or set(value) != {"clean", "findings"}:
+        raise ValueError("unit review record fields are invalid")
+    if not isinstance(value["clean"], bool) or not isinstance(value["findings"], list):
+        raise ValueError("unit review record values are invalid")
+    return ReviewCycle(
+        findings=[Finding.from_dict(item) for item in value["findings"]],
+        errors=int(not value["clean"]),
+    )
+
+
+def run_review[U: GroundedUnit](
+    prepared: PreparedReview[U],
+    *,
+    target: ReviewTarget[U],
+    seats: ReviewSeats,
+    concurrency: int,
+    verification_concurrency: int,
+    work: Path | None = None,
+    on_unit: Progress | None = None,
+    on_verify: Progress | None = None,
+) -> ReviewRun:
+    """Review every open unit once, verify the union when a verifier is set, and build the result."""
+    shared = prepared.shared
+    units = list(prepared.units)
+    if not units and target.covers_all_files:
+        raise ValueError(f"no readable production source files found under {shared.root}")
+    unit_store = CheckpointStore(work / "units", _UNIT_SCHEMA) if work is not None else None
+    earlier = {unit.id: unit_store.restore(unit.id, _unit_cycle) for unit in units} if unit_store else {}
+    finder = UnitFinder(target, provider=seats.finder, model=seats.finder_model, label=seats.finder_label)
+    open_count = sum(1 for unit in units if earlier.get(unit.id) is None or not earlier[unit.id].clean)
+    done = 0
+
+    def record(unit: U, cycle: ReviewCycle[Finding], seconds: float) -> None:
+        nonlocal done
+        if unit_store is not None:
+            unit_store.save(
+                unit.id,
+                {"clean": cycle.clean, "findings": [finding.to_dict() for finding in cycle.findings]},
+            )
+        done += 1
+        if on_unit is not None:
+            on_unit(done, open_count, seconds)
+
+    outcome: ReviewOutcome[Finding] = (
+        run_review_units(
+            units,
+            execute=finder.review_unit,
+            accumulator=finding_accumulator(),
+            concurrency=concurrency,
+            restore=lambda unit: earlier.get(unit.id),
+            on_unit=record,
+        )
+        if units
+        else ReviewOutcome(findings=())
+    )
+    findings = list(outcome.findings)
+    if seats.verifier is not None:
+        verification = verify_findings(
+            findings,
+            seats.verifier,
+            str(shared.root),
+            confirmers=list(seats.confirmers),
+            concurrency=verification_concurrency,
+            on_verify=on_verify,
+            checkpoint=CheckpointStore(work / "verification", _VERIFICATION_SCHEMA) if work is not None else None,
+        )
+    else:
+        verification = VerifyResult(retained=findings, candidate_ids=tuple(item.candidate_id for item in findings))
+    outcome = extend_review_outcome(
+        outcome,
+        findings=verification.retained,
+        incomplete=verification.incomplete,
+        errors=verification.errors,
+        failure_reason=verification_failure_reason(verification.error_details),
+        grounding=(
+            GroundingCoverage(limitations=tuple(item.identity for item in shared.facts.limitations))
+            if target.covers_all_files
+            else None
+        ),
+    )
+    machine_findings = findings_artifact(
+        outcome.findings,
+        {finding.candidate_id for finding in verification.verified},
+    )
+    return ReviewRun(
+        outcome=outcome,
+        verification=verification,
+        findings=machine_findings,
+        outcome_artifact=OutcomeArtifact.create(
+            target=target.kind,
+            source_revision=shared.snapshot.snapshot_id,
+            findings=machine_findings,
+            outcome=outcome,
+            skipped_files=prepared.skipped_files,
+        ),
+    )

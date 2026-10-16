@@ -9,7 +9,6 @@ import re
 import shutil
 import stat
 import tempfile
-import unicodedata
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -23,7 +22,6 @@ _MAX_SOURCE_FILES = 200_000
 _MAX_SOURCE_FILE_BYTES = 100_000_000
 _MAX_SNAPSHOT_BYTES = 2_000_000_000
 _READ_CHUNK_BYTES = 1_048_576
-_WINDOWS_RESERVED = re.compile(r"^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$", re.IGNORECASE)
 
 type ScopeProvider = Callable[[], tuple[str, ...]]
 
@@ -32,7 +30,7 @@ class SourceSnapshotError(RuntimeError):
     """Source scope cannot be captured or no longer matches its manifest."""
 
 
-def snapshot_id_for_entries(entries: tuple[SourceFileSnapshot, ...]) -> str:
+def _snapshot_id(entries: tuple[SourceFileSnapshot, ...]) -> str:
     """Identify one canonical source manifest independently from its runtime root."""
     return canonical_sha256({"schema": SNAPSHOT_SCHEMA, "files": [entry.to_dict() for entry in entries]})
 
@@ -48,10 +46,22 @@ def capture_source_snapshot(root: str | Path) -> SourceSnapshot:
 
 
 def source_snapshot_files(root: str | Path) -> tuple[str, ...]:
-    """Enumerate the complete profile-independent source tree denominator."""
+    """Enumerate the source tree denominator.
+
+    A Git work tree contributes its tracked and unignored files, so ignored trees such as
+    virtual environments and dependency directories are never walked. A plain directory
+    contributes every file.
+    """
     base = Path(root).resolve()
     if not base.is_dir():
         raise SourceSnapshotError(f"snapshot root is not a directory: {base}")
+    if (base / ".git").exists():
+        from cyberjury.sources.git import GitSourceError, worktree_files
+
+        try:
+            return portable_paths(worktree_files(base))
+        except GitSourceError as exc:
+            raise SourceSnapshotError(str(exc)) from exc
     files: list[str] = []
     for current, directories, names in os.walk(base, followlinks=False):
         current_path = Path(current)
@@ -84,60 +94,31 @@ def source_snapshot_files(root: str | Path) -> tuple[str, ...]:
     return portable_paths(files)
 
 
-def _exact(value: object, fields: set[str], label: str) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != fields:
-        raise ValueError(f"{label} must contain exactly: {', '.join(sorted(fields))}")
-    return value
-
-
 def portable_paths(files: Iterable[str]) -> tuple[str, ...]:
-    """Return sorted canonical POSIX relative paths that stay distinct and safe on every filesystem."""
+    """Return sorted unique canonical POSIX relative paths that stay inside their root."""
     normalized: list[str] = []
-    portable: set[str] = set()
     for value in files:
         if not isinstance(value, str) or not value or "\\" in value:
             raise SourceSnapshotError("snapshot file paths must be nonempty POSIX relative paths")
         path = PurePosixPath(value)
         try:
-            encoded = value.encode("utf-8")
+            value.encode("utf-8")
         except UnicodeError as exc:
             raise SourceSnapshotError(f"snapshot file path is not UTF-8: {value!r}") from exc
-        if (
-            not encoded
-            or unicodedata.normalize("NFC", value) != value
-            or path.is_absolute()
-            or path.as_posix() != value
-            or ".." in path.parts
-            or "." in path.parts
-            or any(":" in part or part.endswith((" ", ".")) or _WINDOWS_RESERVED.fullmatch(part) for part in path.parts)
-        ):
+        if path.is_absolute() or path.as_posix() != value or ".." in path.parts or "." in path.parts:
             raise SourceSnapshotError(f"snapshot file path is unsafe or noncanonical: {value!r}")
-        folded = value.casefold()
-        if folded in portable:
-            raise SourceSnapshotError(f"snapshot file paths collide portably: {value!r}")
         normalized.append(value)
-        portable.add(folded)
         if len(normalized) > _MAX_SOURCE_FILES:
             raise SourceSnapshotError("source snapshot exceeds the file count limit")
     ordered = tuple(sorted(normalized))
     if len(set(ordered)) != len(ordered):
         raise SourceSnapshotError("snapshot file paths must be unique")
-    for value in ordered:
-        parts = PurePosixPath(value).parts
-        if any("/".join(parts[:index]).casefold() in portable for index in range(1, len(parts))):
-            raise SourceSnapshotError(f"snapshot file path conflicts with a file parent: {value!r}")
     return ordered
 
 
 def safe_link_target(target: str) -> bool:
-    """Accept only a nonempty, relative, NFC normalized POSIX symlink target."""
-    return (
-        bool(target)
-        and "\x00" not in target
-        and "\\" not in target
-        and not Path(target).is_absolute()
-        and unicodedata.normalize("NFC", target) == target
-    )
+    """Accept only a nonempty, relative POSIX symlink target."""
+    return bool(target) and "\x00" not in target and "\\" not in target and not Path(target).is_absolute()
 
 
 def require_contained_symlinks(root: Path, files: Iterable[str]) -> None:
@@ -162,25 +143,6 @@ class SourceFileSnapshot:
     content_sha256: str
     link_target: str | None = None
 
-    def __post_init__(self) -> None:
-        """Reject fields that cannot represent one exact source path."""
-        portable_paths((self.path,))
-        if self.kind not in {"regular", "symlink"}:
-            raise ValueError("source file kind is invalid")
-        if isinstance(self.size_bytes, bool) or not isinstance(self.size_bytes, int) or self.size_bytes < 0:
-            raise ValueError("source file size is invalid")
-        if not isinstance(self.content_sha256, str) or not _SHA256.fullmatch(self.content_sha256):
-            raise ValueError("source file sha256 is invalid")
-        if self.kind == "regular":
-            if not isinstance(self.executable, bool) or self.link_target is not None:
-                raise ValueError("regular source file mode or link target is invalid")
-        elif (
-            self.executable is not None
-            or not isinstance(self.link_target, str)
-            or not safe_link_target(self.link_target)
-        ):
-            raise ValueError("symlink source file fields are invalid")
-
     def to_dict(self) -> dict[str, object]:
         """Return the strict file manifest wire form."""
         return {
@@ -191,12 +153,6 @@ class SourceFileSnapshot:
             "content_sha256": self.content_sha256,
             "link_target": self.link_target,
         }
-
-    @classmethod
-    def from_dict(cls, value: object) -> SourceFileSnapshot:
-        """Parse one strict file manifest entry."""
-        fields = {"path", "kind", "executable", "size_bytes", "content_sha256", "link_target"}
-        return cls(**_exact(value, fields, "source file snapshot"))
 
 
 def _source_file(root: Path, relative: str, sink: BinaryIO | None = None) -> SourceFileSnapshot:
@@ -286,12 +242,8 @@ class SourceSnapshot:
             raise ValueError("source snapshot entries must be unique and sorted")
         if not isinstance(self.snapshot_id, str) or not _SHA256.fullmatch(self.snapshot_id):
             raise ValueError("source snapshot id is invalid")
-        if self.snapshot_id != self._identity(self.entries):
+        if self.snapshot_id != _snapshot_id(self.entries):
             raise ValueError("source snapshot id does not match its manifest")
-
-    @staticmethod
-    def _identity(entries: tuple[SourceFileSnapshot, ...]) -> str:
-        return snapshot_id_for_entries(entries)
 
     @classmethod
     def capture(
@@ -301,7 +253,7 @@ class SourceSnapshot:
         *,
         scope_provider: ScopeProvider | None = None,
     ) -> SourceSnapshot:
-        """Capture a canonical manifest without profile or analyzer identity."""
+        """Capture a canonical manifest without contract or analyzer identity."""
         raw_root = Path(root)
         if raw_root.is_symlink():
             raise SourceSnapshotError("snapshot root cannot be a symlink")
@@ -319,7 +271,7 @@ class SourceSnapshot:
         return cls(
             root=canonical_root,
             entries=tuple(entries),
-            snapshot_id=cls._identity(tuple(entries)),
+            snapshot_id=_snapshot_id(tuple(entries)),
             _scope_provider=scope_provider,
         )
 
@@ -327,11 +279,6 @@ class SourceSnapshot:
     def files(self) -> tuple[str, ...]:
         """Return the canonical relative path denominator."""
         return tuple(entry.path for entry in self.entries)
-
-    @property
-    def total_bytes(self) -> int:
-        """Return the total materialized bytes represented by the manifest."""
-        return sum(entry.size_bytes for entry in self.entries)
 
     def to_dict(self) -> dict[str, object]:
         """Return the persistent source-only manifest."""
@@ -341,66 +288,27 @@ class SourceSnapshot:
             "files": [entry.to_dict() for entry in self.entries],
         }
 
-    @classmethod
-    def from_dict(
-        cls,
-        value: object,
-        *,
-        root: str | Path,
-        scope_provider: ScopeProvider | None = None,
-    ) -> SourceSnapshot:
-        """Restore a strict manifest and bind its runtime root."""
-        data = _exact(value, {"schema", "snapshot_id", "files"}, "source snapshot")
-        if data["schema"] != SNAPSHOT_SCHEMA or not isinstance(data["files"], list):
-            raise ValueError("source snapshot schema is unsupported")
-        return cls(
-            root=Path(root).resolve(),
-            entries=tuple(SourceFileSnapshot.from_dict(entry) for entry in data["files"]),
-            snapshot_id=data["snapshot_id"],
-            _scope_provider=scope_provider,
-        )
-
     def matches(self) -> bool:
         """Validate the complete manifest and detect source scope additions or deletions."""
-        if self._scope_provider is not None:
-            try:
-                current = portable_paths(self._scope_provider())
-            except Exception:
-                return False
-            if current != self.files:
-                return False
-        return self.matches_files(self.files)
-
-    def matches_files(self, files: Iterable[str]) -> bool:
-        """Validate selected files against the immutable manifest."""
-        try:
-            selected = portable_paths(dict.fromkeys(files))
-        except SourceSnapshotError:
-            return False
-        expected = {entry.path: entry for entry in self.entries}
-        if any(relative not in expected for relative in selected):
+        if not self._matches_scope():
             return False
         try:
-            return all(_source_file(self.root, relative) == expected[relative] for relative in selected)
+            return all(_source_file(self.root, entry.path) == entry for entry in self.entries)
         except SourceSnapshotError:
             return False
 
-    def matches_scope_and_files(self, files: Iterable[str]) -> bool:
-        """Check denominator drift before validating one bounded source selection."""
-        if self._scope_provider is not None:
-            try:
-                if portable_paths(self._scope_provider()) != self.files:
-                    return False
-            except Exception:
-                return False
-        return self.matches_files(files)
+    def _matches_scope(self) -> bool:
+        if self._scope_provider is None:
+            return True
+        try:
+            return portable_paths(self._scope_provider()) == self.files
+        except Exception:
+            return False
 
     @contextlib.contextmanager
     def materialize(self, *, name: str | None = None) -> Iterator[Path]:
         """Write captured bytes to one private source root for deterministic consumers."""
-        if not self.matches():
-            raise SourceSnapshotError("source no longer matches its captured snapshot")
-        temporary_root = Path(tempfile.mkdtemp(prefix="review-source-snapshot-"))
+        temporary_root = Path(tempfile.mkdtemp(prefix="review-source-snapshot-")).resolve()
         source_root = temporary_root / (name or self.root.name or "source")
         source_root.mkdir(mode=0o700)
         try:
@@ -420,7 +328,7 @@ class SourceSnapshot:
                     raise SourceSnapshotError(f"source changed while materializing: {expected.path}")
                 path.chmod(0o755 if entry.executable else 0o644)
             require_contained_symlinks(source_root, self.files)
-            if not self.matches():
+            if not self._matches_scope():
                 raise SourceSnapshotError("source changed while its snapshot was being materialized")
             yield source_root
         finally:

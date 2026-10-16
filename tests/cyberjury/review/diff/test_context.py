@@ -5,61 +5,45 @@ from pathlib import Path
 
 import pytest
 
-from cyberjury.detection import load_detection
-from cyberjury.profiles.registry import default_profile
-from cyberjury.review.context import GroundingContext, SourceEvidence
-from cyberjury.review.definitions import DefinitionFragment, DefinitionUnitPlan
-from cyberjury.review.diff.context import (
-    DiffContextCollector,
-    _importing_files_for_seeds,
-    _initial_candidate_sources,
-    build_diff_context_collector,
-)
+from cyberjury.review.context import GroundingContext
+from cyberjury.review.definitions import DefinitionUnitPlan
+from cyberjury.review.diff.checkout import prepare_diff_review
+from cyberjury.review.diff.context import ground_diff_unit, plan_diff_units
 from cyberjury.review.diff.model import DiffUnit
-from cyberjury.review.diff.prompts import related_file_context
-from cyberjury.review.facts import BackendUnavailable, FactLimitation, Facts, FactsBackend
+from cyberjury.review.facts import FactLimitation, Facts
+from cyberjury.review.prepare import SharedGrounding
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.sources.snapshot import SourceSnapshot
+from cyberjury.sources.snapshot import capture_source_snapshot
+from tests.cyberjury.review.support import definition, shared_grounding
 
 
-class _FactsBackend(FactsBackend):
-    def __init__(self, facts: Facts | None = None) -> None:
-        self._facts = facts or Facts()
-        self.extracts = 0
-
-    def extract(self, root: str | Path) -> Facts:
-        self.extracts += 1
-        return self._facts
+def _shared(root: Path, facts: Facts | None = None) -> SharedGrounding:
+    return shared_grounding(root, facts=facts)
 
 
-def _profile(backend: FactsBackend):
-    return replace(default_profile(), facts_backend=backend)
+def _prepare(shared: SharedGrounding, diff: str) -> list[DiffUnit]:
+    return [replace(unit, grounding=ground_diff_unit(unit, shared)) for unit in plan_diff_units(diff, shared, ()).units]
 
 
-def _detection():
-    return load_detection(default_profile().paths.detection_file)
+def _collect(shared: SharedGrounding, diff: str, plan: DefinitionUnitPlan) -> GroundingContext:
+    return ground_diff_unit(DiffUnit(index=1, total=1, diff=diff, paths=(), definition_plan=plan), shared)
 
 
-def _prepare(collector: DiffContextCollector, diff: str) -> list[DiffUnit]:
-    return collector.ground(collector.plan(diff))
-
-
-def _collect(collector: DiffContextCollector, diff: str, plan: DefinitionUnitPlan) -> GroundingContext:
-    unit = DiffUnit(index=1, total=1, diff=diff, paths=(), definition_plan=plan)
-    return collector.ground([unit])[0].grounding
-
-
-def _ground(root: Path, diff: str, profile) -> GroundingContext:
-    units = _prepare(build_diff_context_collector(root, profile, review_diff=diff), diff)
+def _ground(root: Path, diff: str, facts: Facts | None = None) -> GroundingContext:
+    units = _prepare(_shared(root, facts), diff)
     assert len(units) == 1
     return units[0].grounding
+
+
+def _extracted(root: Path, diff: str):
+    return prepare_diff_review(diff, capture_source_snapshot(root))
 
 
 def test_changed_definition_is_requestable_without_an_initial_prefix(tmp_path):
     source = "class Handler(Base):\n    owner = request.user\n    control = check(owner)\n    return_value = 1\n"
     (tmp_path / "app.py").write_text(source, encoding="utf-8")
-    file_seed = DefinitionFragment("app.py", "<file>", 0, len(source))
-    class_seed = DefinitionFragment("app.py", "Handler", 0, len(source))
+    file_seed = definition("app.py", "<file>", 0, len(source))
+    class_seed = definition("app.py", "Handler", 0, len(source))
     plan = DefinitionUnitPlan(seeds=(file_seed, class_seed))
     diff = (
         "diff --git a/app.py b/app.py\n"
@@ -69,7 +53,7 @@ def test_changed_definition_is_requestable_without_an_initial_prefix(tmp_path):
         "-class Handler:\n"
         "+class Handler(Base):\n"
     )
-    collector = DiffContextCollector(root=tmp_path, detection=_detection(), by_file={}, graph={})
+    collector = _shared(tmp_path)
 
     context = _collect(collector, diff, plan)
 
@@ -82,189 +66,19 @@ def test_changed_definition_is_requestable_without_an_initial_prefix(tmp_path):
     assert "control = check(owner)" in handler.text
 
 
-def test_changed_definition_reaches_its_importing_control(tmp_path):
+def test_importing_source_stays_behind_navigation_instead_of_being_preselected(tmp_path):
     changed = "def apply(value):\n    return value\n"
     related = "from service import apply\n\nclass Route:\n    permission = require_user\n    handler = apply\n"
     (tmp_path / "service.py").write_text(changed, encoding="utf-8")
     (tmp_path / "views.py").write_text(related, encoding="utf-8")
-    graph = {
-        "callgraph": {
-            "service.py": {"apply": [{"range": [0, len(changed)], "calls": []}]},
-            "views.py": {"Route": [{"range": [related.index("class Route"), len(related)], "calls": []}]},
-        },
-        "syntax_imports": {
-            "views.py": [{"module": "service", "imported": "apply", "local": "apply", "range": [0, 25]}],
-        },
-    }
-    collector = DiffContextCollector(
-        root=tmp_path,
-        detection=_detection(),
-        by_file={},
-        graph=graph,
-    )
-    plan = DefinitionUnitPlan(seeds=(DefinitionFragment("service.py", "apply", 0, len(changed)),))
+    collector = _shared(tmp_path)
+    plan = DefinitionUnitPlan(seeds=(definition("service.py", "apply", 0, len(changed)),))
     diff = "diff --git a/service.py b/service.py\n+++ b/service.py\n@@ -1,1 +1,1 @@\n+def apply(value):\n"
 
     context = _collect(collector, diff, plan)
 
-    assert "File: views.py" in context.text
-    assert "permission = require_user" in context.text
-
-
-def test_importing_source_candidates_skip_noise_and_remain_bounded():
-    seed = DefinitionFragment("service.py", "apply", 0, 10)
-    imports = {
-        file: [{"imported": "apply", "local": "apply"}]
-        for file in ("views.py", "consumer.py", "worker.py", "tests/test_views.py")
-    }
-
-    selected, names = _importing_files_for_seeds(
-        {"syntax_imports": imports},
-        (seed,),
-        _detection(),
-        ("views.py",),
-        ("service.py",),
-    )
-
-    assert selected == ("views.py",)
-    assert names == {"views.py": ("apply",)}
-
-
-def test_importing_source_candidates_prefer_matching_source_module():
-    seed = DefinitionFragment("src/documents/file_handling.py", "generate_unique_filename", 0, 10)
-    imports = {
-        "src-ui/editor.ts": [
-            {"module": "app/data/file_handling", "imported": "generate_unique_filename"},
-        ],
-        "src/documents/signals/handlers.py": [
-            {"module": "documents.file_handling", "imported": "generate_unique_filename"},
-        ],
-    }
-
-    selected, _names = _importing_files_for_seeds(
-        {"syntax_imports": imports},
-        (seed,),
-        _detection(),
-        ("src-ui/editor.ts",),
-        ("src/documents/file_handling.py",),
-    )
-
-    assert selected == ("src/documents/signals/handlers.py",)
-
-
-def test_importing_source_candidates_follow_local_alias():
-    seed = DefinitionFragment("src/service.py", "apply", 0, 10)
-
-    selected, names = _importing_files_for_seeds(
-        {"syntax_imports": {"src/views.py": [{"module": "service", "imported": "apply", "local": "run"}]}},
-        (seed,),
-        _detection(),
-        (),
-        ("src/service.py",),
-    )
-
-    assert selected == ("src/views.py",)
-    assert names == {"src/views.py": ("run",)}
-
-
-def test_large_unit_prioritizes_specific_imports_across_callers():
-    seeds = (
-        DefinitionFragment("src/documents/models.py", "StoragePath", 0, 10),
-        DefinitionFragment("src/documents/file_handling.py", "generate_unique_filename", 0, 10),
-    )
-    imports = {
-        file: [
-            {"module": "documents.models", "imported": "StoragePath"},
-            {"module": "documents.file_handling", "imported": "generate_unique_filename"},
-        ]
-        for file in ("src/documents/consumer.py", "src/documents/tasks.py")
-    }
-    imports["src/documents/signals/handlers.py"] = [
-        {"module": "documents.file_handling", "imported": "generate_unique_filename"},
-    ]
-    imports["src/documents/views.py"] = [{"module": "documents.models", "imported": "StoragePath"}]
-
-    selected, _names = _importing_files_for_seeds(
-        {"syntax_imports": imports},
-        seeds,
-        _detection(),
-        (),
-        ("src/documents/models.py", "src/documents/file_handling.py", "src/documents/templating/utils.py", "app.ts"),
-    )
-
-    assert selected == (
-        "src/documents/consumer.py",
-        "src/documents/tasks.py",
-        "src/documents/signals/handlers.py",
-    )
-
-
-def test_related_source_budget_carries_distinct_importing_controls(tmp_path):
-    source = (
-        "class GlobalSearchView:\n"
-        "    serializers = (FirstSerializer, SecondSerializer)\n"
-        f"    filler = '{'g' * 4000}'\n"
-        "\nclass FirstView:\n"
-        "    permission = require_owner\n"
-        "    serializer = FirstSerializer\n"
-        f"    filler = '{'a' * 4000}'\n"
-        "\nclass SecondView:\n"
-        "    permission = require_owner\n"
-        "    serializer = SecondSerializer\n"
-        f"    filler = '{'b' * 4000}'\n"
-    )
-    (tmp_path / "views.py").write_text(source)
-    first = source.index("class FirstView")
-    second = source.index("class SecondView")
-    definitions = {
-        "GlobalSearchView": [{"range": [0, first], "calls": []}],
-        "FirstView": [{"range": [first, second], "calls": []}],
-        "SecondView": [{"range": [second, len(source)], "calls": []}],
-    }
-
-    text, _included = related_file_context(
-        tmp_path,
-        "views.py",
-        "",
-        definitions,
-        set(),
-        "FirstSerializer SecondSerializer",
-        linked_names=("FirstSerializer", "SecondSerializer"),
-        max_chars=3000,
-    )
-
-    assert "Definition FirstView:" in text
-    assert "Definition SecondView:" in text
-    assert "Definition GlobalSearchView:" not in text
-    assert text.count("permission = require_owner") == 2
-    assert len(text) <= 3000
-
-
-def test_related_source_preserves_later_effect_after_imported_call(tmp_path):
-    source = (
-        "def update_target():\n"
-        "    generated = generate_name()\n"
-        f"    payload = '{'x' * 2650}'\n"
-        "    move_file(generated)\n"
-    )
-    (tmp_path / "handler.py").write_text(source)
-
-    text, _included = related_file_context(
-        tmp_path,
-        "handler.py",
-        "",
-        {
-            "<file>": [{"range": [0, len(source)], "calls": []}],
-            "update_target": [{"range": [0, len(source)], "calls": ["generate_name", "move_file"]}],
-        },
-        set(),
-        "generate_name",
-        linked_names=("generate_name",),
-        max_chars=3500,
-    )
-
-    assert "move_file(generated)" in text
-    assert len(text) <= 3500
+    assert "views.py" not in context.prompt.source
+    assert "permission = require_user" not in context.prompt.source
 
 
 def test_diff_context_collects_a_changed_source_path_with_spaces(tmp_path):
@@ -279,10 +93,10 @@ def test_diff_context_collects_a_changed_source_path_with_spaces(tmp_path):
         "+    return sink()\n"
     )
 
-    context = _ground(tmp_path, diff, _profile(_FactsBackend(Facts())))
+    context = _ground(tmp_path, diff)
 
     assert context.files == ("app route.py",)
-    assert "def route():" in context.text
+    assert "def route():" in context.source_evidence[0].text
     assert context.coverage.complete is True
 
 
@@ -290,58 +104,24 @@ def test_diff_context_discloses_only_source_limitations_in_the_unit_scope(tmp_pa
     source = "def route():\n    return 1\n"
     for name in ("app.py", "related.py", "unrelated.py"):
         (tmp_path / name).write_text(source)
-    route = DefinitionFragment("app.py", "route", 0, len(source))
-    related = DefinitionFragment("related.py", "route", 0, len(source))
-    collector = DiffContextCollector(
-        root=tmp_path,
-        detection=_detection(),
-        by_file={},
-        graph={},
-        facts_limitations=(
-            FactLimitation(source="related.py", analyzer="python", reason="unparsable", line=1, column=1),
-            FactLimitation(source="unrelated.py", analyzer="python", reason="unparsable", line=1, column=1),
+    route = definition("app.py", "route", 0, len(source))
+    related = definition("related.py", "route", 0, len(source))
+    collector = _shared(
+        tmp_path,
+        Facts(
+            limitations=(
+                FactLimitation(source="related.py", analyzer="python", reason="unparsable", line=1, column=1),
+                FactLimitation(source="unrelated.py", analyzer="python", reason="unparsable", line=1, column=1),
+            )
         ),
     )
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -1 +1 @@\n+def route(): return 2\n"
 
-    context = _collect(collector, diff, DefinitionUnitPlan(seeds=(route,), evidence=(route, related)))
+    context = _collect(collector, diff, DefinitionUnitPlan(seeds=(route, related)))
 
     assert context.coverage.limitations == ("facts:related.py:1:1",)
     assert "related.py at 1:1" in context.text
     assert "unrelated.py at 1:1" not in context.text
-
-
-def test_diff_context_keeps_a_limitation_for_a_published_evidence_source(tmp_path, monkeypatch):
-    from cyberjury.review.diff import context as context_module
-
-    app_source = "def route():\n    return load()\n"
-    service_source = "def load():\n    return 1\n"
-    (tmp_path / "app.py").write_text(app_source, encoding="utf-8")
-    (tmp_path / "service.py").write_text(service_source, encoding="utf-8")
-    source = DefinitionFragment("app.py", "route", 0, len(app_source))
-    target = DefinitionFragment("service.py", "load", 0, len(service_source))
-    plan = DefinitionUnitPlan(seeds=(source,), evidence=(source, target))
-    collector = DiffContextCollector(
-        root=tmp_path,
-        detection=_detection(),
-        by_file={},
-        graph={},
-        facts_limitations=(
-            FactLimitation(source="service.py", analyzer="python", reason="unparsable", line=1, column=1),
-        ),
-    )
-    original = context_module.related_file_context
-
-    def omit_related(root, rel, *args, **kwargs):
-        return ("", ()) if rel == "service.py" else original(root, rel, *args, **kwargs)
-
-    monkeypatch.setattr(context_module, "related_file_context", omit_related)
-    diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n+def route(): return load()\n"
-
-    context = _collect(collector, diff, plan)
-
-    assert context.files == ()
-    assert context.coverage.limitations == ("facts:service.py:1:1",)
 
 
 def test_fallback_diff_context_renders_facts_and_current_source(tmp_path):
@@ -349,109 +129,21 @@ def test_fallback_diff_context_renders_facts_and_current_source(tmp_path):
         "def get_client():\n    return current_user_client()\n\ndef tool():\n    return get_client()\n",
         encoding="utf-8",
     )
-    facts = Facts(
-        summary="Call graph",
-        data={"by_file": {"app.py": "app.py\n  tool()  calls get_client\n  get_client()"}},
-    )
+    facts = Facts(by_file={"app.py": "app.py\n  tool()  calls get_client\n  get_client()"})
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -3,0 +4,2 @@\n+def tool():\n+    return get_client()\n"
 
-    ctx = _ground(tmp_path, diff, _profile(_FactsBackend(facts)))
+    ctx = _ground(tmp_path, diff, facts)
 
-    assert ctx.source == "diff"
     assert ctx.files == ("app.py",)
-    assert "Syntax hints (unverified; cite only delivered source):" in ctx.text
-    assert "tool()  calls get_client" in ctx.text
-    assert "current_user_client" in ctx.text
-    assert "   1: def get_client():" in ctx.text
-
-
-def test_collect_diff_context_prefixes_scoped_facts_to_repository_paths(tmp_path):
-    scope = tmp_path / "backend"
-    scope.mkdir()
-    (scope / "service.py").write_text("def execute():\n    return 1\n", encoding="utf-8")
-    (scope / "views.py").write_text(
-        "from service import execute\n\ndef route():\n    return execute()\n", encoding="utf-8"
-    )
-    facts = Facts(
-        data={
-            "by_file": {"service.py": "service.py\n  execute()"},
-            "graph": {
-                "callgraph": {
-                    "service.py": {"execute": [{"range": [0, 27], "calls": []}]},
-                    "views.py": {"route": [{"range": [29, 64], "calls": ["execute"]}]},
-                },
-                "syntax_imports": {
-                    "views.py": [{"module": "service", "imported": "execute", "local": "execute", "range": [0, 27]}]
-                },
-            },
-        },
-    )
-    diff = (
-        "diff --git a/backend/service.py b/backend/service.py\n"
-        "+++ b/backend/service.py\n"
-        "@@ -2,0 +2,1 @@\n"
-        "+    return 1\n"
-    )
-
-    collector = build_diff_context_collector(tmp_path, _profile(_FactsBackend(facts)), facts_root=scope)
-    [unit] = _prepare(collector, diff)
-    ctx = unit.grounding
-
-    assert unit.paths == ("backend/service.py",)
-    assert [seed.identity for seed in unit.definition_plan.seeds] == ["backend/service.py:execute:0:27"]
-    assert collector.by_file == {"backend/service.py": "service.py\n  execute()"}
-    assert set(collector.graph["callgraph"]) == {"backend/service.py", "backend/views.py"}
-    assert collector.source_snapshot is not None
-    assert collector.source_snapshot.root == tmp_path.resolve()
-    assert collector.source_snapshot.matches_files(("backend/service.py",))
-    ctx.validate_snapshot()
-
-
-def test_scoped_diff_context_reaches_importing_control_through_rebased_imports(tmp_path):
-    scope = tmp_path / "backend"
-    scope.mkdir()
-    changed = "def apply(value):\n    return value\n"
-    related = "from service import apply\n\nclass Route:\n    permission = require_user\n    handler = apply\n"
-    (scope / "service.py").write_text(changed, encoding="utf-8")
-    (scope / "views.py").write_text(related, encoding="utf-8")
-    facts = Facts(
-        data={
-            "graph": {
-                "callgraph": {
-                    "service.py": {"apply": [{"range": [0, len(changed)], "calls": []}]},
-                    "views.py": {"Route": [{"range": [related.index("class Route"), len(related)], "calls": []}]},
-                },
-                "syntax_imports": {
-                    "views.py": [{"module": "service", "imported": "apply", "local": "apply", "range": [0, 25]}],
-                },
-            },
-        },
-    )
-    diff = (
-        "diff --git a/backend/service.py b/backend/service.py\n"
-        "+++ b/backend/service.py\n"
-        "@@ -1,1 +1,1 @@\n"
-        "+def apply(value):\n"
-    )
-
-    collector = build_diff_context_collector(tmp_path, _profile(_FactsBackend(facts)), facts_root=scope)
-    [unit] = _prepare(collector, diff)
-
-    assert set(collector.graph["syntax_imports"]) == {"backend/views.py"}
-    assert "File: backend/views.py" in unit.grounding.text
-    assert "permission = require_user" in unit.grounding.text
-
-
-def test_collect_diff_context_rejects_facts_root_outside_repository(tmp_path):
-    outside = tmp_path.parent / f"{tmp_path.name}-outside"
-    outside.mkdir()
-
-    with pytest.raises(BackendUnavailable, match="outside repository root"):
-        build_diff_context_collector(tmp_path, _profile(_FactsBackend()), facts_root=outside)
+    assert ctx.syntax_hints.startswith("app.py: syntax hints (unverified; cite only delivered source):\n```\n")
+    assert "tool()  calls get_client" in ctx.syntax_hints
+    [window] = ctx.source_evidence
+    assert window.text.startswith("# file: app.py lines 1-5\n1 | def get_client():")
+    assert (window.source_span.start_line, window.source_span.end_line) == (1, 5)
+    assert f"Initial source `{window.id}`, delivered by the review agent:" in ctx.prompt.source
 
 
 def test_diff_navigation_exposes_go_package_callers_as_candidates(tmp_path):
-    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
 
     helper = 'package app\n\nfunc CheckPolicy(value string) bool {\n    return value != ""\n}\n'
     caller = "package app\n\nfunc ApplyPolicy(value string) bool {\n    return CheckPolicy(value)\n}\n"
@@ -465,15 +157,10 @@ def test_diff_navigation_exposes_go_package_callers_as_candidates(tmp_path):
         "-    return true\n"
         '+    return value != ""\n'
     )
-    collector = build_diff_context_collector(
-        tmp_path,
-        _profile(TreeSitterFacts()),
-        review_diff=diff,
-    )
-    evidence = collector.relationship_evidence
-    target = next(item for item in evidence.definitions if item.name == "CheckPolicy")
-    assert collector.navigator is not None
-    session = collector.navigator.session()
+    shared = _extracted(tmp_path, diff).shared
+    target = next(item for item in shared.facts.relationships.definitions if item.name == "CheckPolicy")
+    assert shared.navigator is not None
+    session = shared.navigator.session()
     session.execute(
         [{"kind": "search_symbols", "query": "CheckPolicy", "page": 0}],
         target_chars=10_000,
@@ -496,7 +183,6 @@ def test_diff_navigation_exposes_go_package_callers_as_candidates(tmp_path):
 
 
 def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_path, monkeypatch):
-    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
 
     (tmp_path / "route.py").write_text(
         "from service import load\n\ndef route(value):\n    return load(value)\n",
@@ -515,13 +201,9 @@ def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_p
         "-    return value\n"
         "+    return load(value)\n"
     )
-    collector = build_diff_context_collector(
-        tmp_path,
-        _profile(TreeSitterFacts()),
-        review_diff=diff,
-    )
+    prepared = _extracted(tmp_path, diff)
 
-    unit = _prepare(collector, diff)[0]
+    unit = prepared.units[0]
 
     assert unit.grounding is not None
     assert "Unverified direct call candidates from this unit" in unit.grounding.text
@@ -529,36 +211,32 @@ def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_p
     candidate_source = unit.grounding.source_evidence[0]
     assert "def load(value)" in candidate_source.text
     assert candidate_source.id in unit.grounding.prompt.source
-    assert candidate_source.text in unit.grounding.prompt.source
+    assert (
+        f"Initial source `{candidate_source.id}`, delivered by the review agent:\n```\n{candidate_source.text}\n```"
+        in unit.grounding.prompt.source
+    )
+    assert f"source `{candidate_source.id}` delivered below" in unit.grounding.text
     assert "service.py" in unit.grounding.snapshot_files
 
     from cyberjury.review.diff import context as context_module
 
-    monkeypatch.setattr(context_module, "_MAX_INITIAL_CANDIDATE_SOURCE_CHARS", 1)
-    requestable = _prepare(collector, diff)[0].grounding
+    monkeypatch.setattr(
+        context_module,
+        "_EXECUTION",
+        replace(context_module._EXECUTION, max_initial_candidate_source_chars=1),
+    )
+    requestable = _prepare(prepared.shared, diff)[0].grounding
     assert requestable is not None
     assert requestable.source_evidence == ()
     assert any(item.source_span and item.source_span.file == "service.py" for item in requestable.evidence)
     assert "service.py" in requestable.snapshot_files
-    (tmp_path / "service.py").write_text("def load(value):\n    return None\n", encoding="utf-8")
-    with pytest.raises(BackendUnavailable, match="source changed"):
-        requestable.validate_snapshot()
-
-
-def test_initial_candidate_source_budget_keeps_large_callees_requestable():
-    short = SourceEvidence(id="src-short", identity="short", text="source" * 100)
-    large = SourceEvidence(id="src-large", identity="large", text="source" * 700)
-
-    delivered = _initial_candidate_sources((large, short), context_chars=20_000)
-
-    assert delivered == (short,)
 
 
 def test_diff_surface_packing_does_not_charge_lazy_seed_definitions_to_context_budget():
     from cyberjury.review.diff.model import _pack_surface_plans
 
-    first = DefinitionFragment("first.py", "first", 0, 100_000)
-    second = DefinitionFragment("second.py", "second", 0, 100_000)
+    first = definition("first.py", "first", 0, 100_000)
+    second = definition("second.py", "second", 0, 100_000)
     settings = replace(
         DEFAULT_REVIEW_SETTINGS.diff,
         target_patch_chars_per_unit=1_000,
@@ -566,8 +244,8 @@ def test_diff_surface_packing_does_not_charge_lazy_seed_definitions_to_context_b
 
     packed = _pack_surface_plans(
         [
-            DefinitionUnitPlan(seeds=(first,), evidence=(first,)),
-            DefinitionUnitPlan(seeds=(second,), evidence=(second,)),
+            DefinitionUnitPlan(seeds=(first,)),
+            DefinitionUnitPlan(seeds=(second,)),
         ],
         {"first.py": "small patch", "second.py": "small patch"},
         settings,
@@ -580,8 +258,8 @@ def test_diff_surface_packing_does_not_charge_lazy_seed_definitions_to_context_b
 def test_diff_surface_packing_bounds_the_lazy_definition_catalog():
     from cyberjury.review.diff.model import _pack_surface_plans
 
-    first = DefinitionFragment("first.py", "first", 0, 100)
-    second = DefinitionFragment("second.py", "second", 0, 100)
+    first = definition("first.py", "first", 0, 100)
+    second = definition("second.py", "second", 0, 100)
     settings = replace(
         DEFAULT_REVIEW_SETTINGS.diff,
         max_definition_evidence_items_per_unit=1,
@@ -589,8 +267,8 @@ def test_diff_surface_packing_bounds_the_lazy_definition_catalog():
 
     packed = _pack_surface_plans(
         [
-            DefinitionUnitPlan(seeds=(first,), evidence=(first,)),
-            DefinitionUnitPlan(seeds=(second,), evidence=(second,)),
+            DefinitionUnitPlan(seeds=(first,)),
+            DefinitionUnitPlan(seeds=(second,)),
         ],
         {"first.py": "small patch", "second.py": "small patch"},
         settings,
@@ -600,7 +278,6 @@ def test_diff_surface_packing_bounds_the_lazy_definition_catalog():
 
 
 def test_diff_keeps_alias_calls_and_navigation_sources_before_model_analysis(tmp_path):
-    from cyberjury.profiles.web.facts.backend import TreeSitterFacts
 
     (tmp_path / "service.ts").write_text("export default function actual(value: number) { return value; }\n")
     (tmp_path / "route.ts").write_text(
@@ -616,16 +293,10 @@ def test_diff_keeps_alias_calls_and_navigation_sources_before_model_analysis(tmp
         "+export default function actual(value: number) { return value; }\n"
     )
 
-    collector = build_diff_context_collector(
-        tmp_path,
-        _profile(TreeSitterFacts()),
-        review_diff=diff,
-    )
-
-    evidence = collector.relationship_evidence
+    evidence = _extracted(tmp_path, diff).shared.facts.relationships
     assert any(callsite.expression == "client(value)" for callsite in evidence.callsites)
     assert any(
-        relationship.kind == "import" and relationship.source_file == "route.ts"
+        relationship.kind == "import" and relationship.source.path == "route.ts"
         for relationship in evidence.structural_relationships
     )
     assert "tsconfig.json" in {source.path for source in evidence.sources}
@@ -639,11 +310,12 @@ def test_collect_diff_context_respects_total_budget(tmp_path):
         diff_parts.append(f"diff --git a/app_{i}.py b/app_{i}.py\n+++ b/app_{i}.py\n@@ -1,0 +1,1 @@\n+value = {i}\n")
 
     diff = "".join(diff_parts)
-    units = _prepare(build_diff_context_collector(tmp_path, _profile(_FactsBackend()), review_diff=diff), diff)
+    units = _prepare(_shared(tmp_path), diff)
 
     assert units
     assert all(
-        len(unit.grounding.text) <= DEFAULT_REVIEW_SETTINGS.diff.target_repository_context_chars_per_unit
+        len(unit.grounding.prompt.source.removeprefix(f"{unit.grounding.seed}\n\n"))
+        <= DEFAULT_REVIEW_SETTINGS.diff.target_repository_context_chars_per_unit
         for unit in units
     )
 
@@ -652,22 +324,22 @@ def test_diff_planning_and_grounding_are_distinct_deterministic_steps(tmp_path):
     source = "def route():\n    return sink()\n"
     (tmp_path / "route.py").write_text(source)
     diff = "diff --git a/route.py b/route.py\n+++ b/route.py\n@@ -1,2 +1,2 @@\n+def route():\n+    return sink()\n"
-    collector = build_diff_context_collector(tmp_path, _profile(_FactsBackend()))
+    shared = _shared(tmp_path)
 
-    planned = collector.plan(diff)
-    grounded = collector.ground(planned)
+    planned = plan_diff_units(diff, shared, ()).units
+    grounded = _prepare(shared, diff)
 
     assert all(unit.grounding is None for unit in planned)
     assert all(unit.grounding is not None for unit in grounded)
     assert [unit.diff for unit in planned] == [unit.diff for unit in grounded]
-    assert grounded[0].grounding.source_snapshot == collector.source_snapshot
-    assert _prepare(collector, diff) == grounded
+    assert grounded[0].grounding.source_snapshot == shared.snapshot
+    assert _prepare(shared, diff) == grounded
 
 
 def test_collect_diff_context_reports_only_rendered_files(tmp_path):
     diff = "diff --git a/missing.py b/missing.py\n+++ b/missing.py\n@@ -1,0 +1,1 @@\n+print(1)\n"
 
-    ctx = _ground(tmp_path, diff, _profile(_FactsBackend()))
+    ctx = _ground(tmp_path, diff)
 
     assert ctx.files == ()
     assert ctx.text == ""
@@ -681,64 +353,34 @@ def test_deleted_diff_source_is_bound_by_the_patch_not_the_post_change_snapshot(
         "@@ -1 +0,0 @@\n"
         "-dangerous_default = True\n"
     )
-    collector = build_diff_context_collector(tmp_path, _profile(_FactsBackend()), review_diff=diff)
-
-    unit = _prepare(collector, diff)[0]
+    unit = _prepare(_shared(tmp_path), diff)[0]
 
     assert unit.grounding is not None
     assert unit.grounding.snapshot_files == ()
-    unit.grounding.validate_snapshot()
 
 
 def test_collect_diff_context_handles_hunk_lines_beyond_current_source(tmp_path):
     (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -100,1 +100,1 @@\n-print(0)\n+print(1)\n"
 
-    ctx = _ground(tmp_path, diff, _profile(_FactsBackend()))
+    ctx = _ground(tmp_path, diff)
 
     assert "outside current source length 1" in ctx.text
 
 
-def test_diff_context_collector_reuses_facts_for_batch_context(tmp_path):
+def test_diff_units_share_one_facts_context_for_batch_context(tmp_path):
     (tmp_path / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
     (tmp_path / "b.py").write_text("def b():\n    return 2\n", encoding="utf-8")
-    backend = _FactsBackend()
-    collector = build_diff_context_collector(tmp_path, _profile(backend))
+    diff_a = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -1,0 +1,1 @@\n+print(a())\n"
+    diff_b = "diff --git a/b.py b/b.py\n+++ b/b.py\n@@ -1,0 +1,1 @@\n+print(b())\n"
+    shared = _shared(tmp_path)
 
-    [unit_a] = _prepare(collector, "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -1,0 +1,1 @@\n+print(a())\n")
-    [unit_b] = _prepare(collector, "diff --git a/b.py b/b.py\n+++ b/b.py\n@@ -1,0 +1,1 @@\n+print(b())\n")
+    [unit_a] = _prepare(shared, diff_a)
+    [unit_b] = _prepare(shared, diff_b)
     ctx_a, ctx_b = unit_a.grounding, unit_b.grounding
 
-    assert backend.extracts == 1
-    assert "File: a.py" in ctx_a.text
-    assert "File: b.py" not in ctx_a.text
-    assert "File: b.py" in ctx_b.text
-
-
-def test_diff_context_rejects_source_changes_during_facts_extraction(tmp_path):
-    class MutatingBackend(_FactsBackend):
-        def extract(self, root):
-            (Path(root) / "app.py").write_text("def changed():\n    return 2\n")
-            return Facts()
-
-    (tmp_path / "app.py").write_text("def original():\n    return 1\n")
-
-    with pytest.raises(BackendUnavailable, match="source changed during diff facts extraction"):
-        build_diff_context_collector(tmp_path, _profile(MutatingBackend()))
-
-
-def test_diff_context_reuses_a_bound_snapshot_and_rejects_drift(tmp_path):
-    source = tmp_path / "app.py"
-    source.write_text("def original():\n    return 1\n")
-    snapshot = SourceSnapshot.capture(tmp_path, ("app.py",), scope_provider=lambda: ("app.py",))
-    profile = _profile(_FactsBackend())
-
-    collector = build_diff_context_collector(tmp_path, profile, source_snapshot=snapshot)
-
-    assert collector.source_snapshot is snapshot
-    source.write_text("def changed():\n    return 2\n")
-    with pytest.raises(BackendUnavailable, match="source changed before diff facts extraction"):
-        build_diff_context_collector(tmp_path, profile, source_snapshot=snapshot)
+    assert [item.source_span.file for item in ctx_a.source_evidence] == ["a.py"]
+    assert [item.source_span.file for item in ctx_b.source_evidence] == ["b.py"]
 
 
 @pytest.mark.parametrize(
@@ -750,24 +392,67 @@ def test_diff_context_reuses_a_bound_snapshot_and_rejects_drift(tmp_path):
 )
 def test_prepared_fallback_units_keep_current_repository_context(tmp_path, path, source):
     (tmp_path / path).write_text(source)
-    collector = DiffContextCollector(
-        root=tmp_path,
-        detection=_detection(),
-        by_file={},
-        graph={},
-    )
+    collector = _shared(tmp_path)
     diff = f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n"
 
     unit = _prepare(collector, diff)[0]
 
     assert unit.grounding is not None
-    assert "Current source" in unit.grounding.text
-    assert "admin" in unit.grounding.text or "sensitive" in unit.grounding.text
+    [window] = unit.grounding.source_evidence
+    assert window.text.startswith(f"# file: {path} lines 1-")
+    assert "admin" in window.text or "sensitive" in window.text
 
 
-def test_diff_grounding_requires_a_definition_plan(tmp_path):
-    collector = DiffContextCollector(root=tmp_path, detection=_detection(), by_file={}, graph={})
-    unit = DiffUnit(index=1, total=1, diff="diff --git a/app.py b/app.py\n@@ -0,0 +1 @@\n+x = 1\n", paths=("app.py",))
+def test_changed_file_windows_center_on_every_changed_region_of_any_text_file(tmp_path):
+    lines = [f"<p>line {number}</p>" for number in range(1, 2001)]
+    (tmp_path / "page.html").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    diff = (
+        "diff --git a/page.html b/page.html\n--- a/page.html\n+++ b/page.html\n"
+        "@@ -900 +900 @@\n-<p>old</p>\n+<p>line 900</p>\n"
+    )
 
-    with pytest.raises(ValueError, match="requires a definition plan"):
-        collector.ground([unit])
+    ctx = _ground(tmp_path, diff)
+
+    spans = [(item.source_span.start_line, item.source_span.end_line) for item in ctx.source_evidence]
+    assert spans[0] == (895, 905)
+    assert spans[1][0] == 1
+    assert "<p>line 900</p>" in ctx.source_evidence[0].text
+
+
+def test_changed_file_windows_stay_inside_the_context_budget_as_exact_line_ranges(tmp_path):
+    from cyberjury.review.context import delivered_source_block
+    from cyberjury.review.diff.context import changed_file_sources
+
+    (tmp_path / "app.py").write_text("".join(f"value_{index} = {index}\n" for index in range(1, 4000)))
+
+    _text, delivered = changed_file_sources(tmp_path, ("app.py",), {})
+
+    [window] = delivered
+    limit = DEFAULT_REVIEW_SETTINGS.diff.target_repository_context_chars_per_unit
+    assert len(delivered_source_block(window)) + 2 <= limit
+    assert window.source_span.start_line == 1
+    assert window.text.endswith(f"value_{window.source_span.end_line} = {window.source_span.end_line}")
+
+
+def test_a_changed_file_without_a_seed_definition_gets_windows_and_hints_beside_seeded_files(tmp_path):
+    (tmp_path / "views.py").write_text("def show(request):\n    return render(request)\n", encoding="utf-8")
+    (tmp_path / "settings.py").write_text(
+        "import os\n\nSECRET_KEY = os.environ.get('KEY')\nDEBUG = True\n", encoding="utf-8"
+    )
+    diff = (
+        "diff --git a/views.py b/views.py\n--- a/views.py\n+++ b/views.py\n@@ -2 +2 @@\n"
+        "-    return render(request, safe=True)\n+    return render(request)\n"
+        "diff --git a/settings.py b/settings.py\n--- a/settings.py\n+++ b/settings.py\n@@ -4 +4 @@\n"
+        "-DEBUG = False\n+DEBUG = True\n"
+    )
+    prepared = _extracted(tmp_path, diff)
+
+    [unit] = prepared.units
+    grounding = unit.grounding
+
+    assert {seed.kind for seed in unit.definition_plan.seeds if seed.source.path == "settings.py"} == {"file"}
+    assert [item.source_span.file for item in grounding.source_evidence] == ["settings.py"]
+    assert grounding.files == ("settings.py",)
+    assert grounding.syntax_hints.startswith("settings.py: syntax hints")
+    assert "views.py: syntax hints" not in grounding.syntax_hints
+    assert any(item.label.startswith("views.py:show") for item in grounding.evidence)

@@ -1,7 +1,5 @@
 """Provider configuration stays independent from CLI argument objects."""
 
-import pytest
-
 from cyberjury.providers import configuration as configuration_module
 from cyberjury.providers.configuration import (
     ProviderSeat,
@@ -25,13 +23,13 @@ def test_role_resolution_drops_cross_vendor_connection_fields():
     assert seat == ProviderSeat(provider="openai", model="gpt-5.6")
 
 
-def test_environment_configuration_applies_model_override_to_inherited_roles(monkeypatch):
+def test_environment_configuration_applies_base_overrides_to_inherited_roles(monkeypatch):
     monkeypatch.setattr(
         configuration_module,
         "env_defaults",
         lambda: {
             "provider": "openai",
-            "model": "base-model",
+            "model": None,
             "api_key": "key",
             "api_base": None,
             "wire_api": "responses",
@@ -51,7 +49,7 @@ def test_environment_configuration_applies_model_override_to_inherited_roles(mon
         },
     )
 
-    configuration = provider_configuration_from_env(model_override="override")
+    configuration = provider_configuration_from_env(model="override")
 
     assert configuration.base.model == "override"
     assert configuration.finder.model == "override"
@@ -59,6 +57,14 @@ def test_environment_configuration_applies_model_override_to_inherited_roles(mon
     assert configuration.confirmer.model == "override"
     assert configuration.retries == 2
     assert configuration.timeout == 30.0
+    assert provider_configuration_from_env().base.model == "gpt-5.6"
+    overridden = provider_configuration_from_env(provider="anthropic", wire_api="chat", retries=0, timeout=5.0)
+    assert (overridden.base.provider, overridden.base.model, overridden.base.wire_api) == (
+        "anthropic",
+        "claude-opus-5",
+        "chat",
+    )
+    assert (overridden.retries, overridden.timeout) == (0, 5.0)
 
 
 def test_environment_reads_skeptic_and_confirmer_role_variables(monkeypatch):
@@ -71,15 +77,3 @@ def test_environment_reads_skeptic_and_confirmer_role_variables(monkeypatch):
 
     assert configuration.skeptic.model == "skeptic-model"
     assert configuration.confirmer.model == "confirmer-model"
-    assert not hasattr(configuration, "challenger")
-    assert not hasattr(configuration, "judge")
-
-
-def test_retired_seat_variables_are_rejected_naming_the_replacement(monkeypatch):
-    monkeypatch.setenv("CYBERJURY_CHALLENGER_MODEL", "removed-challenger")
-    monkeypatch.setenv("CYBERJURY_JUDGE_PROVIDER", "openai")
-
-    with pytest.raises(ValueError, match="retired seat variables are set") as error:
-        provider_configuration_from_env()
-    assert "CYBERJURY_CHALLENGER_MODEL (use CYBERJURY_SKEPTIC_MODEL)" in str(error.value)
-    assert "CYBERJURY_JUDGE_PROVIDER (use CYBERJURY_CONFIRMER_PROVIDER)" in str(error.value)

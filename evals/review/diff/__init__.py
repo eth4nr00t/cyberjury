@@ -1,6 +1,5 @@
-"""Diff Review benchmark execution and scoring adapters."""
+"""Diff Review benchmark execution."""
 
-from .execution import DiffRunOptions, run, run_diff_cases
-from .results import score
+from .execution import run
 
-__all__ = ["DiffRunOptions", "run", "run_diff_cases", "score"]
+__all__ = ["run"]

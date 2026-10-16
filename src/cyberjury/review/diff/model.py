@@ -7,27 +7,20 @@ import re
 import shlex
 from collections.abc import Iterable
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, cached_property
 from pathlib import Path
 from typing import Literal
 
-from cyberjury.detection import Detection
+from cyberjury.detection import Detection, load_detection
+from cyberjury.numbering import split_lines
 from cyberjury.review.context import GroundingContext
-from cyberjury.review.definitions import (
-    DefinitionFragment,
-    DefinitionUnitPlan,
-    FactsGraph,
-    definition_fragments,
-    definition_union_size,
-    merge_definition_unit_plans,
-    plan_definition_units,
-)
-from cyberjury.review.facts import FactsResolutionReceipt
+from cyberjury.review.definitions import DefinitionUnitPlan, definitions_by_name
+from cyberjury.review.relationships import DefinitionEvidence
+from cyberjury.review.result import SkippedFile
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS, DiffReviewSettings
-from cyberjury.review.unit_plans import UnitPlanReceipt, UnitPlanRecord, UnitSourceSlice
+from cyberjury.review.unit_plans import UnitPlanRecord, UnitSourceSlice
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
-_SOURCE_RENDERING_HEADROOM = 0.9
 _QUOTED_GIT_HEADER_RE = re.compile(r'^diff --git "(?:\\.|[^"])*" ("(?:\\.|[^"])*")$')
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
@@ -51,9 +44,14 @@ class DiffUnit:
     total: int
     diff: str
     paths: tuple[str, ...]
+    definition_plan: DefinitionUnitPlan
     id: str = ""
-    definition_plan: DefinitionUnitPlan | None = None
     grounding: GroundingContext | None = None
+
+    @cached_property
+    def line_ranges(self) -> DiffLineRanges:
+        """Return the unit's post change hunk lines and exact old and new change anchors."""
+        return diff_line_ranges(self.diff, load_detection())
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -79,7 +77,7 @@ def split_diff_by_file(diff: str) -> list[str]:
     """Split a unified diff at file boundaries."""
     chunks: list[str] = []
     current: list[str] = []
-    for line in diff.splitlines(keepends=True):
+    for line in split_lines(diff, keepends=True):
         if line.startswith("diff --git ") and current:
             chunks.append("".join(current))
             current = []
@@ -94,7 +92,7 @@ def _parsed_hunks(chunk: str) -> tuple[ParsedHunk, ...]:
     hunks: list[ParsedHunk] = []
     lines: list[HunkLine] | None = None
     old_start = new_start = old_line = new_line = 0
-    for raw in chunk.splitlines():
+    for raw in split_lines(chunk):
         header = _HUNK_RE.match(raw)
         if raw.startswith("@@") and header is None:
             raise ValueError("diff review contains a malformed unified diff hunk header")
@@ -127,7 +125,7 @@ def _parsed_hunks(chunk: str) -> tuple[ParsedHunk, ...]:
 def chunk_path(chunk: str) -> str:
     """Read the target path from one per-file diff chunk."""
     plus = minus = git = ""
-    for line in chunk.splitlines():
+    for line in split_lines(chunk):
         if line.startswith("+++ ") and not plus:
             plus = line[4:].strip()
         elif line.startswith("--- ") and not minus:
@@ -180,7 +178,7 @@ def _decode_git_path(raw: str) -> str:
 def _side_path(chunk: str, marker: str) -> str:
     prefix = f"{marker} "
     return next(
-        (_decode_git_path(line[len(prefix) :]) for line in chunk.splitlines() if line.startswith(prefix)),
+        (_decode_git_path(line[len(prefix) :]) for line in split_lines(chunk) if line.startswith(prefix)),
         "",
     )
 
@@ -205,21 +203,36 @@ def has_diff_hunk(diff: str) -> bool:
     return any(_parsed_hunks(chunk) for chunk in split_diff_by_file(diff))
 
 
-def batch_paths(batch: str) -> tuple[str, ...]:
-    """Return every readable path represented by one diff batch."""
-    paths = diff_paths(batch)
-    return paths or ("<unknown>",)
+def _hunkless_reason(chunk: str) -> str:
+    header = split_lines(chunk)
+    if any(line.startswith(("Binary files ", "GIT binary patch")) for line in header):
+        return "binary"
+    for prefix, reason in (
+        ("new file mode", "empty_new_file"),
+        ("deleted file mode", "empty_deleted_file"),
+        ("rename from", "rename_only"),
+        ("copy from", "copy_only"),
+        ("old mode", "mode_only"),
+    ):
+        if any(line.startswith(prefix) for line in header):
+            return reason
+    return "no_hunk"
 
 
-def strip_unreviewable_files(diff: str, detection: Detection) -> tuple[str, tuple[str, ...]]:
-    """Remove noise and test files before they consume review work."""
+def strip_unreviewable_files(diff: str, detection: Detection) -> tuple[str, tuple[SkippedFile, ...]]:
+    """Remove noise files and file sections without a hunk before they consume review work.
+
+    Binary patches, pure renames, copies, mode changes, and empty new or deleted files carry
+    no hunk. Each skipped file is returned with its reason.
+    """
     kept: list[str] = []
-    skipped: list[str] = []
+    skipped: list[SkippedFile] = []
     for chunk in split_diff_by_file(diff):
         path = chunk_path(chunk)
-        binary_patch = any(line.startswith(("Binary files ", "GIT binary patch")) for line in chunk.splitlines())
-        if path and (binary_patch or detection.is_noise_path(path)):
-            skipped.append(path)
+        if path and detection.is_noise_path(path):
+            skipped.append(SkippedFile(path=path, reason="noise"))
+        elif path and not _parsed_hunks(chunk):
+            skipped.append(SkippedFile(path=path, reason=_hunkless_reason(chunk)))
         else:
             kept.append(chunk)
     return "".join(kept), tuple(skipped)
@@ -253,7 +266,7 @@ def pack_diff_chunks(diff: str, max_chars: int = _SETTINGS.target_patch_chars_pe
 def _split_oversized_file_chunk(chunk: str, max_chars: int) -> list[str]:
     if len(chunk) <= max_chars:
         return [chunk]
-    lines = chunk.splitlines()
+    lines = split_lines(chunk)
     first_hunk = next((index for index, line in enumerate(lines) if line.startswith("@@ ")), None)
     if first_hunk is None:
         return [chunk]
@@ -311,33 +324,19 @@ def _render_hunk(old_start: int, new_start: int, lines: tuple[HunkLine, ...]) ->
     return f"@@ -{old_start},{old_count} +{new_start},{new_count} @@\n{body}"
 
 
-def changed_paths(diff: str, detection: Detection) -> tuple[str, ...]:
-    """Return changed source paths after profile noise filters."""
-    seen: dict[str, None] = {}
-    for path in diff_paths(diff):
-        if detection.is_noise_path(path):
-            continue
-        if Path(path).suffix.lower() not in detection.source_extensions:
-            continue
-        seen.setdefault(path, None)
-    return tuple(seen)
-
-
 def reviewable_changed_paths(diff: str, detection: Detection) -> tuple[str, ...]:
-    """Return every changed path retained by the profile noise boundary."""
+    """Return every changed path retained by the noise boundary."""
     return tuple(path for path in diff_paths(diff) if not detection.is_noise_path(path))
 
 
 def changed_line_ranges(diff: str, detection: Detection) -> ChangedLineRanges:
-    """Return current definition anchors for additions, replacements, and deletions."""
+    """Return current line anchors of additions, replacements, and deletions in every reviewable file."""
     anchors: dict[str, list[tuple[int, int]]] = {
-        path: list(ranges)
-        for path, ranges in diff_line_ranges(diff, detection).new.items()
-        if Path(path).suffix.lower() in detection.source_extensions
+        path: list(ranges) for path, ranges in diff_line_ranges(diff, detection).new.items()
     }
     for chunk in split_diff_by_file(diff):
         path = chunk_path(chunk)
-        if not path or detection.is_noise_path(path) or Path(path).suffix.lower() not in detection.source_extensions:
+        if not path or detection.is_noise_path(path):
             continue
         for hunk in _parsed_hunks(chunk):
             pending_deletions: list[int] = []
@@ -402,14 +401,14 @@ def prepare_diff_units(
     *,
     root: Path,
     detection: Detection,
-    graph: FactsGraph,
+    definitions: tuple[DefinitionEvidence, ...],
     settings: DiffReviewSettings = _SETTINGS,
 ) -> list[DiffUnit]:
     """Plan diff units without reading or rendering their initial grounding."""
     if not diff.strip():
         return []
     chunks = split_diff_by_file(diff)
-    paths = batch_paths(diff)
+    paths = diff_paths(diff)
     chunks_by_path: dict[str, str] = {}
     for chunk in chunks:
         path = chunk_path(chunk)
@@ -419,13 +418,13 @@ def prepare_diff_units(
             raise ValueError(f"diff review contains repeated file sections for {path}")
         chunks_by_path[path] = chunk
     ranges = changed_line_ranges(diff, detection)
-    seeds = changed_definition_fragments(root, paths, ranges, graph)
+    seeds = changed_definitions(root, paths, ranges, definitions)
     plans = _pack_surface_plans(list(plan_definition_units(seeds, seed_files=paths)), chunks_by_path, settings)
     covered = {
         file
         for plan in plans
         for file in (
-            *(seed.file for seed in plan.seeds),
+            *(seed.source.path for seed in plan.seeds),
             *plan.seed_files,
         )
     }
@@ -437,7 +436,7 @@ def prepare_diff_units(
             dict.fromkeys(
                 file
                 for file in (
-                    *(seed.file for seed in plan.seeds),
+                    *(seed.source.path for seed in plan.seeds),
                     *plan.seed_files,
                 )
                 if file in chunks_by_path
@@ -450,9 +449,9 @@ def prepare_diff_units(
                 if len(unit_paths) == 1
                 else [unit_diff]
             )
-            provisional.extend((batch, batch_paths(batch), plan) for batch in batches)
+            provisional.extend((batch, diff_paths(batch), plan) for batch in batches)
     provisional.extend(
-        (batch, batch_paths(batch), DefinitionUnitPlan(seed_files=batch_paths(batch))) for batch in fallback_batches
+        (batch, diff_paths(batch), DefinitionUnitPlan(seed_files=diff_paths(batch))) for batch in fallback_batches
     )
     total = len(provisional)
     return [
@@ -467,49 +466,47 @@ def prepare_diff_units(
     ]
 
 
-def diff_unit_plan_receipt(
-    units: list[DiffUnit],
-    facts_resolution: FactsResolutionReceipt,
+def plan_definition_units(
+    seeds: tuple[DefinitionEvidence, ...],
     *,
-    expected_owned_paths: tuple[str, ...],
-    settings: DiffReviewSettings = _SETTINGS,
-) -> UnitPlanReceipt:
-    """Project diff units into the shared observable planning schema."""
-    records: list[UnitPlanRecord] = []
-    for unit in units:
-        plan = unit.definition_plan or DefinitionUnitPlan(seed_files=unit.paths)
-        source_fragments = tuple(dict.fromkeys((*plan.seeds, *plan.fragments)))
-        slices = tuple(
-            UnitSourceSlice(path=fragment.file, start=fragment.start, end=fragment.end) for fragment in source_fragments
-        )
-        seed_ids = tuple(f"patch:{path}" for path in unit.paths)
-        secondary = tuple(fragment for fragment in plan.fragments if fragment not in plan.seeds)
-        over_target = []
-        if len(unit.diff) > settings.target_patch_chars_per_unit:
-            over_target.append(f"patch chars exceed {settings.target_patch_chars_per_unit}")
-        if definition_union_size(secondary) > settings.target_repository_context_chars_per_unit:
-            over_target.append(f"source chars exceed {settings.target_repository_context_chars_per_unit}")
-        records.append(
-            UnitPlanRecord.create(
-                kind="diff",
-                name=f"diff:{unit.index}:{','.join(unit.paths)}",
-                labels=tuple(f"definition:{seed.identity}" for seed in plan.seeds),
-                owned_paths=unit.paths,
-                source_slices=slices,
-                seed_ids=seed_ids,
-                patch_text=unit.diff,
-                over_target_reasons=tuple(over_target),
+    seed_files: tuple[str, ...] = (),
+) -> tuple[DefinitionUnitPlan, ...]:
+    """Build one plan per seed file, in seed order, holding that file's seed definitions."""
+    plans = []
+    for anchor in dict.fromkeys(seed.source.path for seed in seeds):
+        anchor_seeds = tuple(seed for seed in seeds if seed.source.path == anchor)
+        plans.append(
+            DefinitionUnitPlan(
+                seeds=anchor_seeds,
+                seed_files=(anchor,) if anchor in seed_files else (),
             )
         )
-    receipt = UnitPlanReceipt.create(
-        facts_resolution=facts_resolution,
-        units=tuple(records),
-        expected_owned_paths=expected_owned_paths,
-        expected_seed_ids=tuple(f"patch:{path}" for path in expected_owned_paths),
+    return tuple(plans)
+
+
+def merge_definition_unit_plans(
+    left: DefinitionUnitPlan,
+    right: DefinitionUnitPlan,
+) -> DefinitionUnitPlan:
+    """Merge independent review surfaces without losing seed or receipt identity."""
+    return DefinitionUnitPlan(
+        seeds=tuple(dict.fromkeys((*left.seeds, *right.seeds))),
+        seed_files=tuple(dict.fromkeys((*left.seed_files, *right.seed_files))),
     )
-    if receipt.unowned_paths or receipt.unowned_seed_ids:
-        raise ValueError("diff unit planning left expected paths or seeds unowned")
-    return receipt
+
+
+def diff_unit_plan_record(unit: DiffUnit) -> UnitPlanRecord:
+    """Project one diff unit into the shared observable planning schema."""
+    return UnitPlanRecord.create(
+        kind="diff",
+        name=f"diff:{unit.index}:{','.join(unit.paths)}",
+        owned_paths=unit.paths,
+        source_slices=tuple(
+            UnitSourceSlice(path=seed.source.path, start=seed.source.start, end=seed.source.end)
+            for seed in unit.definition_plan.seeds
+        ),
+        patch_text=unit.diff,
+    )
 
 
 def _pack_surface_plans(
@@ -519,20 +516,16 @@ def _pack_surface_plans(
 ) -> list[DefinitionUnitPlan]:
     packed: list[DefinitionUnitPlan] = []
     current: DefinitionUnitPlan | None = None
-    context_target = int(settings.target_repository_context_chars_per_unit * _SOURCE_RENDERING_HEADROOM)
     for plan in plans:
         if current is None:
             current = plan
             continue
         candidate = merge_definition_unit_plans(current, plan)
-        candidate_paths = tuple(dict.fromkeys((*(seed.file for seed in candidate.seeds), *candidate.seed_files)))
+        candidate_paths = tuple(dict.fromkeys((*(seed.source.path for seed in candidate.seeds), *candidate.seed_files)))
         patch_chars = sum(len(chunks_by_path.get(path, "")) for path in candidate_paths)
-        secondary_fragments = tuple(fragment for fragment in candidate.fragments if fragment not in candidate.seeds)
-        evidence_chars = definition_union_size(secondary_fragments)
         if (
             patch_chars > settings.target_patch_chars_per_unit
-            or evidence_chars > context_target
-            or len(candidate.fragments) > settings.max_definition_evidence_items_per_unit
+            or len(candidate.seeds) > settings.max_definition_evidence_items_per_unit
         ):
             packed.append(current)
             current = plan
@@ -543,34 +536,32 @@ def _pack_surface_plans(
     return packed
 
 
-def changed_definition_fragments(
+def changed_definitions(
     root: Path,
     paths: tuple[str, ...],
     ranges: ChangedLineRanges,
-    graph: FactsGraph,
-) -> tuple[DefinitionFragment, ...]:
+    definitions: tuple[DefinitionEvidence, ...],
+) -> tuple[DefinitionEvidence, ...]:
     """Return exact definitions that contain a changed line."""
-    wanted = set(paths)
-    sources = {path: _source_for_planning(root, path) for path in paths}
-    candidates: list[tuple[DefinitionFragment, int, int]] = []
-    for fragments in definition_fragments(graph).values():
-        for fragment in fragments:
-            if fragment.file not in wanted:
-                continue
-            source = sources.get(fragment.file, "")
-            if not source:
-                continue
-            start_line = source[: fragment.start].count("\n") + 1
-            end_line = source[: max(fragment.start, fragment.end - 1)].count("\n") + 1
-            if any(
-                start_line <= changed_end and end_line >= changed_start
-                for changed_start, changed_end in ranges.get(fragment.file, ())
-            ):
-                candidates.append((fragment, start_line, end_line))
-    return tuple(dict.fromkeys(fragment for fragment, _start_line, _end_line in candidates))
+    sources = {path: repository_source(root, path) for path in paths}
+    changed: list[DefinitionEvidence] = []
+    for definition in definitions_by_name(definitions):
+        file, start, end = definition.source.path, definition.source.start, definition.source.end
+        source = sources.get(file, "")
+        if not source:
+            continue
+        start_line = source[:start].count("\n") + 1
+        end_line = source[: max(start, end - 1)].count("\n") + 1
+        if any(
+            start_line <= changed_end and end_line >= changed_start
+            for changed_start, changed_end in ranges.get(file, ())
+        ):
+            changed.append(definition)
+    return tuple(changed)
 
 
-def _source_for_planning(root: Path, rel: str) -> str:
+def repository_source(root: Path, rel: str) -> str:
+    """Read one repository file, or return empty text when it is absent or unreadable."""
     path = (root / rel).resolve()
     try:
         path.relative_to(root)

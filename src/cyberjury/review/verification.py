@@ -14,62 +14,35 @@ from time import perf_counter
 from typing import Literal, Protocol
 
 from cyberjury.canonical import canonical_sha256
-from cyberjury.json_parse import parse_json_object
-from cyberjury.numbering import numbered_source
-from cyberjury.profiles.base import ContentPaths
-from cyberjury.profiles.registry import default_profile
-from cyberjury.providers.base import Message, Provider, ProviderFingerprint, ResponseSchema
+from cyberjury.numbering import numbered_source, split_lines
+from cyberjury.providers.base import Message, Provider, ResponseSchema
 from cyberjury.providers.metering import model_call_context, record_model_parse
+from cyberjury.review.checkpoint import CheckpointStore
+from cyberjury.review.engine import parse_role_response
 from cyberjury.review.knowledge import load_review_brief
-from cyberjury.review.paths import resolve_source_path
-from cyberjury.review.prompts import UNTRUSTED_SOURCE_RULE, fenced_source
-from cyberjury.review.schemas import closed_object, validate_response_object
-from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS, positive_concurrency
-from cyberjury.review.trace import Trace, emit_trace
-from cyberjury.sources.snapshot import SourceSnapshot
+from cyberjury.review.paths import normalized_location_path, resolve_source_path
+from cyberjury.review.prompts import UNTRUSTED_SOURCE_RULE, fenced_source, one_line_source
+from cyberjury.review.schemas import closed_object
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.verification
 VERIFICATION_SCHEMA = "cyberjury.verification/v3"
 
 
-def verification_candidate_id(candidate: object) -> str:
-    """Return the canonical candidate identity used by verification artifacts."""
-    for field_name in ("finding_id", "candidate_id"):
-        value = getattr(candidate, field_name, "")
-        if isinstance(value, str) and value:
-            return value
-    raise ValueError("verification candidate has no stable identity")
-
-
 class VerificationFinding(Protocol):
     """The evidence fields required by the shared verification route."""
 
+    candidate_id: str
     title: str
     category: str
-    endpoint: str
+    entrypoint: str
     file: str
-    line: int | None
+    line: int
     severity: str
     evidence: str
+    attack_path: str
     found_by: tuple[str, ...]
     evidence_refs: tuple[str, ...]
-
-
-@dataclass(frozen=True, kw_only=True)
-class VerificationCandidate:
-    """A target-neutral finding shape for verification adapters."""
-
-    title: str
-    category: str = ""
-    endpoint: str = ""
-    file: str = ""
-    line: int | None = None
-    severity: str = "HIGH"
-    evidence: str = ""
-    source: str = ""
-    finding_id: str = ""
-    found_by: tuple[str, ...] = ()
-    evidence_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -92,7 +65,6 @@ class VerificationActorFingerprint:
 
     actor: str
     settings: tuple[tuple[str, str], ...] = ()
-    provider: ProviderFingerprint | None = None
     configured_seat_id: str = ""
 
     def to_data(self) -> dict[str, object]:
@@ -101,8 +73,6 @@ class VerificationActorFingerprint:
             "actor": self.actor,
             "settings": dict(self.settings),
         }
-        if self.provider is not None:
-            value["provider"] = self.provider.to_data()
         if self.configured_seat_id:
             value["configured_seat_id"] = self.configured_seat_id
         return value
@@ -115,17 +85,8 @@ class VerificationActorFingerprint:
 
     @property
     def seat_id(self) -> str:
-        """Identify the underlying model seat used for independence checks."""
-        if self.configured_seat_id:
-            return self.configured_seat_id
-        settings = dict(self.settings)
-        value = {
-            "provider": self.provider.to_data() if self.provider is not None else None,
-            "model": settings.get("model", ""),
-            "custom_actor": self.actor if self.provider is None else "",
-        }
-        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
-        return f"seat-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:20]}"
+        """Identify the configured model seat used for independence checks."""
+        return self.configured_seat_id or self.actor_id
 
 
 class Verifier(ABC):
@@ -150,7 +111,6 @@ class VerifyResult[T]:
     errors: int = 0
     error_details: list[str] = field(default_factory=list)
     incomplete: list[T] = field(default_factory=list)
-    unlocatable: list[T] = field(default_factory=list)
     records: list[VerificationRecord[T]] = field(default_factory=list)
     candidate_ids: tuple[str, ...] = ()
 
@@ -167,24 +127,6 @@ class VerificationVote:
     control_file: str = ""
     control_line: int | None = None
 
-    def __post_init__(self) -> None:
-        """Reject votes that cannot explain one actor decision."""
-        allowed = {"real", "refuted", "error"} if self.role == "skeptic" else {"upheld", "rejected", "error"}
-        if self.role not in {"skeptic", "confirmer"} or self.verdict not in allowed:
-            raise ValueError("verification vote role and verdict are inconsistent")
-        if not self.actor_id or not self.seat_id or not self.reason:
-            raise ValueError("verification vote identities and reason must be nonempty")
-        if not isinstance(self.control_file, str):
-            raise ValueError("verification vote control file must be a string")
-        if self.control_line is not None and (
-            isinstance(self.control_line, bool) or not isinstance(self.control_line, int) or self.control_line < 1
-        ):
-            raise ValueError("verification vote control line must be positive or null")
-        if self.role == "skeptic" and self.verdict == "real" and (self.control_file or self.control_line is not None):
-            raise ValueError("a real skeptic vote cannot cite a deletion control")
-        if self.verdict in {"refuted", "upheld", "rejected"} and (not self.control_file or self.control_line is None):
-            raise ValueError("a completed refutation vote requires its controlling source")
-
 
 @dataclass(frozen=True, kw_only=True)
 class VerificationRecord[T]:
@@ -196,69 +138,16 @@ class VerificationRecord[T]:
     reason: str = ""
     required_confirmer_seat_ids: tuple[str, ...] = ()
 
-    def __post_init__(self) -> None:
-        """Require one internally consistent candidate decision."""
-        if self.outcome not in {"retained", "refuted", "incomplete"}:
-            raise ValueError("verification record outcome is invalid")
-        if not isinstance(self.votes, tuple) or not all(isinstance(vote, VerificationVote) for vote in self.votes):
-            raise ValueError("verification record votes must be a vote tuple")
-        if not isinstance(self.reason, str) or not self.reason:
-            raise ValueError("verification record reason must be nonempty")
-        required = self.required_confirmer_seat_ids
-        if (
-            not isinstance(required, tuple)
-            or any(not isinstance(seat_id, str) or not seat_id for seat_id in required)
-            or len(required) != len(set(required))
-        ):
-            raise ValueError("verification required confirmer seats must be unique nonempty strings")
-        errors = [vote for vote in self.votes if vote.verdict == "error"]
-        skeptic = self.votes[0] if self.votes else None
-        confirmer_votes = list(self.votes[1:])
-        if skeptic is not None and (
-            skeptic.role != "skeptic" or any(vote.role != "confirmer" for vote in confirmer_votes)
-        ):
-            raise ValueError("verification decisions must contain one leading skeptic vote")
-        if len({vote.seat_id for vote in confirmer_votes}) != len(confirmer_votes):
-            raise ValueError("verification confirmer seats cannot vote twice")
-        if any(vote.seat_id not in required for vote in confirmer_votes):
-            raise ValueError("verification record contains an unrequired confirmer vote")
-        if self.outcome == "incomplete":
-            if not errors:
-                raise ValueError("incomplete verification requires an error vote")
-            return
-        if errors:
-            raise ValueError("completed verification cannot contain error votes")
-        if self.outcome == "refuted":
-            if not required or skeptic is None or skeptic.verdict != "refuted":
-                raise ValueError("refuted verification requires a skeptic refutation")
-            upheld = {vote.seat_id for vote in confirmer_votes if vote.verdict == "upheld"}
-            if upheld != set(required) or any(vote.verdict != "upheld" for vote in confirmer_votes):
-                raise ValueError("refuted verification requires every independent confirmer")
-            return
-        if not self.votes:
-            if required:
-                raise ValueError("retained verification with required confirmers needs a skeptic vote")
-            return
-        if skeptic.verdict == "refuted" and not any(vote.verdict == "rejected" for vote in confirmer_votes):
-            raise ValueError("retained refutation requires an independent rejection")
-
 
 @dataclass(frozen=True, kw_only=True)
 class VerificationDecision:
     """One candidate outcome in the attempt verification artifact."""
 
     candidate_id: str
-    outcome: Literal["retained", "refuted", "incomplete", "unlocatable"]
+    outcome: Literal["retained", "refuted", "incomplete"]
     reason: str
     required_confirmer_seat_ids: tuple[str, ...] = ()
     votes: tuple[VerificationVote, ...] = ()
-
-    def __post_init__(self) -> None:
-        """Reject a decision that cannot identify its candidate."""
-        if not isinstance(self.candidate_id, str) or not self.candidate_id:
-            raise ValueError("verification decision candidate id must be nonempty")
-        if self.outcome == "unlocatable" and (not self.reason or self.required_confirmer_seat_ids or self.votes):
-            raise ValueError("unlocatable verification must contain only its reason")
 
     def to_dict(self) -> dict[str, object]:
         """Return one strict candidate decision."""
@@ -269,24 +158,6 @@ class VerificationDecision:
             "required_confirmer_seat_ids": list(self.required_confirmer_seat_ids),
             "votes": [_vote_to_data(vote) for vote in self.votes],
         }
-
-    @classmethod
-    def from_dict(cls, value: object) -> VerificationDecision:
-        """Parse one strict candidate decision."""
-        fields = {"candidate_id", "outcome", "reason", "required_confirmer_seat_ids", "votes"}
-        if not isinstance(value, dict) or set(value) != fields:
-            raise ValueError("verification decision has an invalid shape")
-        required = value["required_confirmer_seat_ids"]
-        votes = value["votes"]
-        if not isinstance(required, list) or not isinstance(votes, list):
-            raise ValueError("verification decision seats and votes must be lists")
-        return cls(
-            candidate_id=value["candidate_id"],
-            outcome=value["outcome"],
-            reason=value["reason"],
-            required_confirmer_seat_ids=tuple(required),
-            votes=tuple(_vote_from_data(vote) for vote in votes),
-        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -300,36 +171,6 @@ class VerificationReceipt:
     content_sha256: str
     schema: str = VERIFICATION_SCHEMA
 
-    def __post_init__(self) -> None:
-        """Reject an artifact that cannot account for its candidate input."""
-        if self.schema != VERIFICATION_SCHEMA:
-            raise ValueError("verification receipt schema is unsupported")
-        if (
-            not isinstance(self.request_sha256, str)
-            or len(self.request_sha256) != 64
-            or any(character not in "0123456789abcdef" for character in self.request_sha256)
-        ):
-            raise ValueError("verification request sha256 must be a SHA-256 digest")
-        if not isinstance(self.enabled, bool):
-            raise ValueError("verification enabled state must be boolean")
-        if (
-            not isinstance(self.candidate_ids, tuple)
-            or any(not isinstance(candidate_id, str) or not candidate_id for candidate_id in self.candidate_ids)
-            or len(self.candidate_ids) != len(set(self.candidate_ids))
-        ):
-            raise ValueError("verification candidate ids must be unique nonempty strings")
-        if not isinstance(self.decisions, tuple) or not all(
-            isinstance(decision, VerificationDecision) for decision in self.decisions
-        ):
-            raise ValueError("verification decisions must be a decision tuple")
-        if self.enabled:
-            if tuple(decision.candidate_id for decision in self.decisions) != self.candidate_ids:
-                raise ValueError("enabled verification must decide every candidate in input order")
-        elif self.decisions:
-            raise ValueError("disabled verification cannot contain decisions")
-        if self.content_sha256 != canonical_sha256(self.semantic_dict()):
-            raise ValueError("verification content hash does not match its receipt")
-
     @classmethod
     def create(
         cls,
@@ -338,13 +179,12 @@ class VerificationReceipt:
         enabled: bool,
         candidate_ids: tuple[str, ...],
         records: tuple[VerificationRecord, ...] = (),
-        unlocatable_ids: tuple[str, ...] = (),
     ) -> VerificationReceipt:
         """Create one complete receipt from shared verification results."""
         if not enabled:
             decisions: tuple[VerificationDecision, ...] = ()
         else:
-            record_ids = tuple(verification_candidate_id(record.candidate) for record in records)
+            record_ids = tuple(record.candidate.candidate_id for record in records)
             if len(record_ids) != len(set(record_ids)):
                 raise ValueError("verification records contain duplicate candidates")
             by_id = {
@@ -357,14 +197,6 @@ class VerificationReceipt:
                 )
                 for candidate_id, record in zip(record_ids, records, strict=True)
             }
-            for candidate_id in unlocatable_ids:
-                if candidate_id in by_id:
-                    raise ValueError("unlocatable candidate also has a verification decision")
-                by_id[candidate_id] = VerificationDecision(
-                    candidate_id=candidate_id,
-                    outcome="unlocatable",
-                    reason="candidate source location does not resolve inside the repository",
-                )
             unknown = set(by_id).difference(candidate_ids)
             missing = set(candidate_ids).difference(by_id)
             if unknown or missing:
@@ -384,15 +216,6 @@ class VerificationReceipt:
             content_sha256=canonical_sha256(semantic),
         )
 
-    def semantic_dict(self) -> dict[str, object]:
-        """Return the behavior fields covered by the content hash."""
-        return {
-            "request_sha256": self.request_sha256,
-            "enabled": self.enabled,
-            "candidate_ids": self.candidate_ids,
-            "decisions": tuple(decision.to_dict() for decision in self.decisions),
-        }
-
     def to_dict(self) -> dict[str, object]:
         """Return the strict persisted receipt."""
         return {
@@ -403,25 +226,6 @@ class VerificationReceipt:
             "decisions": [decision.to_dict() for decision in self.decisions],
             "content_sha256": self.content_sha256,
         }
-
-    @classmethod
-    def from_dict(cls, value: object) -> VerificationReceipt:
-        """Parse and validate one persisted receipt."""
-        fields = {"schema", "request_sha256", "enabled", "candidate_ids", "decisions", "content_sha256"}
-        if not isinstance(value, dict) or set(value) != fields:
-            raise ValueError("verification receipt has an invalid shape")
-        candidate_ids = value["candidate_ids"]
-        decisions = value["decisions"]
-        if not isinstance(candidate_ids, list) or not isinstance(decisions, list):
-            raise ValueError("verification receipt candidates and decisions must be lists")
-        return cls(
-            schema=value["schema"],
-            request_sha256=value["request_sha256"],
-            enabled=value["enabled"],
-            candidate_ids=tuple(candidate_ids),
-            decisions=tuple(VerificationDecision.from_dict(decision) for decision in decisions),
-            content_sha256=value["content_sha256"],
-        )
 
 
 def _vote_to_data(vote: VerificationVote) -> dict[str, object]:
@@ -436,19 +240,89 @@ def _vote_to_data(vote: VerificationVote) -> dict[str, object]:
     }
 
 
-def _vote_from_data(value: object) -> VerificationVote:
-    fields = {
-        "role",
-        "actor_id",
-        "seat_id",
-        "verdict",
-        "reason",
-        "control_file",
-        "control_line",
-    }
-    if not isinstance(value, dict) or set(value) != fields:
-        raise ValueError("verification vote has an invalid shape")
-    return VerificationVote(**value)
+_VOTE_FIELDS = frozenset({"role", "actor_id", "seat_id", "verdict", "reason", "control_file", "control_line"})
+_DECISION_FIELDS = frozenset({"outcome", "reason", "required_confirmer_seat_ids", "votes"})
+_ROLE_VERDICTS = {"skeptic": ("real", "refuted"), "confirmer": ("upheld", "rejected")}
+
+
+def _vote_from_data(data: object, identity: VerificationActorFingerprint, role: str) -> VerificationVote:
+    if not isinstance(data, dict) or set(data) != _VOTE_FIELDS:
+        raise ValueError("verification vote fields are invalid")
+    if data["role"] != role:
+        raise ValueError(f"verification vote must be a {role} vote")
+    if data["actor_id"] != identity.actor_id or data["seat_id"] != identity.seat_id:
+        raise ValueError(f"verification {role} vote does not match the current verification policy")
+    if data["verdict"] not in _ROLE_VERDICTS[role]:
+        raise ValueError(f"verification {role} verdict is invalid")
+    if not isinstance(data["reason"], str) or not isinstance(data["control_file"], str):
+        raise ValueError("verification vote text fields must be strings")
+    control_line = data["control_line"]
+    if control_line is not None and (isinstance(control_line, bool) or not isinstance(control_line, int)):
+        raise ValueError("verification vote control line must be an integer or null")
+    return VerificationVote(
+        role=data["role"],
+        actor_id=data["actor_id"],
+        seat_id=data["seat_id"],
+        verdict=data["verdict"],
+        reason=data["reason"],
+        control_file=data["control_file"],
+        control_line=control_line,
+    )
+
+
+def completed_decision_from_dict(
+    data: object,
+    *,
+    candidate_id: str,
+    skeptic: VerificationActorFingerprint,
+    confirmers: tuple[VerificationActorFingerprint, ...],
+) -> VerificationDecision:
+    """Validate one checkpointed completed decision against the route the current policy requires."""
+    if not isinstance(data, dict) or set(data) != _DECISION_FIELDS:
+        raise ValueError("verification decision fields are invalid")
+    outcome = data["outcome"]
+    if outcome not in ("retained", "refuted"):
+        raise ValueError("verification decision outcome must be retained or refuted")
+    if not isinstance(data["reason"], str) or not data["reason"].strip():
+        raise ValueError("verification decision reason must be nonempty")
+    if not confirmers:
+        raise ValueError("verification decision has no independent confirmer")
+    if data["required_confirmer_seat_ids"] != [confirmer.seat_id for confirmer in confirmers]:
+        raise ValueError("verification decision confirmers do not match the current verification policy")
+    votes = data["votes"]
+    if not isinstance(votes, list) or not votes or len(votes) > 1 + len(confirmers):
+        raise ValueError("verification decision votes do not match its route")
+    parsed = (
+        _vote_from_data(votes[0], skeptic, "skeptic"),
+        *(
+            _vote_from_data(vote, confirmer, "confirmer")
+            for vote, confirmer in zip(votes[1:], confirmers, strict=False)
+        ),
+    )
+    skeptic_vote, confirmer_votes = parsed[0], parsed[1:]
+    if outcome == "refuted":
+        valid = (
+            skeptic_vote.verdict == "refuted"
+            and len(confirmer_votes) == len(confirmers)
+            and all(vote.verdict == "upheld" for vote in confirmer_votes)
+        )
+    elif skeptic_vote.verdict == "real":
+        valid = not confirmer_votes
+    else:
+        valid = (
+            bool(confirmer_votes)
+            and confirmer_votes[-1].verdict == "rejected"
+            and all(vote.verdict == "upheld" for vote in confirmer_votes[:-1])
+        )
+    if not valid:
+        raise ValueError(f"verification decision votes do not support a {outcome} outcome")
+    return VerificationDecision(
+        candidate_id=candidate_id,
+        outcome=outcome,
+        reason=data["reason"],
+        required_confirmer_seat_ids=tuple(confirmer.seat_id for confirmer in confirmers),
+        votes=parsed,
+    )
 
 
 def verification_failure_reason(details: list[str]) -> str:
@@ -477,11 +351,26 @@ _SYSTEM = (
     "empty when `real` is true.\n"
     "- `control_line`: the existing line of the controlling fact when `real` is false; 0 when `real` is true."
 )
-_SKEPTIC_PROMPT_TEMPLATE = (
-    "Proposed finding:\n- {title}\n- category: {category}\n"
-    "- endpoint: {endpoint}\n- location: {file}:{line}\n- claimed evidence: {evidence}\n\n"
-    "Code at {file}:\n{code}"
-)
+_FINDING_FIELDS = ("title", "category", "entrypoint", "location", "claimed evidence", "claimed attack path")
+_SKEPTIC_PROMPT_TEMPLATE = "{finding}\n\nCode at {file}:\n{code}"
+
+
+def _finding_block(candidate: VerificationFinding) -> str:
+    """Render the claim under review once, as single line untrusted values, omitting empty fields."""
+    values = (
+        candidate.title,
+        candidate.category,
+        candidate.entrypoint,
+        f"{candidate.file}:{candidate.line}",
+        candidate.evidence,
+        candidate.attack_path,
+    )
+    lines = [
+        f"- {label}: {one_line_source(value)}" for label, value in zip(_FINDING_FIELDS, values, strict=True) if value
+    ]
+    return "\n".join(("Finding under review:", *lines))
+
+
 _VERDICT_RESPONSE_SCHEMA = ResponseSchema(
     name="verification_verdict",
     schema=closed_object(
@@ -495,26 +384,6 @@ _VERDICT_RESPONSE_SCHEMA = ResponseSchema(
 )
 
 
-def verification_system(contract: str, review_brief: str) -> str:
-    """Append the shared security kernel to one verification contract so the system prompt stays cacheable."""
-    return f"{contract}\n\n{review_brief.strip()}"
-
-
-def _parse_model_object(text: str, schema: ResponseSchema, label: str) -> tuple[dict[str, object], str]:
-    """Apply the same strict local schema check used by review roles."""
-    parsed = parse_json_object(text)
-    if parsed is None:
-        record_model_parse("none", status="failed", failure_reason=f"unparseable {label}")
-        raise VerifyError(f"unparseable {label}")
-    try:
-        validated = validate_response_object(parsed, schema)
-    except ValueError as exc:
-        reason = f"{label} violates {schema.name}: {exc}"
-        record_model_parse("direct", status="failed", failure_reason=reason)
-        raise VerifyError(reason) from exc
-    return validated, "direct"
-
-
 def _control_ref(ref: str) -> str:
     """Return the cited control file without a trailing line number."""
     return ref.strip().strip("`").split(":", 1)[0].strip()
@@ -524,7 +393,7 @@ def _same_source_file(root: str, first: str, second: str) -> bool:
     """Compare two source references only through their resolved repository paths."""
 
     def resolve(reference: str) -> Path | None:
-        return resolve_source_path(root, reference.strip().replace("\\", "/").removeprefix("./"))
+        return resolve_source_path(root, normalized_location_path(reference))
 
     first_path = resolve(first)
     second_path = resolve(second)
@@ -533,7 +402,7 @@ def _same_source_file(root: str, first: str, second: str) -> bool:
 
 def _source_window(text: str, line: int | None, max_chars: int) -> tuple[str, int]:
     """Return a line aligned window centered on the candidate location."""
-    lines = text.splitlines(keepends=True)
+    lines = split_lines(text, keepends=True)
     if line is not None and (isinstance(line, bool) or not isinstance(line, int) or line < 1 or line > len(lines)):
         return "", 1
     if len(text) <= max_chars:
@@ -565,35 +434,34 @@ def _read_source(root: str, rel: str, *, line: int | None = None) -> tuple[str, 
     window, first_line = _source_window(text, line, _SETTINGS.max_source_chars_per_finding)
     if not window:
         return "", range(0)
-    return numbered_source(rel, window, first_line), range(first_line, first_line + len(window.splitlines()))
+    return numbered_source(rel, window, first_line), range(first_line, first_line + len(split_lines(window)))
 
 
-def _read_file(root: str, rel: str, *, line: int | None = None) -> str:
-    return _read_source(root, rel, line=line)[0]
+class _ModelSeat:
+    """One configured verification model call bound to the security kernel."""
 
-
-class ModelVerifier(Verifier):
-    """Default skeptic: one grounded model call that tries to refute the candidate."""
+    _system: str
+    _prompt_template: str
+    _response_schema: ResponseSchema
+    _default_max_tokens: int
 
     def __init__(
         self,
         *,
         provider: Provider,
         model: str,
-        max_tokens: int = DEFAULT_REVIEW_SETTINGS.verification.skeptic_max_output_tokens,
-        content: ContentPaths | None = None,
-        seat_id: str = "",
+        seat_id: str,
+        max_tokens: int | None = None,
     ) -> None:
-        """Bind the skeptic model and source policy for one candidate check."""
+        """Bind one seat to its model, output bound, and security kernel."""
         self._provider = provider
         self._model = model
-        self._max_tokens = max_tokens
+        self._max_tokens = max_tokens or self._default_max_tokens
         self._seat_id = seat_id
-        paths = content or default_profile().paths
-        self._review_brief = load_review_brief(kernel_file=paths.security_kernel_file)
+        self._review_brief = load_review_brief()
 
     def checkpoint_fingerprint(self) -> VerificationActorFingerprint:
-        """Identify the skeptic model, prompt data, and provider configuration."""
+        """Identify the seat, model, and prompt contract, never transport policy such as timeout or retries."""
         return VerificationActorFingerprint(
             actor=f"{type(self).__module__}.{type(self).__qualname__}",
             settings=(
@@ -604,16 +472,56 @@ class ModelVerifier(Verifier):
                     "prompt_contract_sha256",
                     canonical_sha256(
                         {
-                            "system": _SYSTEM,
-                            "prompt_template": _SKEPTIC_PROMPT_TEMPLATE,
-                            "response_schema": _VERDICT_RESPONSE_SCHEMA.schema,
+                            "system": self._system,
+                            "finding_fields": list(_FINDING_FIELDS),
+                            "prompt_template": self._prompt_template,
+                            "response_schema": self._response_schema.schema,
                         }
                     ),
                 ),
             ),
-            provider=self._provider.checkpoint_fingerprint(),
             configured_seat_id=self._seat_id,
         )
+
+    def _complete[R](
+        self,
+        prompt: str,
+        *,
+        role: str,
+        trigger: str,
+        candidate_id: str,
+        decide: Callable[[dict[str, object]], R],
+    ) -> R:
+        """Ask the seat once, validate the reply, and record any semantic violation on the same call."""
+        with model_call_context(
+            role=role,
+            trigger=trigger,
+            candidate_id=candidate_id,
+        ):
+            result = self._provider.complete(
+                system=f"{self._system}\n\n{self._review_brief.render().strip()}",
+                messages=[Message(role="user", content=prompt)],
+                model=self._model,
+                max_tokens=self._max_tokens,
+                cache=True,
+                response_schema=self._response_schema,
+            )
+            reply = parse_role_response(result.text, role=role, response_schema=self._response_schema)
+            try:
+                return decide(reply)
+            except VerifyError as exc:
+                record_model_parse(str(exc))
+                raise
+
+
+class ModelVerifier(_ModelSeat, Verifier):
+    """Default skeptic: one grounded model call that tries to refute the candidate."""
+
+    _system = _SYSTEM
+    _prompt_template = _SKEPTIC_PROMPT_TEMPLATE
+    _response_schema = _VERDICT_RESPONSE_SCHEMA
+
+    _default_max_tokens = _SETTINGS.skeptic_max_output_tokens
 
     def verify(self, candidate: VerificationFinding, root: str) -> Verdict:
         """Try to refute one candidate against the source tree."""
@@ -621,60 +529,38 @@ class ModelVerifier(Verifier):
         if not code.strip():
             raise VerifyError("candidate source location is unavailable for verification")
         prompt = _SKEPTIC_PROMPT_TEMPLATE.format(
-            title=candidate.title,
-            category=candidate.category,
-            endpoint=candidate.endpoint,
-            file=candidate.file,
-            line=candidate.line,
-            evidence=candidate.evidence,
+            finding=_finding_block(candidate),
+            file=one_line_source(candidate.file),
             code=fenced_source(code),
         )
-        with model_call_context(
+
+        def decide(obj: dict[str, object]) -> Verdict:
+            reason = obj["reason"].strip()
+            control = _control_ref(obj["control_file"])
+            control_line = obj["control_line"]
+            if not reason:
+                raise VerifyError("verification reply requires a nonempty reason")
+            if obj["real"]:
+                if control or control_line != 0:
+                    raise VerifyError("a retained verification must not cite a deletion control")
+                return Verdict(real=True, reason=reason)
+            if not control:
+                raise VerifyError("verification refutation requires a control_file")
+            if control_line < 1:
+                raise VerifyError("verification refutation requires a positive control_line")
+            if not _same_source_file(root, control, candidate.file):
+                raise VerifyError("verification refutation cites a control outside the shown candidate file")
+            if control_line not in shown_lines:
+                raise VerifyError("verification refutation cites a control line outside the shown source")
+            return Verdict(real=False, reason=reason, control_file=candidate.file, control_line=control_line)
+
+        return self._complete(
+            prompt,
             role="skeptic",
             trigger="verification",
-            candidate_id=verification_candidate_id(candidate),
-            review_brief_sha256=self._review_brief.content_sha256,
-        ):
-            result = self._provider.complete(
-                system=verification_system(_SYSTEM, self._review_brief.render()),
-                messages=[Message(role="user", content=prompt)],
-                model=self._model,
-                max_tokens=self._max_tokens,
-                cache=True,
-                response_schema=_VERDICT_RESPONSE_SCHEMA,
-            )
-            obj, parse_source = _parse_model_object(result.text, _VERDICT_RESPONSE_SCHEMA, "verification reply")
-            try:
-                real = obj["real"]
-                reason = obj["reason"]
-                control = _control_ref(obj["control_file"])
-                control_line = obj["control_line"]
-                if not reason.strip():
-                    raise VerifyError("verification reply requires a nonempty reason")
-                if real:
-                    if control or control_line != 0:
-                        raise VerifyError("a retained verification must not cite a deletion control")
-                    verdict = Verdict(real=True, reason=reason.strip())
-                else:
-                    if not control:
-                        raise VerifyError("verification refutation requires a control_file")
-                    if control_line < 1:
-                        raise VerifyError("verification refutation requires a positive control_line")
-                    if not _same_source_file(root, control, candidate.file):
-                        raise VerifyError("verification refutation cites a control outside the shown candidate file")
-                    if control_line not in shown_lines:
-                        raise VerifyError("verification refutation cites a control line outside the shown source")
-                    verdict = Verdict(
-                        real=False,
-                        reason=reason.strip(),
-                        control_file=candidate.file,
-                        control_line=control_line,
-                    )
-            except VerifyError as exc:
-                record_model_parse(parse_source, status="failed", failure_reason=str(exc))
-                raise
-            record_model_parse(parse_source)
-        return verdict
+            candidate_id=candidate.candidate_id,
+            decide=decide,
+        )
 
 
 class RefutationChecker(ABC):
@@ -710,8 +596,7 @@ _CHECK_SYSTEM = (
     "- `reason`: why the controlling fact does or does not neutralize the finding."
 )
 _CHECK_PROMPT_TEMPLATE = (
-    "Finding:\n- {title}\n- category: {category}\n"
-    "- location: {file}:{line}\n- claimed evidence: {evidence}\n\n"
+    "{finding}\n\n"
     "Refutation's controlling fact: {control_file}:{control_line}\n"
     "Reason it is called safe:\n{refutation_reason}\n\n"
     "Code at {file}:\n{code}"
@@ -727,94 +612,43 @@ _REFUTATION_RESPONSE_SCHEMA = ResponseSchema(
 )
 
 
-class ModelRefutationChecker(RefutationChecker):
+class ModelRefutationChecker(_ModelSeat, RefutationChecker):
     """Require an independent grounded call before accepting a refutation."""
 
-    def __init__(
-        self,
-        *,
-        provider: Provider,
-        model: str,
-        max_tokens: int = DEFAULT_REVIEW_SETTINGS.verification.confirmer_max_output_tokens,
-        content: ContentPaths | None = None,
-        seat_id: str = "",
-    ) -> None:
-        """Bind the confirmer model that tests whether a refutation holds."""
-        self._provider = provider
-        self._model = model
-        self._max_tokens = max_tokens
-        self._seat_id = seat_id
-        paths = content or default_profile().paths
-        self._review_brief = load_review_brief(kernel_file=paths.security_kernel_file)
+    _system = _CHECK_SYSTEM
+    _prompt_template = _CHECK_PROMPT_TEMPLATE
+    _response_schema = _REFUTATION_RESPONSE_SCHEMA
 
-    def checkpoint_fingerprint(self) -> VerificationActorFingerprint:
-        """Identify the confirmer model and provider configuration."""
-        return VerificationActorFingerprint(
-            actor=f"{type(self).__module__}.{type(self).__qualname__}",
-            settings=(
-                ("kernel_sha256", self._review_brief.content_sha256),
-                ("max_tokens", str(self._max_tokens)),
-                ("model", self._model),
-                (
-                    "prompt_contract_sha256",
-                    canonical_sha256(
-                        {
-                            "system": _CHECK_SYSTEM,
-                            "prompt_template": _CHECK_PROMPT_TEMPLATE,
-                            "response_schema": _REFUTATION_RESPONSE_SCHEMA.schema,
-                        }
-                    ),
-                ),
-            ),
-            provider=self._provider.checkpoint_fingerprint(),
-            configured_seat_id=self._seat_id,
-        )
+    _default_max_tokens = _SETTINGS.confirmer_max_output_tokens
 
     def holds(self, candidate: VerificationFinding, refutation: Verdict, root: str) -> RefutationCheck:
         """Report whether an independent read upholds the refutation."""
-        candidate_code = _read_file(root, candidate.file, line=candidate.line)
-        control_code = _read_file(root, candidate.file, line=refutation.control_line)
+        candidate_code = _read_source(root, candidate.file, line=candidate.line)[0]
+        control_code = _read_source(root, candidate.file, line=refutation.control_line)[0]
         if not candidate_code.strip() or not control_code.strip():
             return RefutationCheck(holds=False, reason="the candidate or controlling source could not be read")
         code = "\n\n".join(dict.fromkeys((candidate_code, control_code)))
         prompt = _CHECK_PROMPT_TEMPLATE.format(
-            title=candidate.title,
-            category=candidate.category,
-            file=candidate.file,
-            line=candidate.line,
-            evidence=candidate.evidence,
-            control_file=refutation.control_file,
+            finding=_finding_block(candidate),
+            file=one_line_source(candidate.file),
+            control_file=one_line_source(refutation.control_file),
             control_line=refutation.control_line,
             refutation_reason=refutation.reason,
             code=fenced_source(code),
         )
-        with model_call_context(
+
+        def decide(obj: dict[str, object]) -> RefutationCheck:
+            if not obj["reason"].strip():
+                raise VerifyError("a refutation check requires a nonempty reason")
+            return RefutationCheck(holds=obj["holds"], reason=obj["reason"].strip())
+
+        return self._complete(
+            prompt,
             role="confirmer",
             trigger="refutation_confirmation",
-            candidate_id=verification_candidate_id(candidate),
-            review_brief_sha256=self._review_brief.content_sha256,
-        ):
-            result = self._provider.complete(
-                system=verification_system(_CHECK_SYSTEM, self._review_brief.render()),
-                messages=[Message(role="user", content=prompt)],
-                model=self._model,
-                max_tokens=self._max_tokens,
-                cache=True,
-                response_schema=_REFUTATION_RESPONSE_SCHEMA,
-            )
-            obj, parse_source = _parse_model_object(
-                result.text,
-                _REFUTATION_RESPONSE_SCHEMA,
-                "refutation check reply",
-            )
-            holds = obj["holds"]
-            reason = obj["reason"]
-            if not reason.strip():
-                error = "a refutation check requires a nonempty reason"
-                record_model_parse(parse_source, status="failed", failure_reason=error)
-                raise VerifyError(error)
-            record_model_parse(parse_source)
-        return RefutationCheck(holds=holds, reason=reason.strip())
+            candidate_id=candidate.candidate_id,
+            decide=decide,
+        )
 
 
 Confirmer = tuple[str, RefutationChecker]
@@ -834,50 +668,7 @@ class _CandidateVerification[T]:
 def _applicable(confirmers: list[Confirmer], found_by: tuple[str, ...]) -> list[Confirmer]:
     """Exclude confirmers whose model already surfaced the finding."""
     seen = set(found_by)
-    return [(label, checker) for label, checker in confirmers if not label or label not in seen]
-
-
-def _validate_refutation_source(
-    candidate: VerificationFinding,
-    verdict: Verdict,
-    root: str,
-) -> None:
-    """Require a deletion control to identify existing source in the candidate file."""
-    if (
-        not verdict.reason.strip()
-        or not verdict.control_file
-        or verdict.control_line is None
-        or isinstance(verdict.control_line, bool)
-        or not isinstance(verdict.control_line, int)
-        or verdict.control_line < 1
-    ):
-        raise VerifyError("a refutation requires a controlling file, line, and reason")
-    if not _same_source_file(root, verdict.control_file, candidate.file):
-        raise VerifyError("a refutation control must resolve to the candidate file")
-    if not _read_file(root, candidate.file, line=verdict.control_line):
-        raise VerifyError("a refutation control line does not exist")
-
-
-def _finish_trace(
-    trace: Trace | None,
-    candidate: VerificationFinding,
-    *,
-    verdict: str = "",
-    status: str = "",
-    reason: str = "",
-) -> None:
-    fields = {
-        "stage": "finished",
-        "source": getattr(candidate, "source", ""),
-        "finding_id": getattr(candidate, "finding_id", ""),
-    }
-    if verdict:
-        fields["verdict"] = verdict
-    if status:
-        fields["status"] = status
-    if reason:
-        fields["reason"] = reason[:500]
-    emit_trace(trace, "verification", **fields)
+    return [(label, checker) for label, checker in confirmers if label not in seen]
 
 
 def _verify_candidate[T: VerificationFinding](
@@ -886,31 +677,16 @@ def _verify_candidate[T: VerificationFinding](
     root: str,
     *,
     confirmers: list[Confirmer],
-    trace: Trace | None,
-    source_snapshot: SourceSnapshot | None,
 ) -> _CandidateVerification[T]:
-    emit_trace(
-        trace,
-        "verification",
-        stage="started",
-        source=getattr(candidate, "source", ""),
-        finding_id=getattr(candidate, "finding_id", ""),
-        file=candidate.file,
-        line=candidate.line,
-        category=candidate.category,
-    )
     applicable = _applicable(confirmers, candidate.found_by)
     required_confirmer_seat_ids = tuple(checker.checkpoint_fingerprint().seat_id for _label, checker in applicable)
     if not applicable:
         reason = "no independent confirmer can authorize deletion"
-        _finish_trace(trace, candidate, verdict="real", reason=reason)
         return _CandidateVerification(candidate=candidate, real=True, reason=reason)
-    source_files = (candidate.file,)
     verifier_identity = verifier.checkpoint_fingerprint()
     recorded_votes: list[VerificationVote] = []
 
     def incomplete(error: str) -> _CandidateVerification[T]:
-        _finish_trace(trace, candidate, status="incomplete")
         return _CandidateVerification(
             candidate=candidate,
             real=True,
@@ -922,15 +698,7 @@ def _verify_candidate[T: VerificationFinding](
         )
 
     try:
-        _validate_source_snapshot(source_snapshot, *source_files)
         refutation = verifier.verify(candidate, root)
-        _validate_source_snapshot(source_snapshot, *source_files)
-        if not isinstance(refutation, Verdict):
-            raise VerifyError("a verifier must return Verdict with a reason")
-        if not refutation.reason.strip():
-            raise VerifyError("a verifier decision requires a nonempty reason")
-        if not refutation.real:
-            _validate_refutation_source(candidate, refutation, root)
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
         recorded_votes.append(
@@ -955,7 +723,6 @@ def _verify_candidate[T: VerificationFinding](
         )
     )
     if refutation.real:
-        _finish_trace(trace, candidate, verdict="real", reason=refutation.reason)
         return _CandidateVerification(
             candidate=candidate,
             real=True,
@@ -967,13 +734,7 @@ def _verify_candidate[T: VerificationFinding](
     for _label, checker in applicable:
         checker_identity = checker.checkpoint_fingerprint()
         try:
-            _validate_source_snapshot(source_snapshot, *source_files)
             check = checker.holds(candidate, refutation, root)
-            if not isinstance(check, RefutationCheck):
-                raise VerifyError("a confirmer must return RefutationCheck with a reason")
-            if not check.reason.strip():
-                raise VerifyError("a confirmer decision requires a nonempty reason")
-            _validate_source_snapshot(source_snapshot, *source_files)
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             recorded_votes.append(
@@ -1001,7 +762,6 @@ def _verify_candidate[T: VerificationFinding](
         )
         if not check.holds:
             retained_reason = f"refutation rejected: {check.reason}"
-            _finish_trace(trace, candidate, verdict="real", reason=retained_reason)
             return _CandidateVerification(
                 candidate=candidate,
                 real=True,
@@ -1009,13 +769,34 @@ def _verify_candidate[T: VerificationFinding](
                 votes=tuple(recorded_votes),
                 required_confirmer_seat_ids=required_confirmer_seat_ids,
             )
-    _finish_trace(trace, candidate, verdict="refuted", reason=reason)
     return _CandidateVerification(
         candidate=candidate,
         real=False,
         reason=reason,
         votes=tuple(recorded_votes),
         required_confirmer_seat_ids=required_confirmer_seat_ids,
+    )
+
+
+def _policy_sha256(verifier: Verifier, confirmers: list[Confirmer]) -> str:
+    return canonical_sha256(
+        {
+            "verifier": verifier.checkpoint_fingerprint().to_data(),
+            "confirmers": [
+                {"label": label, "checker": checker.checkpoint_fingerprint().to_data()} for label, checker in confirmers
+            ],
+        }
+    )
+
+
+def _checkpoint_key(candidate: VerificationFinding, policy_sha256: str) -> str:
+    """Identify exactly what the skeptic and confirmers see, and the route the finding's provenance selects."""
+    return canonical_sha256(
+        {
+            "finding": _finding_block(candidate),
+            "found_by": list(candidate.found_by),
+            "policy_sha256": policy_sha256,
+        }
     )
 
 
@@ -1027,65 +808,77 @@ def verify_findings[T: VerificationFinding](
     confirmers: list[Confirmer] | None = None,
     concurrency: int = DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
     on_verify: Callable[[int, int, float], None] | None = None,
-    trace: Trace | None = None,
-    source_snapshot: SourceSnapshot | None = None,
+    checkpoint: CheckpointStore | None = None,
 ) -> VerifyResult[T]:
-    """Drop a candidate only when every independent completed check supports refutation."""
-    positive_concurrency(concurrency, "verification concurrency")
+    """Drop a candidate only when every independent completed check supports refutation.
+
+    With a checkpoint, each completed decision is saved as soon as it is made and reused for
+    the same verification input, so failed checks are retried and never frozen.
+    """
     confirmers = list(confirmers or [])
-    if any(
-        not isinstance(confirmer, tuple)
-        or len(confirmer) != 2
-        or not isinstance(confirmer[0], str)
-        or not confirmer[0]
-        or not isinstance(confirmer[1], RefutationChecker)
-        for confirmer in confirmers
-    ):
-        raise ValueError("verification confirmers require a nonempty provenance label and checker")
-    labels = [label for label, _checker in confirmers]
-    if len(set(labels)) != len(labels):
-        raise ValueError("verification confirmer provenance labels must be unique")
-    confirmer_objects = [checker for _label, checker in confirmers]
-    if len({id(checker) for checker in confirmer_objects}) != len(confirmer_objects):
-        raise ValueError("verification confirmers must be distinct checker objects")
     verifier_seat = verifier.checkpoint_fingerprint().seat_id
-    confirmer_seats = [checker.checkpoint_fingerprint().seat_id for checker in confirmer_objects]
+    confirmer_seats = [checker.checkpoint_fingerprint().seat_id for _label, checker in confirmers]
     if len(set(confirmer_seats)) != len(confirmer_seats):
         raise ValueError("verification confirmers must use distinct model seats")
     if verifier_seat in confirmer_seats:
         raise ValueError("the skeptic and confirmers must use distinct model seats")
+    policy_sha256 = _policy_sha256(verifier, confirmers)
 
-    def verify_one(candidate: T) -> _CandidateVerification[T]:
-        return _verify_candidate(
-            candidate,
-            verifier,
-            root,
-            confirmers=confirmers,
-            trace=trace,
-            source_snapshot=source_snapshot,
+    def restore(candidate: T) -> _CandidateVerification[T] | None:
+        if checkpoint is None:
+            return None
+        decision = checkpoint.restore(
+            _checkpoint_key(candidate, policy_sha256),
+            lambda data: completed_decision_from_dict(
+                data,
+                candidate_id=candidate.candidate_id,
+                skeptic=verifier.checkpoint_fingerprint(),
+                confirmers=tuple(
+                    checker.checkpoint_fingerprint() for _label, checker in _applicable(confirmers, candidate.found_by)
+                ),
+            ),
+        )
+        if decision is None:
+            return None
+        return _CandidateVerification(
+            candidate=candidate,
+            real=decision.outcome == "retained",
+            reason=decision.reason,
+            votes=decision.votes,
+            required_confirmer_seat_ids=decision.required_confirmer_seat_ids,
         )
 
-    fn: Callable[[T], _CandidateVerification[T]] = verify_one
-    if on_verify is not None:
-        total = len(candidates)
-        lock = threading.Lock()
-        done = 0
+    restored = [restore(candidate) for candidate in candidates]
+    open_candidates = [candidate for candidate, prior in zip(candidates, restored, strict=True) if prior is None]
+    lock = threading.Lock()
+    done = 0
 
-        def timed(candidate: T) -> _CandidateVerification[T]:
-            nonlocal done
-            started = perf_counter()
-            result = verify_one(candidate)
+    def verify_one(candidate: T) -> _CandidateVerification[T]:
+        nonlocal done
+        started = perf_counter()
+        result = _verify_candidate(candidate, verifier, root, confirmers=confirmers)
+        if checkpoint is not None and result.votes and not result.incomplete:
+            decision = VerificationDecision(
+                candidate_id=candidate.candidate_id,
+                outcome="retained" if result.real else "refuted",
+                reason=result.reason,
+                required_confirmer_seat_ids=result.required_confirmer_seat_ids,
+                votes=result.votes,
+            ).to_dict()
+            del decision["candidate_id"]
+            checkpoint.save(_checkpoint_key(candidate, policy_sha256), decision)
+        if on_verify is not None:
             with lock:
                 done += 1
-                on_verify(done, total, round(perf_counter() - started, 1))
-            return result
+                on_verify(done, len(open_candidates), round(perf_counter() - started, 1))
+        return result
 
-        fn = timed
-    if concurrency > 1 and len(candidates) > 1:
+    if concurrency > 1 and len(open_candidates) > 1:
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
-            results = list(pool.map(fn, candidates))
+            verified_now = iter(list(pool.map(verify_one, open_candidates)))
     else:
-        results = [fn(c) for c in candidates]
+        verified_now = iter([verify_one(candidate) for candidate in open_candidates])
+    results = [prior if prior is not None else next(verified_now) for prior in restored]
 
     retained = [result.candidate for result in results if result.real]
     verified = [result.candidate for result in results if result.real and not result.incomplete and result.votes]
@@ -1110,11 +903,5 @@ def verify_findings[T: VerificationFinding](
         error_details=error_details,
         incomplete=incomplete,
         records=records,
-        candidate_ids=tuple(verification_candidate_id(candidate) for candidate in candidates),
+        candidate_ids=tuple(candidate.candidate_id for candidate in candidates),
     )
-
-
-def _validate_source_snapshot(source_snapshot: SourceSnapshot | None, *files: str) -> None:
-    """Reject verification work after any reviewed source content changes."""
-    if source_snapshot is not None and not source_snapshot.matches_scope_and_files(files):
-        raise VerifyError("repository source changed after the reviewed evidence revision")

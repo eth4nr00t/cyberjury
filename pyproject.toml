@@ -49,10 +49,9 @@ where = ["src"]
 [tool.setuptools.package-data]
 cyberjury = [
     "commands/*.md",
-    "profiles/*/knowledge/security-kernel.md",
-    "profiles/*/playbook/*.md",
-    "profiles/*/detection.yaml",
-    "profiles/*/facts/queries.yaml",
+    "review/contract/*.md",
+    "review/contract/detection.yaml",
+    "syntax/queries.yaml",
 ]
 
 [tool.pytest.ini_options]

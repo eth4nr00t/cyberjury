@@ -4,12 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cyberjury.detection import Detection
-
-
-class RepositoryPathError(RuntimeError):
-    """Repository inventory contains a path that cannot be reviewed safely."""
-
 
 def safe_repository_path(root: str | Path, rel: str) -> Path | None:
     """Resolve a relative path only when it remains inside the repository root."""
@@ -23,47 +17,17 @@ def safe_repository_path(root: str | Path, rel: str) -> Path | None:
     return resolved if resolved.is_relative_to(base) else None
 
 
-def repository_files(root: str | Path, detection: Detection) -> tuple[str, ...]:
-    """List boundary safe repository files while pruning configured noise directories."""
-    base = Path(root).resolve()
-    files: list[str] = []
-    for path in base.rglob("*"):
-        rel = path.relative_to(base)
-        if rel.parts and rel.parts[0] == ".git":
-            continue
-        if detection.is_skipped_dir(rel.parts[:-1]):
-            continue
-        if path.is_dir() and not path.is_symlink():
-            continue
-        try:
-            resolved = path.resolve(strict=True)
-        except OSError as exc:
-            raise RepositoryPathError(f"repository path cannot be resolved: {rel.as_posix()}: {exc}") from exc
-        if not resolved.is_relative_to(base):
-            raise RepositoryPathError(f"repository path escapes the source root: {rel.as_posix()}")
-        if path.is_symlink() and resolved.is_dir():
-            raise RepositoryPathError(f"repository directory symlink is unsupported: {rel.as_posix()}")
-        if not resolved.is_file():
-            raise RepositoryPathError(f"repository path is not a regular file: {rel.as_posix()}")
-        files.append(rel.as_posix())
-    return tuple(sorted(files))
+def contained_repository_path(root: str | Path, rel: str) -> Path:
+    """Resolve a relative path inside the repository root or raise `ValueError`."""
+    path = safe_repository_path(root, rel)
+    if path is None:
+        raise ValueError(f"path is outside the repository root: {rel!r}")
+    return path
 
 
-def source_navigation_files(root: str | Path, detection: Detection) -> tuple[str, ...]:
-    """Publish readable production source plus readable documentation to navigation."""
-    from cyberjury.selection import source_files
-
-    base = Path(root)
-    files = list(source_files(base, detection))
-    for file in repository_files(base, detection):
-        if Path(file).suffix.lower() not in detection.doc_extensions:
-            continue
-        try:
-            (base / file).read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        files.append(file)
-    return tuple(dict.fromkeys(files))
+def normalized_location_path(rel: str) -> str:
+    """Normalize one reported location path to the repository spelling used by source spans."""
+    return rel.strip().replace("\\", "/").removeprefix("./")
 
 
 def resolve_source_path(root: str | Path, rel: str) -> Path | None:
