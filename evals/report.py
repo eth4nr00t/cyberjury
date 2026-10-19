@@ -19,7 +19,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from cyberjury.providers.metering import validate_model_calls_document
-from evals.adjudication import VERDICTS, Adjudication, adjudicate, find_attempts, read_json
+from evals.adjudication import VERDICTS, adjudicate, find_attempts, read_json
 from evals.benchmarks.cases import BenchmarkCase
 
 PRECISION_DEFINITION = (
@@ -110,70 +110,30 @@ def _cost(paths: Sequence[Path]) -> dict[str, object]:
     }
 
 
-def regressions(after: dict[str, object], baseline: dict[str, object] | None, *, precision_floor: float) -> list[str]:
-    """Return the failures that block a change: incomplete work, a precision floor, and lost checks."""
+def failures(summary: dict[str, object], *, precision_floor: float) -> list[str]:
+    """Return the failures that block a run: incomplete work, mixed rubrics, a precision floor."""
     fails = []
-    for side, summary in (("changed", after), ("baseline", baseline)):
-        if summary is None:
-            continue
-        if summary["failed"]:
-            fails.append(f"{side} arm has {len(summary['failed'])} failed attempts")
-        if summary["unadjudicated"]:
-            fails.append(f"{side} arm has {len(summary['unadjudicated'])} attempts without a ledger")
-        if pending := summary["verdicts"]["needs_review"]:
-            fails.append(f"{side} arm has {pending} reports still needing source assessment")
-    for side, summary in (("changed", after), ("baseline", baseline)):
-        if summary is not None and len({rubric for _round, rubric in summary["ledger_rounds"]}) > 1:
-            fails.append(f"{side} arm mixes ledgers adjudicated under different rubrics")
-    if baseline is not None and {rubric for _round, rubric in after["ledger_rounds"]} != {
-        rubric for _round, rubric in baseline["ledger_rounds"]
-    }:
-        fails.append("baseline and changed arms were adjudicated under different rubrics")
-    precision = after["precision"]
+    if summary["failed"]:
+        fails.append(f"{len(summary['failed'])} failed attempts")
+    if summary["unadjudicated"]:
+        fails.append(f"{len(summary['unadjudicated'])} attempts without a ledger")
+    if pending := summary["verdicts"]["needs_review"]:
+        fails.append(f"{pending} reports still needing source assessment")
+    if len({rubric for _round, rubric in summary["ledger_rounds"]}) > 1:
+        fails.append("run mixes ledgers adjudicated under different rubrics")
+    precision = summary["precision"]
     if precision_floor and precision is not None and precision < precision_floor:
         fails.append(f"report precision {precision:.0%} is below the floor {precision_floor:.0%}")
-    if baseline is None:
-        return fails
-    before, now = _by_case(baseline["adjudications"]), _by_case(after["adjudications"])
-    if set(before) != set(now):
-        fails.append("baseline and changed arms cover different cases")
-    for case in sorted(set(before) & set(now)):
-        prior, current = before[case], now[case]
-        checks = set(current[0].found) | set(current[0].missed)
-        if len(prior) != len(current):
-            fails.append(f"{case} baseline and changed arms use different run counts")
-            continue
-        if set(prior[0].found) | set(prior[0].missed) != checks:
-            fails.append(f"{case} baseline and changed arms use different checks")
-            continue
-        runs = len(current)
-        before_count = Counter(check for item in prior for check in item.found)
-        after_count = Counter(check for item in current for check in item.found)
-        newly_missed = sorted(check for check in checks if before_count[check] * 2 > runs >= after_count[check] * 2)
-        lost = sorted(
-            check for check in checks if before_count[check] and not after_count[check] and check not in newly_missed
-        )
-        if newly_missed:
-            fails.append(f"{case} check newly missed, it was caught at baseline: {', '.join(newly_missed)}")
-        if lost:
-            fails.append(f"{case} check lost every reviewed detection: {', '.join(lost)}")
     return fails
 
 
-def _by_case(adjudications: Sequence[Adjudication]) -> dict[str, list[Adjudication]]:
-    grouped: dict[str, list[Adjudication]] = defaultdict(list)
-    for item in adjudications:
-        grouped[item.case].append(item)
-    return grouped
-
-
-def format_summary(side: str, summary: dict[str, object]) -> str:
-    """Render one arm for the terminal."""
+def format_summary(summary: dict[str, object]) -> str:
+    """Render one run for the terminal."""
     recall = summary["recall"]
     precision = "unknown" if summary["precision"] is None else f"{summary['precision']:.1%}"
     verdicts = ", ".join(f"{name} {count}" for name, count in summary["verdicts"].items())
     lines = [
-        f"=== {side}: {summary['runs']} ===",
+        f"=== run: {summary['runs']} ===",
         f"  cases {summary['cases']}, adjudicated attempts {summary['attempts']}, "
         f"failed {len(summary['failed'])}, without ledger {len(summary['unadjudicated'])}",
         f"  reviewed recall {recall['found']}/{recall['total']}",
@@ -216,7 +176,7 @@ def _format_cost(stage: dict[str, int]) -> str:
 
 
 def to_json(summary: dict[str, object]) -> dict[str, object]:
-    """Return the JSON form of one arm."""
+    """Return the JSON form of one run."""
     return {key: value for key, value in summary.items() if key != "adjudications"} | {
         "ledger_rounds": [
             {"round_id": round_id, "rubric_sha256": rubric} for round_id, rubric in summary["ledger_rounds"]
@@ -239,7 +199,7 @@ def to_json(summary: dict[str, object]) -> dict[str, object]:
     }
 
 
-def write_json(path: str, after: dict[str, object], baseline: dict[str, object] | None, fails: list[str]) -> None:
-    """Write both arms and the blocking failures."""
-    document = {"changed": to_json(after), "baseline": to_json(baseline) if baseline else None, "failures": fails}
+def write_json(path: str, summary: dict[str, object], fails: list[str]) -> None:
+    """Write the run summary and its failures."""
+    document = {"run": to_json(summary), "failures": fails}
     Path(path).write_text(json.dumps(document, indent=2), encoding="utf-8")

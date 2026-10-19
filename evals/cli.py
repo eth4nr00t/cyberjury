@@ -15,7 +15,7 @@ Workflow:
 directory adjudicators read, unless --mapping names another path outside it. `ledger` reads the
 same default or --mapping. Report precision is supported / (supported + not_actionable); duplicate
 and needs_review reports are counted separately.
-  python -m evals report runs --calls reviews --baseline runs-before --baseline-calls reviews-before
+  python -m evals report runs --calls reviews
 """
 
 from __future__ import annotations
@@ -155,22 +155,16 @@ def _cmd_ledger(args) -> int:
 
 
 def _cmd_report(args) -> int:
-    from evals.report import format_summary, regressions, summarize, write_json
+    from evals.report import failures, format_summary, summarize, write_json
 
-    cases = _cases(args)
-    after = summarize(cases, Path(args.runs), [Path(path) for path in args.calls])
-    baseline = (
-        summarize(cases, Path(args.baseline), [Path(path) for path in args.baseline_calls]) if args.baseline else None
-    )
-    fails = regressions(after, baseline, precision_floor=args.precision_floor)
-    print(format_summary("changed" if baseline else "run", after))
-    if baseline is not None:
-        print(format_summary("baseline", baseline))
+    summary = summarize(_cases(args), Path(args.runs), [Path(path) for path in args.calls])
+    fails = failures(summary, precision_floor=args.precision_floor)
+    print(format_summary(summary))
     print("report PASS" if not fails else f"report FAIL, {len(fails)} blocking")
     for fail in fails:
         print(f"  - {fail}")
     if args.json:
-        write_json(args.json, after, baseline, fails)
+        write_json(args.json, summary, fails)
     return 1 if fails else 0
 
 
@@ -281,15 +275,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     rp.add_argument("runs", help="adjudicated runs directory")
     rp.add_argument("--calls", action="append", default=[], help="model call receipt or directory, repeatable")
-    rp.add_argument("--baseline", default=None, help="adjudicated baseline runs directory")
-    rp.add_argument("--baseline-calls", action="append", default=[], help="baseline receipt or directory, repeatable")
     rp.add_argument(
         "--precision-floor",
         type=float,
         default=0.0,
         help="fail below this report precision, supported / (supported + not_actionable)",
     )
-    rp.add_argument("--json", default=None, help="write both arms and the blocking failures")
+    rp.add_argument("--json", default=None, help="write the run summary and its failures")
     rp.set_defaults(func=_cmd_report)
 
     sub.add_parser("list", parents=[benchmark], help="list benchmark cases", allow_abbrev=False).set_defaults(

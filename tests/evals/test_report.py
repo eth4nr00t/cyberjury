@@ -14,9 +14,8 @@ from cyberjury.providers.metering import (
     model_call_scope,
     record_model_parse,
 )
-from evals.adjudication import Adjudication
 from evals.benchmarks.cases import load_cases
-from evals.report import format_summary, regressions, summarize
+from evals.report import failures, format_summary, summarize
 
 A, B = "candidate-" + "a" * 20, "candidate-" + "b" * 20
 _CREDIT = ("supported", ("create-missing-owner",))
@@ -63,14 +62,14 @@ def test_report_counts_recall_per_run_and_check_precision_and_cost(
     assert summary["failed"] == [f"{benchmark_project.diff_case} attempt 3: finder failed"]
     assert summary["cost"]["total"]["requests"] == 1
     assert summary["cost"]["stages"]["initial_judgment finder"]["cache_read_tokens"] == 5
-    text = format_summary("run", summary)
+    text = format_summary(summary)
     assert f"{check} 1/2" in text
     assert "requests 1, failed 0, input tokens 12 (cache read 5), output tokens 3" in text
     assert "report precision 50.0% = supported 1 / (supported 1 + not_actionable 1), over 3 reports" in text
     assert "excluded from precision: duplicate 1, needs_review 0" in text
     assert "precision = supported / (supported + not_actionable)" in text
-    assert regressions(summary, None, precision_floor=0.6) == [
-        "changed arm has 1 failed attempts",
+    assert failures(summary, precision_floor=0.6) == [
+        "1 failed attempts",
         "report precision 50% is below the floor 60%",
     ]
 
@@ -84,10 +83,22 @@ def test_report_withholds_precision_and_fails_while_work_is_open(tmp_path, cases
 
     assert summary["precision"] is None
     assert len(summary["unadjudicated"]) == 1
-    assert regressions(summary, None, precision_floor=0.9) == [
-        "changed arm has 1 attempts without a ledger",
-        "changed arm has 1 reports still needing source assessment",
+    assert failures(summary, precision_floor=0.9) == [
+        "1 attempts without a ledger",
+        "1 reports still needing source assessment",
     ]
+
+
+def test_report_fails_a_run_that_mixes_rubrics():
+    summary = {
+        "failed": [],
+        "unadjudicated": [],
+        "verdicts": {"needs_review": 0},
+        "precision": 1.0,
+        "ledger_rounds": [("round-" + "0" * 16, "e" * 64), ("round-" + "1" * 16, "f" * 64)],
+    }
+
+    assert failures(summary, precision_floor=0) == ["run mixes ledgers adjudicated under different rubrics"]
 
 
 def test_report_rejects_a_ledger_that_no_longer_matches_its_attempt(tmp_path, cases, write_attempt, write_ledger):
@@ -98,53 +109,3 @@ def test_report_rejects_a_ledger_that_no_longer_matches_its_attempt(tmp_path, ca
 
     with pytest.raises(ValueError, match="does not identify this attempt"):
         summarize(cases, runs)
-
-
-def _arm(*found_by_run: tuple[str, ...]) -> dict:
-    adjudications = [
-        Adjudication(
-            case="p:diff-1",
-            attempt=number,
-            found=found,
-            missed=tuple(sorted({"first", "second"} - set(found))),
-            pending=(),
-            counts={},
-        )
-        for number, found in enumerate(found_by_run, 1)
-    ]
-    return {
-        "failed": [],
-        "unadjudicated": [],
-        "verdicts": {"needs_review": 0},
-        "precision": 1.0,
-        "ledger_rounds": [("round-" + "0" * 16, "f" * 64)],
-        "adjudications": adjudications,
-    }
-
-
-def test_baseline_comparison_uses_reviewed_majority_and_lost_detections():
-    baseline = _arm(("first", "second"), ("first",), ("second",))
-
-    assert regressions(_arm(("second",), ("first", "second"), ("first",)), baseline, precision_floor=0) == []
-    dropped = regressions(_arm(("first",), ("second",), ("second",)), baseline, precision_floor=0)
-    assert dropped == ["p:diff-1 check newly missed, it was caught at baseline: first"]
-    lost = regressions(_arm((), (), ()), _arm(("first",), (), ()), precision_floor=0)
-    assert lost == ["p:diff-1 check lost every reviewed detection: first"]
-
-
-def test_baseline_comparison_requires_comparable_arms():
-    baseline = _arm(("first",), ("first",))
-
-    assert regressions(
-        _arm(
-            ("first",),
-        ),
-        baseline,
-        precision_floor=0,
-    ) == ["p:diff-1 baseline and changed arms use different run counts"]
-    other = _arm(("first",), ("first",))
-    other["adjudications"] = [
-        Adjudication(case="p:diff-2", attempt=item.attempt, found=item.found, missed=item.missed, pending=(), counts={})
-        for item in other["adjudications"]
-    ]
-    assert regressions(other, baseline, precision_floor=0) == ["baseline and changed arms cover different cases"]
