@@ -64,17 +64,21 @@ def owner_finding():
 
 @pytest.fixture
 def case(benchmark_project):
+    """Return the benchmark project's diff case."""
     return find_case(benchmark_project.diff_case, [benchmark_project.benchmark])
 
 
-def test_run_reviews_the_pinned_range_through_the_product_command(tmp_path, case, scripted_model, owner_finding):
+def test_run_reviews_the_pinned_range_through_the_product_command(
+    monkeypatch, tmp_path, case, scripted_model, owner_finding
+):
+    """A scripted finding is recorded with its anchor, the CYBERJURY_MODEL override, and attempt artifacts."""
     provider = scripted_model([owner_finding.reply])
+    monkeypatch.setenv("CYBERJURY_MODEL", "override")
     events = []
 
     (record,) = diff.run(
         [case],
         workspace=tmp_path / "reviews",
-        model_override="override",
         concurrency=3,
         progress=events.append,
     )
@@ -104,6 +108,7 @@ def test_run_reviews_the_pinned_range_through_the_product_command(tmp_path, case
 
 
 def test_run_records_a_failed_review_with_its_reason(tmp_path, case, scripted_model):
+    """With runs=2 and a provider raising backend stalled, attempt 1 records the error and no findings."""
     scripted_model(error=RuntimeError("backend stalled"))
     events = []
 
@@ -116,6 +121,7 @@ def test_run_records_a_failed_review_with_its_reason(tmp_path, case, scripted_mo
 
 
 def test_run_rejects_a_change_anchor_absent_from_the_reviewed_patch(tmp_path, case, scripted_model):
+    """A check anchoring views.py:9, outside the patch, raises ValueError before any model call."""
     provider = scripted_model()
     check = replace(case.checks[0], change_anchors=(ChangeAnchor(file="views.py", line=9, side="new"),))
 
@@ -125,6 +131,7 @@ def test_run_rejects_a_change_anchor_absent_from_the_reviewed_patch(tmp_path, ca
 
 
 def test_run_never_reuses_a_review_workspace(tmp_path, case, scripted_model):
+    """A pre-existing case workspace directory makes the run raise workspace already exists."""
     scripted_model()
     diff.case_workspace(tmp_path / "reviews", case, 1).mkdir(parents=True)
 
@@ -133,6 +140,7 @@ def test_run_never_reuses_a_review_workspace(tmp_path, case, scripted_model):
 
 
 def test_run_aborts_on_missing_provider_credentials(tmp_path, case, scripted_model, monkeypatch):
+    """Removing ANTHROPIC_API_KEY makes the run exit via SystemExit without recording an attempt."""
     scripted_model()
     monkeypatch.delenv("ANTHROPIC_API_KEY")
     records = []
@@ -143,5 +151,6 @@ def test_run_aborts_on_missing_provider_credentials(tmp_path, case, scripted_mod
 
 
 def test_run_rejects_nonpositive_runs(tmp_path, case):
+    """Zero runs raise ValueError stating that runs must be at least 1."""
     with pytest.raises(ValueError, match="runs must be at least 1"):
         diff.run([case], workspace=tmp_path / "reviews", runs=0)

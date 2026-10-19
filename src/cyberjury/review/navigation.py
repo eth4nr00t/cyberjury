@@ -213,7 +213,6 @@ class SourceNavigationSession:
             self._delivered.setdefault(item.id, _span_key(item.source_span) if item.source_span is not None else None)
 
     def _delivered_as(self, target: SourceTarget) -> str | None:
-        """Return the id under which this judgment already holds a target's whole source, if any."""
         if target.id in self._delivered:
             return target.id
         source = self._source(target.file)
@@ -375,11 +374,6 @@ class SourceNavigationSession:
         )
 
     def _held_targets(self, targets: tuple[SourceTarget, ...], receipts: list[SourceEvidence]) -> dict[str, str]:
-        """Map each listed target already held by this judgment to the id it was delivered under.
-
-        A target held under another id gets its own receipt at once, without its source again, so
-        either id can be cited.
-        """
         held = {}
         for target in targets:
             delivered_as = self._delivered_as(target)
@@ -447,7 +441,6 @@ class SourceNavigationSession:
         target_chars: int,
         label: str,
     ) -> SourceNavigationResult | None:
-        """Read one unambiguous search result when it fits the same response budget."""
         if page != 0 or len(targets) != 1 or more or self._delivered_as(targets[0]) is not None:
             return None
         exact = self.read(
@@ -478,7 +471,6 @@ class SourceNavigationSession:
         query: str,
         page: int,
     ) -> tuple[tuple[SourceTarget, ...], int, bool, bool]:
-        """Match a name, or a dotted name by its exact owner chain, else list last segment matches as candidates."""
         *qualifier, symbol = query.split(".")
         named = [definition for definition in self._navigator.definitions if definition.name == symbol]
         matches = [definition for definition in self._navigator.definitions if definition.name == query]
@@ -492,7 +484,6 @@ class SourceNavigationSession:
         return published, selected_page, more, exact
 
     def _owned_by(self, definition: DefinitionEvidence, qualifier: tuple[str, ...]) -> bool:
-        """Require the enclosing definitions, innermost last, to end with the exact qualifier names."""
         owners: list[str] = []
         owner_id = definition.owner_id
         while owner_id and len(owners) < len(qualifier):
@@ -561,7 +552,6 @@ class SourceNavigationSession:
         return relationship.candidate_callee_definition_ids
 
     def _search_structural_candidates(self, definition_id: str, direction: str, page: int) -> str:
-        """Publish structural syntax around one discovered definition without assigning a binding."""
         if definition_id not in self._discovered_definition_ids:
             raise UnknownDefinitionQueryError(definition_id)
         selected = self._relationship_definitions.get(definition_id)
@@ -787,7 +777,7 @@ def navigation_instructions() -> str:
     return (
         "# Source Navigation\n\n"
         "`source_queries` searches the repository. Leading and trailing whitespace of `query` is ignored. Each "
-        f"query returns at most {_MAX_RESULTS_PER_PAGE} results per page; `page` starts at 0, and a result list "
+        f"query returns at most {_MAX_RESULTS_PER_PAGE} results per page. `page` starts at 0, and a result list "
         "states when a next page exists.\n"
         "- `search_symbols` returns definitions whose name equals `query` exactly. A dotted `query` also matches a "
         "definition named by its last segment whose enclosing definitions are named by the preceding segments, in "
@@ -933,11 +923,10 @@ def _held_note(target_id: str, delivered_as: str | None) -> str:
 
 
 def _already_delivered(heading: str, span: SourceSpan, target_id: str, delivered_as: str) -> str:
-    """Name a requested source this judgment already holds instead of delivering it again."""
     where = "" if delivered_as == target_id else f" in `{delivered_as}`"
     return (
         f"Requested {heading} lines {span.start_line}-{span.end_line} is already delivered{where}. "
-        "It is not repeated; cite it directly."
+        "It is not repeated. Cite it directly."
     )
 
 
@@ -967,7 +956,6 @@ def _line_offset(source: str, line: int) -> int:
 
 
 def _line_character_range(source: str, line: int) -> tuple[int, int] | None:
-    """Return one existing line as a normalized half open character range."""
     start = _line_offset(source, line)
     if start >= len(source):
         return None

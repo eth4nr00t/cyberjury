@@ -25,7 +25,6 @@ from tests.review.support import StubIssueJudge, prepared_units
 
 
 def _run(units, provider, *, concurrency=1):
-    """Review grounded units without an issue judge or a work directory."""
     return run_review(
         prepared_units(units, Path(units[0].root)),
         target=REPOSITORY_TARGET,
@@ -41,6 +40,7 @@ def _units(root, names):
 
 
 def test_concurrency_yields_same_union_as_serial(tmp_path):
+    """Six units reviewed at concurrency 1 and 4 give the same six candidate ids in order, both complete."""
     units = _units(tmp_path, [f"u{i}" for i in range(6)])
 
     def provider():
@@ -56,6 +56,7 @@ def test_concurrency_yields_same_union_as_serial(tmp_path):
 
 
 def test_unit_failures_are_counted_not_silent(tmp_path):
+    """A rate-limited bad.py unit is recorded as failure index 2 while ok1 and ok2 findings remain."""
     units = _units(tmp_path, ["ok1", "bad", "ok2"])
     provider = unit_provider(
         lambda file: RuntimeError("rate limited") if file == "bad.py" else [finding(file, 1, title=file[:-3])]
@@ -70,6 +71,7 @@ def test_unit_failures_are_counted_not_silent(tmp_path):
 
 
 def test_repository_unit_grounding_is_materialized_once(tmp_path, monkeypatch):
+    """Reviewing unit.py reads its text once and sends value = 1 in the finder prompt."""
     from cyberjury.review.repository import context as context_module
 
     (tmp_path / "unit.py").write_text("value = 1\n", encoding="utf-8")
@@ -91,6 +93,7 @@ def test_repository_unit_grounding_is_materialized_once(tmp_path, monkeypatch):
 
 
 def test_a_unit_limitation_is_attached_to_its_rendered_source(tmp_path):
+    """An unparsable broken.py limitation at 1:11 appears in the prompt and marks the outcome incomplete."""
     (tmp_path / "broken.py").write_text("def broken(:\n", encoding="utf-8")
     provider = MockProvider(default=EMPTY_REPLY)
     limitation = FactLimitation(source="broken.py", analyzer="python", reason="unparsable", line=1, column=11)
@@ -103,6 +106,8 @@ def test_a_unit_limitation_is_attached_to_its_rendered_source(tmp_path):
 
 
 def test_one_source_operation_keeps_reports_at_different_lines_separate(tmp_path):
+    """Findings at lines 63 and 64 sharing operation call-shared stay two separate findings."""
+
     class OperationNavigator:
         relationship_evidence = RelationshipEvidenceBundle()
 
@@ -167,7 +172,6 @@ _WALLET_FINDING = finding(
 
 
 def _wallet_provider() -> MockProvider:
-    """Report the wallet finding from the wallet unit and nothing elsewhere."""
     return unit_provider(lambda name: [dict(_WALLET_FINDING)] if name == "app/services/wallet.py" else [])
 
 
@@ -180,6 +184,7 @@ def _unit_records(work: Path) -> list[dict]:
 
 
 def test_repository_run_completes_and_checkpoints_each_unit(custody_repository, tmp_path):
+    """The custody app run is complete with one wallet finding and two clean unit checkpoints."""
     result = run_repository_review(custody_repository, tmp_path / "ws", provider=_wallet_provider())
 
     assert result.outcome.complete is True
@@ -190,6 +195,7 @@ def test_repository_run_completes_and_checkpoints_each_unit(custody_repository, 
 
 
 def test_repository_reviews_raw_source_and_stays_incomplete_when_facts_are_limited(tmp_path):
+    """An unparsable app.py is still reviewed, stays incomplete, and resume makes no provider calls."""
     target = tmp_path / "opaque"
     target.mkdir()
     (target / "app.py").write_text("from flask import Flask\napp = Flask(__name__)\ndef broken(:\n")
@@ -213,6 +219,7 @@ def test_repository_reviews_raw_source_and_stays_incomplete_when_facts_are_limit
 
 
 def test_run_fails_loud_on_zero_units(tmp_path):
+    """A repository with only README.md raises ValueError about no readable production source files."""
     repository = tmp_path / "empty"
     repository.mkdir()
     (repository / "README.md").write_text("nothing to review here\n")
@@ -221,6 +228,7 @@ def test_run_fails_loud_on_zero_units(tmp_path):
 
 
 def test_resume_skips_reviewed_units(custody_repository, tmp_path):
+    """A second run in the same workspace makes no provider calls and returns the same findings."""
     ws = tmp_path / "ws"
     first = run_repository_review(custody_repository, ws, provider=_wallet_provider())
     assert first.findings.findings
@@ -254,6 +262,7 @@ def _raising_provider(fail_unit, *, error=None):
 
 
 def test_failed_unit_stays_open_and_is_retried_on_resume_keeping_its_findings(tmp_path):
+    """A rate-limited beta/routes.py stays unclean, and resume reviews only it and keeps the alpha finding."""
     repository = _two_entrypoint_repository(tmp_path / "twop")
     ws = tmp_path / "ws"
     first = run_repository_review(repository, ws, provider=_raising_provider("beta/routes.py"))
@@ -273,10 +282,11 @@ def test_failed_unit_stays_open_and_is_retried_on_resume_keeping_its_findings(tm
 
 
 class _Interrupted(BaseException):
-    """A crash or operator interrupt that the scheduler must not absorb."""
+    pass
 
 
 def test_an_interrupted_run_resumes_only_open_units(tmp_path):
+    """After a BaseException on beta/routes.py, resume reviews only beta and completes with both findings."""
     repository = _two_entrypoint_repository(tmp_path / "twop")
     ws = tmp_path / "ws"
 
@@ -296,6 +306,7 @@ def test_an_interrupted_run_resumes_only_open_units(tmp_path):
     ["{ this is not valid json", "{}", '{"schema": "cyberjury.unit-review/v0", "value": {}}', None],
 )
 def test_a_corrupt_unit_checkpoint_on_resume_raises_loud(custody_repository, tmp_path, record):
+    """Invalid JSON, wrong schema, or malformed findings in a checkpoint raise before any provider call."""
     ws = tmp_path / "ws"
     run_repository_review(custody_repository, ws, provider=_wallet_provider())
     path = sorted((ws / "custody" / "units").glob("*.json"))[0]
@@ -313,6 +324,7 @@ def test_a_corrupt_unit_checkpoint_on_resume_raises_loud(custody_repository, tmp
 
 
 def test_repository_run_counts_an_unreceipted_finder_candidate_as_incomplete(tmp_path):
+    """A finding at app.py line 99 without a source receipt leaves the run incomplete and the unit unclean."""
     repo = tmp_path / "svc"
     repo.mkdir()
     (repo / "app.py").write_text("def get(request):\n    return 1\n", encoding="utf-8")
@@ -340,6 +352,7 @@ _RECORDS = (
 
 @pytest.mark.parametrize(("same_fix", "issues"), [(True, 1), (False, 2)])
 def test_repository_review_folds_one_line_and_links_judged_issues(tmp_path, same_fix, issues):
+    """Two line-5 findings fold by location, the judge links line 9 only when it says same fix, and resume reuses it."""
     target = tmp_path / "svc"
     target.mkdir()
     (target / "records.py").write_text(_RECORDS, encoding="utf-8")
@@ -368,6 +381,7 @@ def test_repository_review_folds_one_line_and_links_judged_issues(tmp_path, same
 
 
 def test_a_failed_issue_link_judgment_keeps_the_review_complete_and_is_reported(tmp_path):
+    """A judge raising down leaves two separate issues, a complete run, and the error in issue_link_errors."""
     target = tmp_path / "svc"
     target.mkdir()
     (target / "records.py").write_text(_RECORDS, encoding="utf-8")

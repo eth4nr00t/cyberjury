@@ -107,11 +107,6 @@ class AnthropicProvider(Provider):
 
 
 def _mark_cache_prefix(api_messages: list[dict], cache_prefix: str) -> None:
-    """The two split blocks concatenate back to the original content.
-
-    The model reads the same prompt. A prefix that does not lead the first message leaves
-    only the system breakpoint.
-    """
     if not cache_prefix or not api_messages:
         return
     content = api_messages[0].get("content")
@@ -125,11 +120,6 @@ def _mark_cache_prefix(api_messages: list[dict], cache_prefix: str) -> None:
 
 
 def _is_temperature_rejected(exc: Exception) -> bool:
-    """True when the API refused only because the model rejected temperature.
-
-    That is the one error recovered from by dropping the field. Matched on the message, not
-    a model name list, so a new reasoning model needs no code change.
-    """
     status = getattr(exc, "status_code", None)
     if status != 400 and "BadRequest" not in type(exc).__name__:
         return False
@@ -137,10 +127,6 @@ def _is_temperature_rejected(exc: Exception) -> bool:
 
 
 def _extract_usage(response: Any) -> Usage:
-    """The token counts Anthropic reports for uncached input, cache write, and cache read.
-
-    The split lets a run show whether the cached prefix is being hit.
-    """
     u = getattr(response, "usage", None)
     if u is None:
         return Usage()

@@ -1,6 +1,6 @@
 """RetryProvider: wrap any Provider, retrying `complete` on transient failure.
 
-Timeouts, rate limits, blank bodies, and incomplete structured JSON are retried; the last
+Timeouts, rate limits, blank bodies, and incomplete structured JSON are retried. The last
 error is re-raised once attempts are exhausted. The last non-blank response still reaches the
 strict downstream schema validator, so retry never turns malformed output into a clean review.
 An optional hard deadline bounds each call from outside the SDK. ``sleep`` and ``rand`` are
@@ -26,7 +26,6 @@ class EmptyResponseError(RuntimeError):
 
 
 def _add_usage(left: Usage, right: Usage) -> Usage:
-    """Accumulate completed response attempts on a successful return path."""
     return Usage(
         input_tokens=left.input_tokens + right.input_tokens,
         output_tokens=left.output_tokens + right.output_tokens,
@@ -36,12 +35,6 @@ def _add_usage(left: Usage, right: Usage) -> Usage:
 
 
 def _call_with_deadline(fn: Callable[[], CompletionResult], timeout: float) -> CompletionResult:
-    """Run fn in a daemon thread and return its result.
-
-    Raise TimeoutError after `timeout` seconds. This is the bound the SDK timeout fails to
-    enforce against a proxy that never closes the connection. The thread is a daemon, so an
-    abandoned hung call cannot keep the process alive.
-    """
     out: queue.Queue = queue.Queue(maxsize=1)
 
     def run() -> None:
@@ -61,10 +54,6 @@ def _call_with_deadline(fn: Callable[[], CompletionResult], timeout: float) -> C
 
 
 def _is_rate_limit(exc: BaseException) -> bool:
-    """Return whether the error is a rate limit, matched on the SDK status code or message.
-
-    Matching does not depend on a provider name, so a new backend needs no change.
-    """
     if getattr(exc, "status_code", None) == 429:
         return True
     if "ratelimit" in type(exc).__name__.lower():
@@ -74,10 +63,6 @@ def _is_rate_limit(exc: BaseException) -> bool:
 
 
 def _retry_after(exc: BaseException) -> float | None:
-    """Return the server's requested wait in seconds, or None when the error carries none.
-
-    The wait is read from the Retry-After response header, a retry_after attribute, or the error body.
-    """
     resp = getattr(exc, "response", None)
     headers = getattr(resp, "headers", None)
     if headers is not None and hasattr(headers, "get"):
@@ -123,18 +108,11 @@ class RetryProvider(Provider):
         self._rand = rand
 
     def _call_inner(self, **kwargs) -> CompletionResult:
-        """Invoke the wrapped provider, bounded by the hard deadline when one is set."""
         if self._hard_timeout is None:
             return self._inner.complete(**kwargs)
         return _call_with_deadline(lambda: self._inner.complete(**kwargs), self._hard_timeout)
 
     def _backoff(self, exc: BaseException, attempt: int) -> float:
-        """Seconds to wait before the next attempt.
-
-        A rate limit honors the server's Retry-After, else backs off exponentially with full
-        jitter so a fan-out's retries spread out instead of colliding again. A provider
-        supplied delay takes precedence for any error. Other errors keep linear backoff.
-        """
         after = _retry_after(exc)
         if after is not None:
             return min(after, self._max_delay)

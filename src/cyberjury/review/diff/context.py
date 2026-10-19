@@ -135,7 +135,7 @@ def changed_file_sources(
     """Deliver bounded current source of changed files without seed definitions, centered on their changed lines.
 
     Each file gets an equal share of the budget. A file with changed lines gets one window per changed
-    region and its leading lines; a file without them gets its leading lines. Every window is exact
+    region and its leading lines, and a file without them gets its leading lines. Every window is exact
     source under its own id, so a finding can be located in it.
     """
     sources = [
@@ -169,7 +169,6 @@ def changed_file_sources(
 
 
 def _leading_lines(lines: list[str], max_chars: int) -> int:
-    """Return the last line of the longest file prefix of whole lines within a character limit."""
     used = 0
     for number, line in enumerate(lines, 1):
         used += len(line)
@@ -179,7 +178,6 @@ def _leading_lines(lines: list[str], max_chars: int) -> int:
 
 
 def _source_windows(lines: list[str], changed: tuple[tuple[int, int], ...]) -> list[tuple[int, int]]:
-    """Return line windows in delivery order: changed regions with their context, then leading lines."""
     if not lines:
         return []
     if not changed:
@@ -207,7 +205,6 @@ def _fitting_window(
     last: int,
     budget: int,
 ) -> SourceEvidence | None:
-    """Return the longest window from `first` to at most `last` whose delivered block fits the budget."""
     offsets = [0]
     for line in lines:
         offsets.append(offsets[-1] + len(line))
@@ -240,7 +237,6 @@ def _callsite_ids_in_ranges(
     relationships: RelationshipEvidenceBundle,
     ranges: ChangedLineRanges,
 ) -> frozenset[str]:
-    """Select callsites physically present in the current patch hunks."""
     sources: dict[str, str] = {}
     selected = set()
     for callsite in relationships.callsites:

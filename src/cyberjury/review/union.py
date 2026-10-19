@@ -20,14 +20,12 @@ def _normalized(text: str) -> str:
 
 
 def _union_text(existing: str, incoming: str) -> str:
-    """Append incoming text unless it only repeats existing text up to case and whitespace."""
     if not incoming or _normalized(incoming) in _normalized(existing):
         return existing
     return f"{existing}\n\n{incoming}" if existing else incoming
 
 
 def _fold(existing: Finding, incoming: Finding) -> Finding:
-    """Keep the first report and add the duplicate's attack path, evidence refs, cited spans, and provenance."""
     found_by = found_by_tuple(existing.found_by, incoming.found_by)
     attack_path = _union_text(existing.attack_path, incoming.attack_path)
     evidence_refs = tuple(dict.fromkeys((*existing.evidence_refs, *incoming.evidence_refs)))

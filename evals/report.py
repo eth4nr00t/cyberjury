@@ -1,7 +1,7 @@
 """Report reviewed recall, report precision, and model call cost of adjudicated runs.
 
 A runs directory holds attempt records with their ledgers. Every ledger is checked again against
-its attempt bytes, the current case checks, and the pinned commit; evidence lines were checked
+its attempt bytes, the current case checks, and the pinned commit. Evidence lines were checked
 against the source when the ledger was written. Recall counts checks credited by a
 supported or duplicate report, once per attempt. Precision is supported / (supported +
 not_actionable). Duplicate and needs_review reports are outside that ratio and reported as separate
@@ -24,7 +24,7 @@ from evals.attempts import find_attempts, read_json
 from evals.benchmarks.cases import BenchmarkCase
 
 PRECISION_DEFINITION = (
-    "precision = supported / (supported + not_actionable); duplicate and needs_review reports are excluded "
+    "precision = supported / (supported + not_actionable), and duplicate and needs_review reports are excluded "
     "from the ratio and counted separately"
 )
 _TOKENS = ("input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens")

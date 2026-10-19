@@ -10,8 +10,6 @@ from cyberjury.providers.base import Message, ResponseSchema, Usage
 
 
 class _FakeClient:
-    """Records the kwargs passed to messages.create and returns a canned reply."""
-
     def __init__(self):
         self.create_kwargs = {}
         self.messages = SimpleNamespace(create=self._create)
@@ -30,6 +28,7 @@ def _provider():
 
 
 def test_maps_messages_and_joins_text_blocks():
+    """Text blocks he and llo join to hello, and the SDK gets role/content dicts, max_tokens 64, temperature 0."""
     provider, client = _provider()
     result = provider.complete(
         system="be careful",
@@ -44,12 +43,14 @@ def test_maps_messages_and_joins_text_blocks():
 
 
 def test_no_cache_keeps_system_as_plain_string():
+    """Without cache=True the system prompt is sent as the bare string sys."""
     provider, client = _provider()
     provider.complete(system="sys", messages=[Message(role="user", content="x")], model="m", max_tokens=8)
     assert client.create_kwargs["system"] == "sys"
 
 
 def test_maps_the_strict_output_schema():
+    """A response schema is sent as output_config format json_schema carrying the schema unchanged."""
     provider, client = _provider()
     schema = ResponseSchema(
         name="review_reply",
@@ -73,12 +74,14 @@ def test_maps_the_strict_output_schema():
 
 
 def test_cache_marks_system_with_ephemeral_cache_control():
+    """With cache=True the system prompt becomes one text block with ephemeral cache_control."""
     provider, client = _provider()
     provider.complete(system="sys", messages=[Message(role="user", content="x")], model="m", max_tokens=8, cache=True)
     assert client.create_kwargs["system"] == [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}]
 
 
 def test_cache_prefix_marks_the_system_and_the_stable_message_prefix():
+    """A STABLE prefix splits STABLEvariable into a cached STABLE block and a plain variable block."""
     provider, client = _provider()
     provider.complete(
         system="sys",
@@ -96,6 +99,7 @@ def test_cache_prefix_marks_the_system_and_the_stable_message_prefix():
 
 
 def test_cache_prefix_equal_to_the_message_marks_a_single_block():
+    """A message equal to the STABLE prefix is sent as one cached text block with no empty remainder."""
     provider, client = _provider()
     provider.complete(
         system="sys",
@@ -111,6 +115,7 @@ def test_cache_prefix_equal_to_the_message_marks_a_single_block():
 
 
 def test_cache_prefix_that_does_not_lead_the_message_marks_only_the_system():
+    """A STABLE prefix absent from the message other leaves it a plain string and caches only the system."""
     provider, client = _provider()
     provider.complete(
         system="sys",
@@ -125,6 +130,7 @@ def test_cache_prefix_that_does_not_lead_the_message_marks_only_the_system():
 
 
 def test_extract_usage_maps_cache_read_and_write_separately():
+    """Usage cache_creation_input_tokens 2600 maps to cache_write_tokens, and cache reads map separately."""
     response = SimpleNamespace(
         usage=SimpleNamespace(
             input_tokens=30, output_tokens=12, cache_creation_input_tokens=2600, cache_read_input_tokens=0
@@ -136,6 +142,7 @@ def test_extract_usage_maps_cache_read_and_write_separately():
 
 
 def test_extract_usage_defaults_to_zero_when_unreported():
+    """A response without a usage attribute yields an all-zero Usage."""
     assert _extract_usage(SimpleNamespace(model="m")) == Usage()
 
 
@@ -144,8 +151,6 @@ class _BadRequest(Exception):
 
 
 class _RecordingClient:
-    """Records messages.create calls and can model a temperature rejecting backend."""
-
     def __init__(self, reject_temperature: bool):
         self.reject_temperature = reject_temperature
         self.calls: list[dict] = []
@@ -163,6 +168,7 @@ def _run(provider):
 
 
 def test_drops_temperature_when_model_rejects_it_then_skips_it():
+    """A 400 rejecting temperature is retried without it, and later calls omit temperature from the start."""
     client = _RecordingClient(reject_temperature=True)
     provider = AnthropicProvider(client=client)
     assert _run(provider).text == "ok"
@@ -174,6 +180,7 @@ def test_drops_temperature_when_model_rejects_it_then_skips_it():
 
 
 def test_non_temperature_bad_request_still_fails_loud():
+    """A 400 about max_tokens propagates after one call instead of triggering the temperature retry."""
 
     class _OtherBadRequest(_RecordingClient):
         def _create(self, **kwargs):

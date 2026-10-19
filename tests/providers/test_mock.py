@@ -5,6 +5,7 @@ from cyberjury.providers.mock import MockProvider
 
 
 def test_responder_handles_calls_after_canned_responses_are_consumed():
+    """With one canned response, the second call falls through to the responder and returns system:prompt."""
     provider = MockProvider(
         responses=["first"],
         responder=lambda system, messages: f"{system}:{messages[-1].content}",

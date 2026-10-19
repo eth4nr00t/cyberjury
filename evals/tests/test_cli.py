@@ -13,6 +13,7 @@ A = "candidate-" + "a" * 20
 
 @pytest.fixture
 def fake_diff_run(monkeypatch):
+    """Replace the diff runner with one that records a complete empty attempt per case and run."""
     from evals import diff
 
     def run(cases, *, workspace, runs, on_attempt, **kwargs):
@@ -30,6 +31,7 @@ def fake_diff_run(monkeypatch):
 
 
 def test_diff_writes_nonoverwriting_attempts_and_summarizes_the_run(tmp_path, capsys, fake_diff_run, benchmark_project):
+    """Two runs write attempt-01 and attempt-02, print the summary and failure, and refuse to rerun over them."""
     runs, reviews = tmp_path / "runs", tmp_path / "reviews"
     args = ["diff", "--benchmark", str(benchmark_project.benchmark), "--runs", "2"]
     args += ["--attempts-dir", str(runs), "--workspace", str(reviews)]
@@ -49,6 +51,7 @@ def test_diff_writes_nonoverwriting_attempts_and_summarizes_the_run(tmp_path, ca
 
 
 def test_diff_rejects_an_unknown_case_before_running(tmp_path, fake_diff_run, benchmark_project):
+    """--case demo:missing raises ValueError about an unknown diff case."""
     with pytest.raises(ValueError, match="unknown diff case"):
         main(
             [
@@ -66,6 +69,7 @@ def test_diff_rejects_an_unknown_case_before_running(tmp_path, fake_diff_run, be
 
 
 def test_packets_ledger_and_report_measure_one_adjudicated_run(tmp_path, capsys, write_attempt, benchmark_project):
+    """One supported verdict through packets, ledger, and report gives recall 1/1, 100% precision, and PASS."""
     runs, out = tmp_path / "runs", tmp_path / "adjudication"
     write_attempt(runs, 1, (A,))
     benchmark = ["--benchmark", str(benchmark_project.benchmark)]
@@ -98,6 +102,7 @@ def test_packets_ledger_and_report_measure_one_adjudicated_run(tmp_path, capsys,
 
 
 def test_packets_say_when_references_hold_no_earlier_verdicts(tmp_path, capsys, write_attempt, benchmark_project):
+    """References with an attempt but no ledger report 0 earlier verdicts and one ledgerless attempt."""
     runs, earlier = tmp_path / "runs", tmp_path / "earlier"
     write_attempt(runs, 1, (A,))
     write_attempt(earlier, 1, (A,))
@@ -112,6 +117,7 @@ def test_packets_say_when_references_hold_no_earlier_verdicts(tmp_path, capsys, 
 
 
 def test_repository_records_the_next_attempt_of_a_repository_case(tmp_path, monkeypatch, capsys, benchmark_project):
+    """A second repository run records attempt 2, and passing a diff case raises not a repository case."""
     from evals import attempts
 
     def record(case, directory, number):

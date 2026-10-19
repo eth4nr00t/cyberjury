@@ -18,6 +18,7 @@ def _unit(name: str = "app.py") -> UnitPlanRecord:
 
 
 def test_unit_plan_binds_facts_and_units_into_its_receipt_hash():
+    """The receipt cites the facts hash and owns app.py, and renaming the unit changes receipt_sha256."""
     receipt = UnitPlanReceipt.create(facts=_FACTS, units=(_unit(),))
     renamed = UnitPlanReceipt.create(facts=_FACTS, units=(_unit("other"),))
 
@@ -28,11 +29,13 @@ def test_unit_plan_binds_facts_and_units_into_its_receipt_hash():
 
 
 def test_unit_plan_refuses_an_unowned_expected_path():
+    """Expecting app.py and missing.py when only app.py is owned raises an unowned missing.py error."""
     with pytest.raises(ValueError, match=r"unowned: missing\.py"):
         UnitPlanReceipt.create(facts=_FACTS, units=(_unit(),), expected_owned_paths=("app.py", "missing.py"))
 
 
 def test_diff_unit_identity_changes_with_same_length_patch_content():
+    """Patches +allow and +block of equal length give different patch hashes and unit ids."""
     first = UnitPlanRecord.create(kind="diff", name="diff:1:app.py", owned_paths=("app.py",), patch_text="+allow\n")
     second = UnitPlanRecord.create(kind="diff", name="diff:1:app.py", owned_paths=("app.py",), patch_text="+block\n")
 

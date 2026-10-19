@@ -35,19 +35,22 @@ def _record_navigator(tmp_path, source: str) -> SourceNavigator:
 
 
 def test_default_navigation_contract_publishes_the_query_batch_limit():
+    """Default instructions tell the model to send at most 8 source_queries per batch."""
     assert "Send at most 8 `source_queries`" in navigation_instructions()
 
 
 def test_navigation_contract_states_the_exact_search_semantics():
+    """Instructions describe exact-name symbol match, literal one-line text match, and 20-result pages from 0."""
     instructions = navigation_instructions()
 
     assert "whose name equals `query` exactly" in instructions
     assert "literal, case-sensitive substring of one line" in instructions
     assert "Regular expressions, wildcards, and multi-line text are not supported" in instructions
-    assert "at most 20 results per page; `page` starts at 0" in instructions
+    assert "at most 20 results per page. `page` starts at 0" in instructions
 
 
 def test_documentation_navigation_preserves_its_source_kind(tmp_path):
+    """A text hit in docs/development.md is labeled [documentation] and read as documentation, line 1."""
     (tmp_path / "app.py").write_text("def app(): pass\n", encoding="utf-8")
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "development.md").write_text("Use start_services.sh only for development.\n", encoding="utf-8")
@@ -103,6 +106,7 @@ def _navigator_with_calls(tmp_path, source: str, spans: tuple[tuple[int, int], .
 
 
 def test_source_operation_identity_maps_nested_multiline_calls_to_the_outer_call(tmp_path):
+    """Lines 2 and 3 of search(compile(pattern), text) share the outer call's operation id."""
     source = "def reviewed():\n    return search(\n        compile(pattern), text\n    )\n"
     outer = (source.index("search("), source.rindex(")") + 1)
     inner = (source.index("compile("), source.index("), text") + 1)
@@ -113,6 +117,7 @@ def test_source_operation_identity_maps_nested_multiline_calls_to_the_outer_call
 
 
 def test_source_operation_identity_rejects_ambiguous_sibling_calls_on_one_line(tmp_path):
+    """A line holding two calls and the call-free def line both get an empty operation id."""
     source = "def reviewed():\n    first(); second()\n"
     first = (source.index("first()"), source.index("first()") + len("first()"))
     second = (source.index("second()"), source.index("second()") + len("second()"))
@@ -123,6 +128,7 @@ def test_source_operation_identity_rejects_ambiguous_sibling_calls_on_one_line(t
 
 
 def test_symbol_search_returns_every_real_candidate_without_evidence(tmp_path):
+    """Record defined in src/one.py and plugins/two.py lists two targets and reads no source."""
     first = "class Record:\n    owner = 'first'\n"
     second = "class Record:\n    owner = 'second'\n"
     (tmp_path / "src").mkdir()
@@ -145,6 +151,7 @@ def test_symbol_search_returns_every_real_candidate_without_evidence(tmp_path):
 
 
 def test_unique_symbol_search_delivers_exact_source_in_the_same_exchange(tmp_path):
+    """A single Record definition is read inline with one receipt and coverage for model.py:Record."""
     source = "class Record:\n    owner = 'user'\n"
     navigator = _record_navigator(tmp_path, source)
 
@@ -174,6 +181,7 @@ def _python_navigator(tmp_path, files: dict[str, str]) -> SourceNavigator:
 
 
 def test_dotted_symbol_search_is_exact_only_for_the_enclosing_definition_name(tmp_path):
+    """Repo.save reads only the save under class Repo, not the same-named method on Other."""
     navigator = _python_navigator(
         tmp_path,
         {
@@ -196,6 +204,7 @@ def test_dotted_symbol_search_is_exact_only_for_the_enclosing_definition_name(tm
 
 
 def test_dotted_symbol_search_lists_last_segment_matches_as_unread_candidates(tmp_path):
+    """Repo.save with only a top-level save() lists store.py:save as a candidate and reads nothing."""
     navigator = _python_navigator(tmp_path, {"store.py": "def save():\n    return 3\n"})
 
     result = navigator.session().execute(
@@ -210,6 +219,7 @@ def test_dotted_symbol_search_lists_last_segment_matches_as_unread_candidates(tm
 
 
 def test_last_symbol_page_is_not_mistaken_for_a_unique_result(tmp_path):
+    """Page 1 of 21 Repeated definitions holds one item yet is not auto-read as a unique match."""
     source = "value = 1\n" * 21
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
     definitions = [{"range": [index * 10, index * 10 + 9], "calls": []} for index in range(21)]
@@ -229,6 +239,7 @@ def test_last_symbol_page_is_not_mistaken_for_a_unique_result(tmp_path):
 
 
 def test_navigation_cannot_read_a_target_that_was_not_published_on_the_requested_page(tmp_path):
+    """A session that saw only page 0 cannot read or expand source and definition ids from page 1."""
     source = "value = 1\n" * 21
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
     definitions = tuple(
@@ -281,6 +292,7 @@ def test_navigation_cannot_read_a_target_that_was_not_published_on_the_requested
 
 
 def test_source_target_ids_are_stable_across_sessions_and_query_order(tmp_path):
+    """Searching Record yields identical text, coverage, and evidence in fresh and reused sessions."""
     source = "class Record:\n    pass\n\nclass Other:\n    pass\n"
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
     first_end = source.index("\n\n")
@@ -319,6 +331,7 @@ def test_source_target_ids_are_stable_across_sessions_and_query_order(tmp_path):
 
 
 def test_navigation_rejects_more_than_eight_queries_per_batch(tmp_path):
+    """A batch of nine search_text queries raises SourceNavigationError naming the limit of 8."""
     source = "class Record:\n    pass\n"
     navigator = _record_navigator(tmp_path, source)
 
@@ -330,6 +343,7 @@ def test_navigation_rejects_more_than_eight_queries_per_batch(tmp_path):
 
 
 def test_navigation_rejects_more_than_the_session_query_budget(tmp_path):
+    """After eight batches of eight unique queries, a 65th query raises the 64-query budget error."""
     source = "class Record:\n    pass\n"
     navigator = _record_navigator(tmp_path, source)
     session = navigator.session()
@@ -347,6 +361,7 @@ def test_navigation_rejects_more_than_the_session_query_budget(tmp_path):
 
 
 def test_navigation_rejects_a_repeated_query_in_one_session(tmp_path):
+    """Re-sending the same search_symbols Record query in one session raises a repeat error."""
     source = "class Record:\n    pass\n"
     navigator = _record_navigator(tmp_path, source)
     session = navigator.session()
@@ -358,6 +373,7 @@ def test_navigation_rejects_a_repeated_query_in_one_session(tmp_path):
 
 
 def test_navigation_rejects_a_duplicate_batch_before_committing_any_query(tmp_path):
+    """A batch with the same query twice fails, and the query still runs afterwards in that session."""
     source = "class Record:\n    pass\n"
     navigator = _record_navigator(tmp_path, source)
     session = navigator.session()
@@ -372,6 +388,7 @@ def test_navigation_rejects_a_duplicate_batch_before_committing_any_query(tmp_pa
 
 
 def test_large_definition_search_publishes_bounded_page_targets(tmp_path):
+    """A 5,000-line function is split into paged targets, and reading page 0 stays within 48,000 chars."""
     source = "def large():\n" + "    value = 1\n" * 5_000
     (tmp_path / "large.py").write_text(source, encoding="utf-8")
     navigator = navigator_from_callgraph(
@@ -396,6 +413,7 @@ def test_large_definition_search_publishes_bounded_page_targets(tmp_path):
 
 
 def test_search_requires_the_documented_page_field(tmp_path):
+    """A search_symbols query without a page key raises SourceNavigationError."""
     source = "class Record:\n    pass\n"
     (tmp_path / "src").mkdir()
     (tmp_path / "src/one.py").write_text(source, encoding="utf-8")
@@ -412,6 +430,7 @@ def test_search_requires_the_documented_page_field(tmp_path):
 
 
 def test_read_source_requires_a_target_returned_by_the_same_session(tmp_path):
+    """Only session-published ids are readable, read_source is an unknown kind, and rereads are marked delivered."""
     source = "class Record:\n    owner = 'user'\n"
     (tmp_path / "src").mkdir()
     (tmp_path / "src/one.py").write_text(source, encoding="utf-8")
@@ -453,6 +472,7 @@ def test_read_source_requires_a_target_returned_by_the_same_session(tmp_path):
 
 
 def test_definition_navigation_uses_normalized_character_ranges(tmp_path):
+    """Character ranges after a non-ASCII prefix line map target() to lines 2-3 without the prefix."""
     prefix = "owner = 'é'\n"
     definition = "def target():\n    return 'ok'\n"
     source = prefix + definition
@@ -486,6 +506,7 @@ def test_definition_navigation_uses_normalized_character_ranges(tmp_path):
 
 
 def test_definition_navigation_uses_normalized_newlines(tmp_path):
+    """Ranges over CRLF source resolve against LF-normalized text, mapping target() to lines 2-3."""
     raw = b"header = 1\r\ndef target():\r\n    return 'ok'\r\n"
     normalized = raw.decode().replace("\r\n", "\n")
     definition = "def target():\n    return 'ok'\n"
@@ -514,6 +535,7 @@ def test_definition_navigation_uses_normalized_newlines(tmp_path):
 
 
 def test_unique_text_search_delivers_verified_source_without_a_graph_definition(tmp_path):
+    """A single text hit in routes.yaml is read inline as line 1 with no call graph definition."""
     (tmp_path / "routes.yaml").write_text("handler: dynamic_route\n", encoding="utf-8")
     navigator = SourceNavigator.from_facts(
         tmp_path,
@@ -533,6 +555,7 @@ def test_unique_text_search_delivers_verified_source_without_a_graph_definition(
 
 
 def test_ambiguous_text_search_publishes_choices_without_reading_them(tmp_path):
+    """The same text in one.txt and two.txt is listed with no coverage and no source evidence."""
     (tmp_path / "one.txt").write_text("handler: dynamic_route\n", encoding="utf-8")
     (tmp_path / "two.txt").write_text("handler: dynamic_route\n", encoding="utf-8")
     navigator = SourceNavigator.from_facts(
@@ -552,7 +575,7 @@ def test_ambiguous_text_search_publishes_choices_without_reading_them(tmp_path):
 
 
 def test_call_candidate_navigation_keeps_binding_with_the_model(tmp_path):
-
+    """Callees of route() list the target(value) callsite and service.py:target as a candidate."""
     navigator = _python_navigator(
         tmp_path,
         {
@@ -585,7 +608,7 @@ def test_call_candidate_navigation_keeps_binding_with_the_model(tmp_path):
 
 
 def test_structural_candidate_navigation_keeps_binding_with_the_model(tmp_path):
-
+    """Child(Base) lists Base as an outgoing inheritance candidate and Child as Base's incoming owner."""
     navigator = _python_navigator(tmp_path, {"models.py": "class Base:\n    pass\n\nclass Child(Base):\n    pass\n"})
     session = navigator.session()
     searched = session.execute(
@@ -633,7 +656,7 @@ def test_structural_candidate_navigation_keeps_binding_with_the_model(tmp_path):
 
 
 def test_inheritance_without_a_local_target_stays_an_unbound_source_clue(tmp_path):
-
+    """Child(ExternalBase) reports no repository candidate but keeps a readable syntax source."""
     navigator = _python_navigator(tmp_path, {"models.py": "class Child(ExternalBase):\n    pass\n"})
     session = navigator.session()
     searched = session.execute(
@@ -663,6 +686,7 @@ def test_inheritance_without_a_local_target_stays_an_unbound_source_clue(tmp_pat
 
 
 def test_structural_candidate_navigation_pages_expanded_same_name_candidates(tmp_path):
+    """Inheritance from 21 same-named Base classes pages as 20 candidates on page 0 and 1 on page 1."""
     from cyberjury.review.relationships import StructuralRelationshipEvidence
 
     child_source = "class Child(Base):\n    pass\n"
@@ -744,6 +768,7 @@ def test_structural_candidate_navigation_pages_expanded_same_name_candidates(tmp
 
 
 def test_navigation_transaction_rolls_back_an_oversized_query(tmp_path):
+    """A query over a 10-char target inside a transaction is not recorded and can run again."""
     source = "class Record:\n    value = 1\n"
     navigator = _record_navigator(tmp_path, source)
     session = navigator.session()
@@ -768,6 +793,7 @@ def _target_navigator(tmp_path, body: str = ""):
 
 
 def test_navigation_lists_source_inside_the_seed_as_delivered_with_its_own_receipt(tmp_path):
+    """A definition inside seed lines 1-3 is marked delivered in seed with a receipt for lines 2-3."""
     session = _target_navigator(tmp_path).session()
     session.record_delivered((), seed_spans=(SourceSpan(file="app.py", start_line=1, end_line=3),))
 
@@ -782,6 +808,7 @@ def test_navigation_lists_source_inside_the_seed_as_delivered_with_its_own_recei
 
 
 def test_navigation_never_delivers_initial_or_earlier_source_again(tmp_path):
+    """Text found in initial evidence src-000000000001 is marked delivered and not re-read."""
     from cyberjury.review.context import SourceEvidence
 
     session = _target_navigator(tmp_path).session()
@@ -804,6 +831,7 @@ def test_navigation_never_delivers_initial_or_earlier_source_again(tmp_path):
 
 
 def test_an_auto_read_source_is_not_delivered_again_by_a_later_search(tmp_path):
+    """A text search hitting a function auto-read by symbol search reports it as already delivered."""
     session = _target_navigator(tmp_path, body="    value = 1\n" * 10).session()
 
     first = session.execute([{"kind": "search_symbols", "query": "target", "page": 0}], target_chars=10_000)

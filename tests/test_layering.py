@@ -63,6 +63,7 @@ def test_syntax_facts_use_one_way_stage_dependencies():
 
 
 def test_native_tool_imports_stop_at_the_analyzer_boundary():
+    """Only syntax/analyzer.py imports tree_sitter, and sources.py and graph.py do not."""
     analyzer_imports = _imports(_SYNTAX_ROOT / "analyzer.py")
     assert any(name == "tree_sitter" or name.startswith("tree_sitter.") for name in analyzer_imports)
 

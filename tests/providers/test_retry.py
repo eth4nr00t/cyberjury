@@ -10,8 +10,6 @@ from cyberjury.providers.retry import EmptyResponseError, RetryProvider
 
 
 class _Flaky(Provider):
-    """Fails `fail_times` times, then succeeds."""
-
     def __init__(self, fail_times):
         self._fail_times = fail_times
         self.calls = 0
@@ -47,6 +45,7 @@ def _structured_call(provider):
 
 
 def test_retries_then_succeeds():
+    """Two transient failures under max_attempts=3 return "ok" on attempt 3 after sleeping 1.0 then 2.0."""
     slept = []
     inner = _Flaky(fail_times=2)
     provider = RetryProvider(inner, max_attempts=3, sleep=slept.append)
@@ -58,6 +57,7 @@ def test_retries_then_succeeds():
 
 
 def test_reraises_after_exhausting_attempts():
+    """Five failures with max_attempts=3 re-raise the RuntimeError tagged with cyberjury_attempts=3."""
     inner = _Flaky(fail_times=5)
     provider = RetryProvider(inner, max_attempts=3, sleep=lambda _: None)
     with pytest.raises(RuntimeError, match="transient") as caught:
@@ -67,6 +67,7 @@ def test_reraises_after_exhausting_attempts():
 
 
 def test_no_retry_on_first_success():
+    """An immediate success makes one inner call and never sleeps."""
     inner = _Flaky(fail_times=0)
     slept = []
     RetryProvider(inner, sleep=slept.append).complete(
@@ -77,8 +78,6 @@ def test_no_retry_on_first_success():
 
 
 class _Blank(Provider):
-    """Returns a blank body `blank_times` times, then a real reply."""
-
     def __init__(self, blank_times):
         self._blank_times = blank_times
         self.calls = 0
@@ -89,6 +88,7 @@ class _Blank(Provider):
 
 
 def test_retries_blank_body_then_succeeds():
+    """One empty-text response is retried and the second call returns "ok"."""
     inner = _Blank(blank_times=1)
     provider = RetryProvider(inner, max_attempts=3, sleep=lambda _: None)
     assert _call(provider).text == "ok"
@@ -96,6 +96,7 @@ def test_retries_blank_body_then_succeeds():
 
 
 def test_raises_when_body_blank_every_attempt():
+    """Empty text on all three attempts raises EmptyResponseError after exactly three calls."""
     inner = _Blank(blank_times=5)
     provider = RetryProvider(inner, max_attempts=3, sleep=lambda _: None)
     with pytest.raises(EmptyResponseError):
@@ -115,6 +116,7 @@ class _Structured(Provider):
 
 
 def test_retries_an_incomplete_structured_response_and_accumulates_usage():
+    """Truncated JSON then valid JSON returns the second reply with token usage summed over both attempts."""
     inner = _Structured(
         [
             ('{"value":', Usage(input_tokens=10, output_tokens=2)),
@@ -132,6 +134,7 @@ def test_retries_an_incomplete_structured_response_and_accumulates_usage():
 
 
 def test_returns_the_last_incomplete_response_for_fail_loud_downstream_validation():
+    """Truncated JSON on both attempts is returned as-is with summed usage so the caller's parser can fail."""
     inner = _Structured(
         [
             ('{"value":', Usage(input_tokens=10, output_tokens=2)),
@@ -148,6 +151,7 @@ def test_returns_the_last_incomplete_response_for_fail_loud_downstream_validatio
 
 
 def test_does_not_parse_non_structured_provider_responses():
+    """Plain text without a response schema is returned after one call, not retried as invalid JSON."""
     inner = _Structured([("plain text", Usage(input_tokens=4, output_tokens=2))])
 
     result = _call(RetryProvider(inner, max_attempts=2, sleep=lambda _: None))
@@ -157,8 +161,6 @@ def test_does_not_parse_non_structured_provider_responses():
 
 
 class _RateLimited(Provider):
-    """Fails with a given exception `fail_times` times, then succeeds."""
-
     def __init__(self, fail_times, exc):
         self._fail_times = fail_times
         self._exc = exc
@@ -178,6 +180,7 @@ def _rate_limit_exc():
 
 
 def test_rate_limit_backs_off_exponentially_with_jitter():
+    """Three 429 errors with jitter at its upper bound sleep 1.0, 2.0, then 4.0 seconds."""
     slept = []
     inner = _RateLimited(fail_times=3, exc=_rate_limit_exc())
     provider = RetryProvider(inner, max_attempts=4, base_delay=1.0, sleep=slept.append, rand=lambda _lo, hi: hi)
@@ -186,6 +189,7 @@ def test_rate_limit_backs_off_exponentially_with_jitter():
 
 
 def test_rate_limit_honors_retry_after_header():
+    """A retry-after: 5 response header makes the single retry sleep exactly 5.0 seconds."""
 
     class _Resp:
         headers: ClassVar = {"retry-after": "5"}
@@ -200,6 +204,7 @@ def test_rate_limit_honors_retry_after_header():
 
 
 def test_rate_limit_caps_at_max_delay():
+    """A retry-after of 9000 seconds is clamped to the 30.0 second max_delay."""
 
     class _Resp:
         headers: ClassVar = {"retry-after": "9000"}
@@ -214,6 +219,7 @@ def test_rate_limit_caps_at_max_delay():
 
 
 def test_non_rate_limit_keeps_linear_backoff():
+    """Two generic network errors sleep 1.0 then 2.0 seconds rather than doubling."""
     slept = []
     inner = _RateLimited(fail_times=2, exc=RuntimeError("transient network blip"))
     provider = RetryProvider(inner, max_attempts=3, base_delay=1.0, sleep=slept.append)
@@ -235,6 +241,7 @@ def test_is_rate_limit_matches_by_status_class_name_and_message():
 
 
 def test_retry_after_reads_the_exception_attribute_and_tolerates_garbage():
+    """A retry_after attribute of "7" parses to 7.0, while "soon" or a missing attribute yield None."""
     from cyberjury.providers.retry import _retry_after
 
     exc = RuntimeError("x")
@@ -269,8 +276,6 @@ def test_a_non_rate_limit_error_honors_its_structured_retry_delay():
 
 
 class _Hang(Provider):
-    """Blocks on `complete` until released."""
-
     def __init__(self):
         self.release = threading.Event()
         self.calls = 0
@@ -282,6 +287,7 @@ class _Hang(Provider):
 
 
 def test_hard_timeout_aborts_a_hung_call():
+    """A call blocked past the 0.2 second hard_timeout raises TimeoutError after one attempt."""
     inner = _Hang()
     provider = RetryProvider(inner, max_attempts=1, hard_timeout=0.2, sleep=lambda _: None)
     try:
@@ -293,8 +299,6 @@ def test_hard_timeout_aborts_a_hung_call():
 
 
 class _HangOnce(Provider):
-    """Blocks the first `complete` until released and answers every later call at once."""
-
     def __init__(self):
         self.release = threading.Event()
         self.calls = 0
@@ -309,6 +313,7 @@ class _HangOnce(Provider):
 
 
 def test_hard_timeout_retries_then_recovers():
+    """A first call hung past the 0.2 second limit is abandoned and the second attempt returns "call 2"."""
     inner = _HangOnce()
     provider = RetryProvider(inner, max_attempts=2, hard_timeout=0.2, sleep=lambda _: None)
     try:

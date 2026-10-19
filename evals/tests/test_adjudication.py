@@ -15,11 +15,13 @@ A, B = "candidate-" + "a" * 20, "candidate-" + "b" * 20
 
 @pytest.fixture
 def case(benchmark_project):
+    """Return the benchmark project's diff case."""
     return find_case(benchmark_project.diff_case, [benchmark_project.benchmark])
 
 
 @pytest.fixture
 def attempt(tmp_path, write_attempt):
+    """Write one complete attempt with two reports and return its record path."""
     return write_attempt(tmp_path / "runs", 1, (A, B))
 
 
@@ -29,6 +31,7 @@ def _adjudicate(case, attempt, source=None):
 
 
 def test_ledger_credits_checks_and_counts_verdicts(case, attempt, write_ledger, benchmark_project):
+    """One supported report crediting create-missing-owner and one not_actionable report leave none missed."""
     write_ledger(attempt, {A: ("supported", ("create-missing-owner",)), B: ("not_actionable", ())})
 
     result = _adjudicate(case, attempt, benchmark_project.repo)
@@ -40,6 +43,7 @@ def test_ledger_credits_checks_and_counts_verdicts(case, attempt, write_ledger, 
 
 
 def test_ledger_must_assess_every_report_exactly_once(case, attempt, write_ledger):
+    """A ledger covering only report A of a two-report attempt raises a ValueError."""
     write_ledger(attempt, {A: ("supported", ())})
 
     with pytest.raises(ValueError, match="every report of the attempt exactly once"):
@@ -47,6 +51,7 @@ def test_ledger_must_assess_every_report_exactly_once(case, attempt, write_ledge
 
 
 def test_a_grouped_attempt_is_assessed_per_report_and_measures_its_issues(case, tmp_path, write_attempt, write_ledger):
+    """One issue of A and B counts as mixed only when both reports are supported."""
     grouped = write_attempt(tmp_path / "grouped", 1, (A, B), issues=((B, A),))
     write_ledger(grouped, {A: ("supported", ("create-missing-owner",)), B: ("duplicate", ())})
 
@@ -62,6 +67,7 @@ def test_a_grouped_attempt_is_assessed_per_report_and_measures_its_issues(case, 
 
 
 def test_one_root_cause_in_two_issues_is_a_duplicate_issue(case, tmp_path, write_attempt, write_ledger):
+    """A and B in separate issues, with B a duplicate, give 2 issues of which 1 is a duplicate issue."""
     split = write_attempt(tmp_path / "split", 1, (A, B), issues=((A,), (B,)))
     write_ledger(split, {A: ("supported", ()), B: ("duplicate", ())})
 
@@ -71,11 +77,13 @@ def test_one_root_cause_in_two_issues_is_a_duplicate_issue(case, tmp_path, write
 
 
 def test_attempt_issues_must_partition_its_reports(tmp_path, write_attempt):
+    """An attempt whose issues cover only A of reports A and B fails to load with "partition"."""
     with pytest.raises(ValueError, match="partition"):
         load_attempt(write_attempt(tmp_path / "runs", 1, (A, B), issues=((A,),)))
 
 
 def test_a_check_credited_by_two_reports_counts_once_and_a_duplicate_may_credit_it(case, attempt, write_ledger):
+    """A supported report and its duplicate both credit create-missing-owner, which is found once."""
     write_ledger(attempt, {A: ("supported", ("create-missing-owner",)), B: ("duplicate", ("create-missing-owner",))})
 
     result = _adjudicate(case, attempt)
@@ -84,6 +92,7 @@ def test_a_check_credited_by_two_reports_counts_once_and_a_duplicate_may_credit_
 
 
 def test_ledger_rejects_a_check_outside_the_case(case, attempt, write_ledger):
+    """Crediting the unknown check "invented-check" raises "outside the case"."""
     write_ledger(attempt, {A: ("supported", ("invented-check",)), B: ("not_actionable", ())})
 
     with pytest.raises(ValueError, match="outside the case"):
@@ -91,6 +100,7 @@ def test_ledger_rejects_a_check_outside_the_case(case, attempt, write_ledger):
 
 
 def test_ledger_rejects_check_credit_on_an_unsupported_report(case, attempt, write_ledger):
+    """A not_actionable report crediting a check fails ledger-v1 schema validation."""
     write_ledger(attempt, {A: ("not_actionable", ("create-missing-owner",)), B: ("not_actionable", ())})
 
     with pytest.raises(ValueError, match=r"ledger-v1\.schema"):
@@ -98,6 +108,7 @@ def test_ledger_rejects_check_credit_on_an_unsupported_report(case, attempt, wri
 
 
 def test_duplicate_must_name_a_canonical_report_that_is_not_a_duplicate(case, attempt, write_ledger):
+    """Marking both reports duplicate raises "not itself a duplicate"."""
     write_ledger(attempt, {A: ("duplicate", ()), B: ("duplicate", ())})
 
     with pytest.raises(ValueError, match="not itself a duplicate"):
@@ -105,6 +116,7 @@ def test_duplicate_must_name_a_canonical_report_that_is_not_a_duplicate(case, at
 
 
 def test_ledger_is_bound_to_the_exact_attempt_bytes(case, attempt, write_ledger):
+    """Appending a newline to the attempt file after the ledger is written invalidates the ledger."""
     write_ledger(attempt, {A: ("supported", ()), B: ("supported", ())})
     attempt.write_text(attempt.read_text(encoding="utf-8") + "\n", encoding="utf-8")
 
@@ -113,6 +125,7 @@ def test_ledger_is_bound_to_the_exact_attempt_bytes(case, attempt, write_ledger)
 
 
 def test_ledger_is_bound_to_the_pinned_commit(case, attempt, write_ledger, benchmark_project):
+    """A ledger whose source_commit is the base commit raises "does not identify this attempt"."""
     write_ledger(attempt, {A: ("supported", ()), B: ("supported", ())}, source_commit=benchmark_project.base)
 
     with pytest.raises(ValueError, match="does not identify this attempt"):
@@ -120,6 +133,7 @@ def test_ledger_is_bound_to_the_pinned_commit(case, attempt, write_ledger, bench
 
 
 def test_ledger_adjudicated_against_other_case_checks_is_rejected(case, attempt, write_ledger):
+    """A ledger with an all-zero checks_sha256 raises "other case checks"."""
     write_ledger(attempt, {A: ("supported", ()), B: ("supported", ())}, checks_sha256="0" * 64)
 
     with pytest.raises(ValueError, match="other case checks"):
@@ -127,6 +141,7 @@ def test_ledger_adjudicated_against_other_case_checks_is_rejected(case, attempt,
 
 
 def test_evidence_must_name_an_existing_line_of_the_pinned_source(case, attempt, write_ledger, benchmark_project):
+    """Evidence at views.py:3 passes without a source but fails against the repo where it does not exist."""
     ledger = write_ledger(attempt, {A: ("supported", ()), B: ("supported", ())})
     data = json.loads(ledger.read_text(encoding="utf-8"))
     data["records"][0]["evidence"] = [{"file": "views.py", "line": 3}]
@@ -138,6 +153,7 @@ def test_evidence_must_name_an_existing_line_of_the_pinned_source(case, attempt,
 
 
 def test_pending_reports_are_listed(case, attempt, write_ledger):
+    """A needs_review verdict on report A makes A the only pending report."""
     write_ledger(attempt, {A: ("needs_review", ()), B: ("supported", ())})
 
     assert _adjudicate(case, attempt).pending == (A,)

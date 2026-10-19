@@ -6,6 +6,7 @@ from cyberjury.review.selection import select_files
 
 
 def test_source_selection_accepts_unlisted_languages_and_records_unreadable_files(tmp_path):
+    """Rust, Solidity, Ruby, Elixir, and Makefile enter review, and binary, latin-1, and empty files are skipped."""
     for name in ("service.rs", "contract.sol", "handler.rb", "worker.ex", "Makefile"):
         (tmp_path / name).write_text("operation(input)\n", encoding="utf-8")
     (tmp_path / "binary.dat").write_bytes(b"\0binary")

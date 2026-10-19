@@ -102,8 +102,7 @@ class ReviewSession:
         return attempt
 
     def _bind_repository_judgment(self, request: ReviewAttemptRequest) -> None:
-        """Prevent resumable repository work from changing its judgment provenance."""
-        if self.intent.target.kind != "repository" or request.action != "run":
+        if self.intent.target.kind != "repository":
             return
         name = "judgment-configuration.json"
         expected_hash = request.judgment_configuration_sha256
@@ -225,8 +224,5 @@ class ReviewAttempt:
         )
 
     def _validate_terminal_outcome(self, *, complete: bool) -> None:
-        """Prevent the attempt terminal label from contradicting its domain result."""
-        if self.request.action != "run":
-            return
         if self._require("outcome").complete is not complete:
             raise ValueError("attempt terminal state contradicts its review outcome")

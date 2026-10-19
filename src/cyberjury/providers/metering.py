@@ -23,8 +23,6 @@ type ParseUpdate = Callable[[str], None]
 
 @dataclass(kw_only=True)
 class _ModelCallContext:
-    """Metadata and parse callback for one provider request."""
-
     role: str
     trigger: str = "provider_request"
     unit_id: str = ""
@@ -207,7 +205,6 @@ class MeteringProvider(Provider):
 
 
 def _usage_from_calls(calls: list[dict[str, object]]) -> dict[str, int]:
-    """Sum the token usage of every metered call record."""
     metered = [call for call in calls if "input_tokens" in call]
     usage = {
         "model_requests": len(metered),

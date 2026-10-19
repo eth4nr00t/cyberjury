@@ -14,7 +14,6 @@ from tests.support import git
 
 
 def _commit_symlink(repo: Path, target: bytes) -> str:
-    """Commit `app.py` and a `link.py` symlink whose stored target is exactly `target`."""
     repo.mkdir()
     git(repo, "init", "--quiet")
     (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
@@ -35,6 +34,7 @@ def _commit_symlink(repo: Path, target: bytes) -> str:
 
 
 def test_a_relative_internal_symlink_is_materialized(tmp_path):
+    """A committed link.py pointing at app.py is recreated as a symlink that reads "value = 1"."""
     repo = tmp_path / "repo"
     revision = _commit_symlink(repo, b"app.py")
 
@@ -56,6 +56,7 @@ def test_a_relative_internal_symlink_is_materialized(tmp_path):
     ],
 )
 def test_an_unsafe_symlink_fails_materialization_and_leaves_nothing_behind(monkeypatch, tmp_path, target, message):
+    """Absolute, escaping, dangling, non-UTF-8, or oversized targets raise and remove the temporary root."""
     repo = tmp_path / "repo"
     revision = _commit_symlink(repo, target)
     created = []

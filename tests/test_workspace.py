@@ -34,6 +34,7 @@ def _simulate_process_exit(attempt: AttemptWorkspace) -> None:
 
 
 def test_session_and_attempt_use_private_json_files_only(tmp_path):
+    """A session holds only session.json, review.json, attempts at 0700, and the attempt files are 0600."""
     session = _session(tmp_path, "a")
     session.write_json_once("review.json", {"schema": "test.review/v1"})
     attempt = session.start_attempt({"schema": "test.request/v1"})
@@ -47,6 +48,7 @@ def test_session_and_attempt_use_private_json_files_only(tmp_path):
 
 
 def test_a_second_attempt_cannot_start_while_one_is_running(tmp_path):
+    """Starting an attempt while one runs raises already running, and finishing it allows the next start."""
     session = _session(tmp_path, "b")
     attempt = session.start_attempt({"schema": "test.request/v1"})
 
@@ -58,6 +60,7 @@ def test_a_second_attempt_cannot_start_while_one_is_running(tmp_path):
 
 
 def test_reopening_session_marks_running_attempt_interrupted(tmp_path):
+    """Reopening after the lock holder exits marks the old attempt interrupted with finished_at set."""
     session = _session(tmp_path, "d")
     attempt = session.start_attempt({"schema": "test.request/v1"})
     _simulate_process_exit(attempt)
@@ -73,6 +76,7 @@ def test_reopening_session_marks_running_attempt_interrupted(tmp_path):
 
 
 def test_terminal_attempt_cannot_finish_again(tmp_path):
+    """Finishing a failed attempt again raises terminal state and leaves the stored state failed."""
     attempt = _session(tmp_path, "e").start_attempt({"schema": "test.request/v1"})
     attempt.finish(state="failed", detail={}, error={"code": "c", "type": "t", "message": "m"})
 
@@ -82,6 +86,7 @@ def test_terminal_attempt_cannot_finish_again(tmp_path):
 
 
 def test_attempt_state_identity_must_match_its_directory(tmp_path):
+    """An attempt.json whose attempt_id differs from its directory raises WorkspaceCorruptionError."""
     session = _session(tmp_path, "f")
     attempt = session.start_attempt({"schema": "test.request/v1"})
     attempt.finish(state="complete", detail={})
@@ -95,6 +100,7 @@ def test_attempt_state_identity_must_match_its_directory(tmp_path):
 
 
 def test_locator_reuses_active_session_and_can_publish_a_new_one(tmp_path):
+    """Reusing returns the same session without creating it, and not reusing publishes a new active session."""
     locator = SessionLocator.open(tmp_path, namespace="reviews")
     key = "3" * 64
 
@@ -110,6 +116,7 @@ def test_locator_reuses_active_session_and_can_publish_a_new_one(tmp_path):
 
 
 def test_locator_session_id_must_match_requested_kind(tmp_path):
+    """A locator entry rewritten to a fetch- session id raises WorkspaceCorruptionError for a review."""
     locator = SessionLocator.open(tmp_path, namespace="reviews")
     key = "c" * 64
     locator.select_with_state(key, kind="review", reuse=True)
@@ -123,6 +130,7 @@ def test_locator_session_id_must_match_requested_kind(tmp_path):
 
 
 def test_existing_state_root_permissions_are_not_changed(tmp_path):
+    """A pre-existing 0755 state root keeps its mode while the created reviews namespace is 0700."""
     root = tmp_path / "shared"
     root.mkdir(mode=0o755)
 
@@ -138,6 +146,7 @@ def test_existing_state_root_permissions_are_not_changed(tmp_path):
 
 
 def test_namespace_symlink_is_rejected(tmp_path):
+    """A reviews namespace that is a symlink to another directory raises ValueError naming symlink."""
     root = tmp_path / "state"
     root.mkdir(mode=0o700)
     elsewhere = tmp_path / "elsewhere"
@@ -154,6 +163,7 @@ def test_namespace_symlink_is_rejected(tmp_path):
 
 
 def test_session_rejects_traversal_and_symlink_roots(tmp_path):
+    """A review-../escape session id and a state root that is a symlink each raise ValueError."""
     with pytest.raises(ValueError, match="session id"):
         SessionWorkspace.open_or_create(
             tmp_path,
@@ -176,6 +186,7 @@ def test_session_rejects_traversal_and_symlink_roots(tmp_path):
 
 
 def test_public_atomic_json_round_trips_with_private_permissions(tmp_path):
+    """Two atomic writes leave the second value readable in a file with mode 0600."""
     path = tmp_path / "outcome.json"
 
     write_json_atomic(path, {"complete": True})
@@ -186,6 +197,7 @@ def test_public_atomic_json_round_trips_with_private_permissions(tmp_path):
 
 
 def test_public_json_helpers_reject_artifact_symlinks(tmp_path):
+    """Writing via an outcome.json symlink raises ValueError, and reading it raises WorkspaceCorruptionError."""
     target = tmp_path / "target.json"
     target.write_text("{}")
     link = tmp_path / "outcome.json"
@@ -198,6 +210,7 @@ def test_public_json_helpers_reject_artifact_symlinks(tmp_path):
 
 
 def test_public_json_reader_rejects_duplicate_keys(tmp_path):
+    """A file repeating the complete key raises WorkspaceCorruptionError for duplicate JSON key."""
     path = tmp_path / "outcome.json"
     path.write_text('{"complete":true,"complete":false}')
 
@@ -226,6 +239,7 @@ def _older_session_schema(session):
 
 @pytest.mark.parametrize("age", [_older_attempt_layout, _older_attempt_schema, _older_session_schema])
 def test_an_older_session_format_is_reported_as_unsupported(tmp_path, age):
+    """A legacy status.json layout or v0 attempt or session schema raises an error suggesting --fresh."""
     session = _session(tmp_path, "7")
     age(session)
 

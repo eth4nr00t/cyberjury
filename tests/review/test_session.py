@@ -26,21 +26,19 @@ from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.sources.snapshot import SourceSnapshot
 
 
-def _request(action: str = "run") -> ReviewAttemptRequest:
+def _request() -> ReviewAttemptRequest:
     seat = ProviderSeatRecord(
-        seat_id=seat_identity("mock", "mock", "default", None),
+        seat_id=seat_identity("mock", "mock", "default"),
         provider="mock",
         model="mock",
         endpoint_identity="default",
-        wire_api=None,
     )
     return ReviewAttemptRequest(
-        action=action,
         engine_version="test",
-        concurrency=ConcurrencyRecord(review=1) if action == "run" else None,
-        dry_run=True if action == "run" else None,
-        fresh=False if action in {"run", "scaffold"} else None,
-        providers=(ProviderPlanRecord(retries=None, timeout_seconds=None, seat=seat) if action == "run" else None),
+        concurrency=ConcurrencyRecord(review=1),
+        dry_run=True,
+        fresh=False,
+        providers=ProviderPlanRecord(retries=None, timeout_seconds=None, seat=seat),
     )
 
 
@@ -76,13 +74,15 @@ _FACTS = FactsReceipt.create(backend_id="test", facts=Facts())
 
 
 def test_same_review_intent_reuses_session_with_distinct_attempts(tmp_path):
+    """Two attempts for one repository intent share a session directory and leave two attempt folders."""
     intent = ReviewIntent(target=TargetInput(kind="repository", repository=str(tmp_path)))
     first_session = ReviewSession.select_active(tmp_path, intent, reuse=True)
-    first = first_session.start_attempt(_request("scaffold"))
+    first = first_session.start_attempt(_request())
     _bind_source(first, tmp_path)
+    _record_run_artifacts(first)
     first.complete(exit_code=0)
     second_session = ReviewSession.select_active(tmp_path, intent, reuse=True)
-    second = second_session.start_attempt(_request("run"))
+    second = second_session.start_attempt(_request())
 
     assert first_session.workspace.path == second_session.workspace.path
     assert first.workspace.attempt_id != second.workspace.attempt_id
@@ -90,6 +90,7 @@ def test_same_review_intent_reuses_session_with_distinct_attempts(tmp_path):
 
 
 def test_review_attempt_request_is_the_persisted_request(tmp_path):
+    """The request.json of a base..HEAD diff attempt equals the request's to_dict(), including fresh=None."""
     intent = ReviewIntent(target=TargetInput(kind="diff", repository="/repo", git_range="base..HEAD"))
     request = replace(_request(), fresh=None)
     attempt = ReviewSession.create(tmp_path, intent).start_attempt(request)
@@ -98,6 +99,7 @@ def test_review_attempt_request_is_the_persisted_request(tmp_path):
 
 
 def test_safe_error_redacts_and_bounds_sensitive_values():
+    """Bearer headers, api key, and token values are removed and the message stays within 2000 chars."""
     secret = (
         "Authorization: Bearer super-secret "
         "headers={'Authorization': 'Bearer dict-secret'} "
@@ -110,6 +112,7 @@ def test_safe_error_redacts_and_bounds_sensitive_values():
 
 
 def test_independent_reviews_of_the_same_intent_have_unique_ids(tmp_path):
+    """Two ReviewSession.create calls for one base..HEAD diff intent get different session ids."""
     intent = ReviewIntent(target=TargetInput(kind="diff", repository="/repo", git_range="base..HEAD"))
 
     first = ReviewSession.create(tmp_path, intent)
@@ -119,6 +122,7 @@ def test_independent_reviews_of_the_same_intent_have_unique_ids(tmp_path):
 
 
 def test_repository_judgment_change_requires_a_fresh_session(tmp_path):
+    """A different engine_version on a used session raises a --fresh hint, and a new session accepts it."""
     intent = ReviewIntent(target=TargetInput(kind="repository", repository=str(tmp_path)))
     session = ReviewSession.select_active(tmp_path, intent, reuse=True)
     first = session.start_attempt(_request())
@@ -139,6 +143,7 @@ def test_repository_judgment_change_requires_a_fresh_session(tmp_path):
 
 
 def test_repository_concurrency_change_can_resume_same_judgment(tmp_path):
+    """Raising review concurrency to 4 reuses the session and judgment-configuration.json in a new attempt."""
     intent = ReviewIntent(target=TargetInput(kind="repository", repository=str(tmp_path)))
     session = ReviewSession.select_active(tmp_path, intent, reuse=True)
     first = session.start_attempt(_request())
@@ -160,11 +165,13 @@ def test_repository_concurrency_change_can_resume_same_judgment(tmp_path):
 
 
 def test_attempt_state_records_the_terminal_state_and_exit_code(tmp_path):
+    """The attempt.json state goes from running to complete with exit_code 0, and every receipt file is written."""
     intent = ReviewIntent(target=TargetInput(kind="repository", repository=str(tmp_path)))
     state = tmp_path.parent / f"{tmp_path.name}-state"
-    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request("scaffold"))
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
     assert json.loads((attempt.workspace.path / "attempt.json").read_text())["state"] == "running"
     _bind_source(attempt, tmp_path)
+    _record_run_artifacts(attempt)
     attempt.complete(exit_code=0)
 
     recorded = json.loads((attempt.workspace.path / "attempt.json").read_text())
@@ -175,9 +182,10 @@ def test_attempt_state_records_the_terminal_state_and_exit_code(tmp_path):
 
 
 def test_a_receipt_cannot_bind_before_the_receipt_it_extends(tmp_path):
+    """Binding a unit plan before any facts receipt raises ValueError about no bound facts."""
     intent = ReviewIntent(target=TargetInput(kind="repository", repository=str(tmp_path)))
     state = tmp_path.parent / f"{tmp_path.name}-state"
-    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request("scaffold"))
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
     attempt.bind_target(ResolvedTarget(kind="repository", repository_root=str(tmp_path.resolve())))
     attempt.bind_snapshot(SourceSnapshot.capture(tmp_path, ()))
     attempt.bind_contract(ContractReceipt.capture())
@@ -187,6 +195,7 @@ def test_a_receipt_cannot_bind_before_the_receipt_it_extends(tmp_path):
 
 
 def test_terminal_state_must_match_the_review_outcome(tmp_path):
+    """Completing with exit code 0 when the outcome records one error raises a terminal state error."""
     intent = ReviewIntent(target=TargetInput(kind="repository", repository=str(tmp_path)))
     state = tmp_path.parent / f"{tmp_path.name}-state"
     attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())

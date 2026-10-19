@@ -57,7 +57,7 @@ def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Pa
     if not attempt.complete:
         raise ValueError(f"{attempt.path} is not a complete review")
     if ledger["checks_sha256"] != checks_sha256(case):
-        raise ValueError(f"{attempt.ledger_path} was adjudicated against other case checks; adjudicate it again")
+        raise ValueError(f"{attempt.ledger_path} was adjudicated against other case checks, adjudicate it again")
     records = {record["candidate_id"]: record for record in ledger["records"]}
     if len(records) != len(ledger["records"]) or set(records) != set(attempt.findings):
         raise ValueError(f"{attempt.ledger_path} must assess every report of the attempt exactly once")

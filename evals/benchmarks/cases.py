@@ -34,9 +34,17 @@ def expected_checks(case: BenchmarkCase) -> list[dict]:
     return [check.to_dict() for check in case.checks]
 
 
+def _ordered(check: dict) -> dict:
+    return {
+        key: sorted(value, key=lambda item: json.dumps(item, sort_keys=True)) if isinstance(value, list) else value
+        for key, value in check.items()
+    }
+
+
 def checks_sha256(case: BenchmarkCase) -> str:
-    """Return the digest of the case checks that a ledger is adjudicated against."""
-    return sha256(json.dumps(expected_checks(case), sort_keys=True).encode()).hexdigest()
+    """Return the order-independent digest of the case checks that a ledger is adjudicated against."""
+    checks = sorted((_ordered(check) for check in expected_checks(case)), key=lambda check: check["id"])
+    return sha256(json.dumps(checks, sort_keys=True).encode()).hexdigest()
 
 
 def public_benchmarks() -> list[Path]:

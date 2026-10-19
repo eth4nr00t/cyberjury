@@ -5,6 +5,7 @@ from tests.review.syntax.support import callgraph, syntax_facts
 
 
 def test_an_empty_tree_yields_empty_facts(tmp_path):
+    """A tree holding only notes.md produces facts equal to an empty Facts()."""
     (tmp_path / "notes.md").write_text("no code here\n")
     facts = syntax_facts(tmp_path)
     assert facts == Facts()
@@ -23,6 +24,7 @@ def _chain(root):
 
 
 def test_a_four_hop_chain_is_recovered_edge_by_edge(tmp_path):
+    """Each of get_order, handle_request, load_order, and run_query records the next hop as its callee."""
     graph = callgraph(_chain(tmp_path))
     assert graph["app/routes.py"]["get_order"][0]["calls"] == ["handle_request"]
     assert graph["app/handler.py"]["handle_request"][0]["calls"] == ["load_order"]
@@ -30,6 +32,7 @@ def test_a_four_hop_chain_is_recovered_edge_by_edge(tmp_path):
 
 
 def test_syntax_facts_persist_candidates_without_a_resolvedcallgraph(tmp_path):
+    """The routes-handler-repository chain yields call relationships with candidate callee definition ids."""
     facts = syntax_facts(_chain(tmp_path))
 
     evidence = facts.relationships

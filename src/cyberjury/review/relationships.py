@@ -24,7 +24,6 @@ def _stable_id(prefix: str, *parts: object) -> str:
 
 
 def _candidate_name(value: str) -> str:
-    """Return one language neutral declaration spelling for broad candidate recall."""
     return value.rsplit(".", 1)[-1]
 
 

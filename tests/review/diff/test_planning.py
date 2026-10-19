@@ -15,10 +15,12 @@ _DETECTION = load_detection()
 
 
 def test_diff_unit_planners_return_an_empty_worklist_for_empty_input(tmp_path):
+    """An empty diff string with no definitions plans no units."""
     assert prepare_diff_units("", root=tmp_path, detection=_DETECTION, definitions=()) == []
 
 
 def test_diff_unit_planning_rejects_repeated_file_sections_before_losing_a_hunk(tmp_path):
+    """Two diff sections for a.py raise "repeated file sections for a.py" instead of dropping one."""
     (tmp_path / "a.py").write_text("x = 2\n", encoding="utf-8")
     first = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -1 +1 @@\n+x = 1\n"
     second = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -2 +2 @@\n+y = 2\n"
@@ -28,11 +30,13 @@ def test_diff_unit_planning_rejects_repeated_file_sections_before_losing_a_hunk(
 
 
 def test_diff_unit_planning_rejects_an_unidentified_file_section(tmp_path):
+    """A bare hunk with no diff --git header raises "without a source path"."""
     with pytest.raises(ValueError, match="without a source path"):
         prepare_diff_units("@@ -1 +1 @@\n+unbound source\n", root=tmp_path, detection=_DETECTION, definitions=())
 
 
 def test_diff_unit_planning_rejects_a_malformed_hunk_after_a_valid_one(tmp_path):
+    """A "@@ corrupted @@" header after a valid hunk raises "malformed unified diff hunk header"."""
     (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
     diff = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -0,0 +1 @@\n+x = 1\n@@ corrupted @@\n+hidden = 2\n"
 
@@ -41,6 +45,7 @@ def test_diff_unit_planning_rejects_a_malformed_hunk_after_a_valid_one(tmp_path)
 
 
 def test_diff_unit_planning_rejects_an_unprefixed_line_inside_a_hunk(tmp_path):
+    """A hunk line without a +, -, or space prefix raises "malformed unified diff hunk body"."""
     (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
     diff = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -0,0 +1,2 @@\n+x = 1\nnot a diff line\n+hidden = 2\n"
 
@@ -49,6 +54,7 @@ def test_diff_unit_planning_rejects_an_unprefixed_line_inside_a_hunk(tmp_path):
 
 
 def test_changed_definition_mapping_keeps_deletion_and_enclosing_definitions(tmp_path):
+    """A deleted require_admin line inside View.handle marks both View and handle as changed."""
     source = "class View(Base):\n    def handle(self):\n        require_admin(self)\n        return sensitive()\n"
     (tmp_path / "view.py").write_text(source)
     method_start = source.index("    def")
@@ -70,6 +76,7 @@ def test_changed_definition_mapping_keeps_deletion_and_enclosing_definitions(tmp
 
 
 def test_adjacent_definition_end_does_not_claim_the_next_line(tmp_path):
+    """Changing the first line of b(), directly after a() ends, marks only b as changed."""
     first = "def a():\n    return 1\n"
     second = "def b():\n    return 2\n"
     (tmp_path / "app.py").write_text(first + second)
@@ -85,6 +92,7 @@ def test_adjacent_definition_end_does_not_claim_the_next_line(tmp_path):
 
 
 def test_definition_unit_planner_groups_seeds_by_file_in_seed_order():
+    """Seeds View, post, get yield a views.py plan (View, get) then other.py (post) with no seed files."""
     view = definition("views.py", "View", 0, 100)
     method = definition("views.py", "get", 20, 60)
     other = definition("other.py", "post", 0, 80)
@@ -107,6 +115,7 @@ def _two_changed_files(tmp_path, body_chars):
 
 
 def test_diff_surface_packing_does_not_charge_lazy_seed_definitions_to_context_budget(tmp_path):
+    """Two 100k-char definitions stay in one unit under a 1k-char patch target."""
     diff, definitions = _two_changed_files(tmp_path, 100_000)
     settings = replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1_000)
 
@@ -116,6 +125,7 @@ def test_diff_surface_packing_does_not_charge_lazy_seed_definitions_to_context_b
 
 
 def test_diff_surface_packing_bounds_the_lazy_definition_catalog(tmp_path):
+    """With max_definition_evidence_items_per_unit=1, two changed definitions split into two units."""
     diff, definitions = _two_changed_files(tmp_path, 100)
     settings = replace(DEFAULT_REVIEW_SETTINGS.diff, max_definition_evidence_items_per_unit=1)
 
@@ -125,6 +135,7 @@ def test_diff_surface_packing_bounds_the_lazy_definition_catalog(tmp_path):
 
 
 def test_an_unreadable_changed_source_fails_planning_instead_of_hiding_its_definitions(tmp_path):
+    """A non-UTF-8 app.py raises BackendUnavailable "diff planning could not read source app.py"."""
     (tmp_path / "app.py").write_bytes(b"def app():\n    return '\xff'\n")
     definitions = (definition("app.py", "app", 0, 10),)
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-def old():\n+def app():\n"
@@ -134,6 +145,7 @@ def test_an_unreadable_changed_source_fails_planning_instead_of_hiding_its_defin
 
 
 def test_a_deleted_changed_source_has_no_changed_definitions(tmp_path):
+    """A diff deleting gone.py to /dev/null maps to no changed definitions."""
     definitions = (definition("gone.py", "gone", 0, 10),)
     diff = "diff --git a/gone.py b/gone.py\n--- a/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-def gone():\n"
 

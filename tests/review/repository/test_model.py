@@ -18,6 +18,7 @@ _FACTS = FactsReceipt.create(backend_id="test", facts=Facts())
 
 
 def test_build_units_binds_candidate_definitions_to_their_source_window(tmp_path):
+    """A single route definition yields one route.py unit over the whole file seeded with that definition."""
     source = "def route(value):\n    return value\n"
     (tmp_path / "route.py").write_text(source)
     route = definition("route.py", "route", 0, len(source), source=source)
@@ -35,6 +36,7 @@ def test_build_units_binds_candidate_definitions_to_their_source_window(tmp_path
 
 
 def test_oversized_source_keeps_bounded_windows(tmp_path, monkeypatch):
+    """A 40-character unit limit splits one large class into several units of at most 40 characters."""
     monkeypatch.setattr(
         repository_model,
         "_SETTINGS",
@@ -49,6 +51,7 @@ def test_oversized_source_keeps_bounded_windows(tmp_path, monkeypatch):
 
 
 def test_repository_unit_plan_records_intentional_hard_split_overlap(tmp_path):
+    """A 30,000-space file splits into slices where consecutive windows overlap by 2,000 characters."""
     (tmp_path / "large.py").write_text(" " * 30_000)
     units = build_units(tmp_path, ["large.py"], ())
 
@@ -63,6 +66,7 @@ def test_repository_unit_plan_records_intentional_hard_split_overlap(tmp_path):
 
 
 def test_build_units_keeps_root_level_sources_separate(tmp_path):
+    """Root files app.py and services.py each get their own whole-file unit."""
     (tmp_path / "app.py").write_text("entry")
     (tmp_path / "services.py").write_text("service")
 
@@ -75,6 +79,7 @@ def test_build_units_keeps_root_level_sources_separate(tmp_path):
 
 
 def test_build_units_covers_each_source_once(tmp_path):
+    """An entry file plus 25 pkg services of 24 KB yield 26 units, each with complete gathered coverage."""
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "entry.py").write_text("entry")
     targets = []
@@ -92,6 +97,7 @@ def test_build_units_covers_each_source_once(tmp_path):
 
 
 def test_build_units_splits_a_large_file_into_overlapping_windows(tmp_path):
+    """A 60,000-character views.py yields views.py#1 to #3, with overlap and full coverage to the end."""
     (tmp_path / "views.py").write_text("x" * 60_000)
     units = build_units(str(tmp_path), ["views.py"], ())
     assert [u.name for u in units] == ["views.py#1", "views.py#2", "views.py#3"]
@@ -101,6 +107,7 @@ def test_build_units_splits_a_large_file_into_overlapping_windows(tmp_path):
 
 
 def test_spans_snaps_a_window_to_a_top_level_construct_boundary():
+    """A file with two long functions splits so the second window begins at 'def g'."""
     a = "def f():\n" + "    x = 1\n" * 2000
     text = a + "def g():\n" + "    y = 2\n" * 2000
     spans = char_spans(text)
@@ -109,6 +116,7 @@ def test_spans_snaps_a_window_to_a_top_level_construct_boundary():
 
 
 def test_spans_keep_a_decorator_with_its_definition():
+    """A window boundary near a decorated function starts at '@require_admin', not at its def line."""
     prefix = "x = 1\n" * 3_300
     text = prefix + "@require_admin\ndef sensitive():\n" + "    x = 1\n" * 500
 

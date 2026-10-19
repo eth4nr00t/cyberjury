@@ -113,7 +113,6 @@ def build_units(
 
 
 def _bind_source_definition_plans(units: list[Unit], definitions: tuple[DefinitionEvidence, ...]) -> list[Unit]:
-    """Bind source windows to exact definitions without creating duplicate review work."""
     by_file: dict[str, list[DefinitionEvidence]] = {}
     for definition in definitions:
         if definition.kind != "file":
@@ -144,7 +143,6 @@ def _bind_source_definition_plans(units: list[Unit], definitions: tuple[Definiti
 
 
 def _source_unit_overlap(unit: Unit, definition: DefinitionEvidence) -> int:
-    """Measure exact source overlap for deterministic single unit ownership."""
     start, end = unit.span
     return max(0, min(end, definition.source.end) - max(start, definition.source.start))
 

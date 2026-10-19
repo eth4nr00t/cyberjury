@@ -14,7 +14,7 @@ Workflow:
 
 `packets` writes the private label mapping to adjudication.private/mapping.json, outside the
 directory adjudicators read, unless --mapping names another path outside it. `ledger` reads the
-same default or --mapping. Report precision is supported / (supported + not_actionable); duplicate
+same default or --mapping. Report precision is supported / (supported + not_actionable). Duplicate
 and needs_review reports are counted separately.
 """
 
@@ -25,6 +25,7 @@ import json
 import sys
 from pathlib import Path
 
+from cyberjury.cli import positive_int
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 _EPILOG = (
@@ -76,7 +77,6 @@ def _cmd_diff(args) -> int:
     records = run(
         cases,
         workspace=workspace,
-        model_override=args.model,
         runs=args.runs,
         concurrency=args.concurrency,
         progress=_progress,
@@ -130,7 +130,7 @@ def _cmd_packets(args) -> int:
     references = counts["references"]
     if references is not None:
         if not any(references.values()):
-            print("references: no earlier verdicts were found for any case; adjudicators will see empty references")
+            print("references: no earlier verdicts were found for any case, so adjudicators will see empty references")
         for name, count in references.items():
             print(f"  references {name}: {count} earlier verdicts")
         if counts["reference_attempts_without_ledger"]:
@@ -200,11 +200,10 @@ def main(argv: list[str] | None = None) -> int:
         "diff", parents=[benchmark], help="run diff cases and record one attempt per case and run", allow_abbrev=False
     )
     d.add_argument("--case", default=None, help="run one exact case name")
-    d.add_argument("--model", default=None)
     d.add_argument("--runs", type=int, default=1, help="independent runs of every case")
     d.add_argument(
         "--concurrency",
-        type=int,
+        type=positive_int,
         default=DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
         help="diff unit reviews or issue link calls to run in parallel",
     )

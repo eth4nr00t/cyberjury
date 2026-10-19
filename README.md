@@ -16,7 +16,7 @@ by itself clear the repository.
 
 The review contract is data. One language-independent security reasoning kernel, one severity
 rubric, and the file classification rules live in `src/cyberjury/review/contract/`. Language
-support is the Tree-sitter query data in `src/cyberjury/review/syntax/queries.yaml`; a language
+support is the Tree-sitter query data in `src/cyberjury/review/syntax/queries.yaml`. A language
 without queries is still reviewed from its raw source. Each review records a hash of these files
 in `contract.json`.
 
@@ -28,19 +28,18 @@ listed as skipped in `outcome.json`.
 
 ```bash
 cyberjury review diff --repository /path/to/app --git-range origin/main...HEAD
-cyberjury review repository /path/to/repo --scaffold
-cyberjury review repository /path/to/repo --run
+cyberjury review repository /path/to/repo
 ```
 
-Re-running repository `--run` resumes open work. Use `--fresh` to start a new review session.
+Re-running a repository review resumes open work. Use `--fresh` to start a new review session.
 
 ## Output and Exit Codes
 
 Review commands print a JSON result and return a process style exit code. `0` means the requested
 action completed. Exit code `1` means the run was degraded or incomplete. Every finding the finder
-reports is kept; the review does not run a second model to delete findings.
+reports is kept, and the review does not run a second model to delete findings.
 
-Diff reviews and repository `--run` commands write `findings.json` and `outcome.json` in the review
+Diff and repository reviews write `findings.json` and `outcome.json` in the review
 attempt workspace.
 
 `findings.json` also groups findings into `issues`: findings that one code change fixes. Grouping
@@ -61,24 +60,15 @@ The `cyberjury install-slash-command` command installs `/cyberjury-review` for C
 
 ## Configure
 
-The CLI loads `.env` from the working directory. An exported shell value wins over the file.
-Set the provider and model you want. See [.env.example](.env.example) for the full template,
-including provider keys.
+All model settings come from a `.env` file in the working directory. An exported shell value wins
+over the file. Copy [.env.example](.env.example) to `.env` and fill in what you use:
 
-```bash
-export CYBERJURY_PROVIDER=openai
-export CYBERJURY_MODEL=gpt-5.6
-export CYBERJURY_RETRIES=2
-export CYBERJURY_TIMEOUT=240
-```
+| Setting | Meaning |
+|---|---|
+| `OPENAI_API_KEY` | OpenAI key. When it is set the review uses OpenAI. |
+| `ANTHROPIC_API_KEY` | Anthropic key, used when no OpenAI key is set. |
+| `CYBERJURY_MODEL` | Model name, default `gpt-5.6` for OpenAI and `claude-opus-5` for Anthropic. |
+| `CYBERJURY_API_BASE` | Gateway or proxy endpoint for the provider. |
 
-API keys and API bases are read only from the environment, so no key appears on a command line. The
-`--provider`, `--model`, `--wire-api`, `--retries`, and `--timeout` flags override the environment
-for one command. OpenAI calls use the Responses API unless
-`CYBERJURY_WIRE_API=chat` or `--wire-api chat` selects Chat Completions.
-
-## Model Guidance
-
-OpenAI is the default when `OPENAI_API_KEY` or `CYBERJURY_API_KEY` is set. Otherwise Anthropic
-is the default, and the default model follows the selected provider. One model finds the issues
-and also answers the issue grouping question, so use the strongest model you can.
+One model finds the issues and also answers the issue grouping question, so use the strongest
+model you can.

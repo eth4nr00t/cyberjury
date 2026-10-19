@@ -30,6 +30,7 @@ def _repository(root: Path) -> tuple[Path, str, str]:
 
 
 def test_two_dot_target_materializes_resolved_head(tmp_path):
+    """A base..head range patches from base, and the materialized root holds app.py as head without .git."""
     repository, base, head = _repository(tmp_path / "repo")
 
     target = resolve_diff_target(repository, f"{base}..{head}")
@@ -46,6 +47,7 @@ def test_two_dot_target_materializes_resolved_head(tmp_path):
 
 
 def test_three_dot_target_keeps_left_endpoint_and_unique_merge_base(tmp_path):
+    """A left...right range patches from the merge base, so right.txt appears and left.txt does not."""
     repository = tmp_path / "repo"
     repository.mkdir()
     git(repository, "init", "--quiet")
@@ -77,6 +79,7 @@ def test_three_dot_target_keeps_left_endpoint_and_unique_merge_base(tmp_path):
 
 
 def test_resolved_target_is_immune_to_later_symbolic_ref_movement(tmp_path):
+    """A base..HEAD target keeps the original head commit after a later commit moves HEAD."""
     repository, base, head = _repository(tmp_path / "repo")
     target = resolve_diff_target(repository, f"{base}..HEAD")
     (repository / "app.py").write_text("later\n", encoding="utf-8")
@@ -92,6 +95,7 @@ def test_resolved_target_is_immune_to_later_symbolic_ref_movement(tmp_path):
 
 
 def test_diff_target_uses_git_top_level_for_subdirectory_input(tmp_path):
+    """Resolving from the src subdirectory reports the repository top level as repository_root."""
     repository, base, head = _repository(tmp_path / "repo")
     subdirectory = repository / "src"
     subdirectory.mkdir()
@@ -106,6 +110,7 @@ def test_diff_target_uses_git_top_level_for_subdirectory_input(tmp_path):
     ["HEAD", "..HEAD", "HEAD..", "HEAD..HEAD..HEAD", "HEAD HEAD"],
 )
 def test_diff_target_rejects_noncommitted_or_option_like_ranges(tmp_path, git_range):
+    """HEAD, ..HEAD, HEAD.., HEAD..HEAD..HEAD, and HEAD HEAD all raise TargetResolutionError."""
     repository, _base, _head = _repository(tmp_path / "repo")
 
     with pytest.raises(TargetResolutionError):
@@ -113,6 +118,7 @@ def test_diff_target_rejects_noncommitted_or_option_like_ranges(tmp_path, git_ra
 
 
 def test_option_like_git_range_cannot_write_an_output_file(tmp_path):
+    """A --output=<path> range is rejected as a Git option and no patch file is created."""
     repository, _base, _head = _repository(tmp_path / "repo")
     unexpected = tmp_path / "unexpected.patch"
 
@@ -123,6 +129,7 @@ def test_option_like_git_range_cannot_write_an_output_file(tmp_path):
 
 
 def test_operator_git_diff_configuration_does_not_change_patch(tmp_path):
+    """Setting diff.renames, diff.external, color.ui, core.abbrev and similar leaves patch and hash unchanged."""
     repository, base, head = _repository(tmp_path / "repo")
     first = resolve_diff_target(repository, f"{base}..{head}")
     git(repository, "config", "diff.renames", "true")
@@ -139,6 +146,7 @@ def test_operator_git_diff_configuration_does_not_change_patch(tmp_path):
 
 
 def test_git_materialization_uses_exact_blobs_without_smudge_filter(tmp_path):
+    """A configured smudge filter on *.txt is skipped, so value.txt materializes as blob-head."""
     repository = tmp_path / "repo"
     repository.mkdir()
     git(repository, "init", "--quiet")
@@ -157,6 +165,7 @@ def test_git_materialization_uses_exact_blobs_without_smudge_filter(tmp_path):
 
 
 def test_canonical_patch_keeps_the_default_rename_representation(tmp_path):
+    """With diff.renames=false configured, the patch still shows rename from before.py to after.py."""
     repository = tmp_path / "repo"
     repository.mkdir()
     git(repository, "init", "--quiet")
@@ -176,6 +185,7 @@ def test_canonical_patch_keeps_the_default_rename_representation(tmp_path):
 
 
 def test_diff_target_fails_loud_when_head_contains_unacquired_submodule(tmp_path):
+    """A gitlink entry at lib/dependency in HEAD raises TargetResolutionError mentioning submodules."""
     repository, base, _head = _repository(tmp_path / "repo")
     git(repository, "update-index", "--add", "--cacheinfo", f"160000,{base},lib/dependency")
     git(repository, "commit", "--quiet", "-m", "gitlink")
@@ -185,6 +195,7 @@ def test_diff_target_fails_loud_when_head_contains_unacquired_submodule(tmp_path
 
 
 def test_repository_target_requires_a_real_nonsymlink_directory(tmp_path):
+    """A real directory resolves, while a symlink to it raises TargetResolutionError."""
     repository = tmp_path / "repo"
     repository.mkdir()
     link = tmp_path / "link"
@@ -196,6 +207,7 @@ def test_repository_target_requires_a_real_nonsymlink_directory(tmp_path):
 
 
 def test_diff_target_fails_loud_before_returning_an_oversized_patch(monkeypatch, tmp_path):
+    """With the patch byte limit set to 1, resolving raises patch exceeds the byte limit."""
     repository, base, _head = _repository(tmp_path / "repo")
     monkeypatch.setattr(gitmod, "_MAX_PATCH_BYTES", 1)
 

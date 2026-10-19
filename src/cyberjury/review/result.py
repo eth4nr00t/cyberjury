@@ -200,7 +200,7 @@ class FindingRecord:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class IssueRecord:
-    """Findings one code change fixes; every member stays a reported finding."""
+    """Findings one code change fixes. Every member stays a reported finding."""
 
     id: str
     representative: str

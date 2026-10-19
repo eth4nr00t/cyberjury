@@ -297,7 +297,6 @@ def _nearest_definition(node: Node, definitions: tuple[tuple[Node, Node], ...]) 
 
 
 def _definition_nodes(root: Node, language: Language, spec: LangSpec) -> tuple[tuple[Node, Node], ...]:
-    """Prefer the widest syntax wrapper for each exact declared name."""
     from tree_sitter import Query, QueryCursor
 
     by_name_range: dict[tuple[int, int], tuple[Node, Node]] = {}
@@ -315,8 +314,6 @@ def _definition_nodes(root: Node, language: Language, spec: LangSpec) -> tuple[t
 
 @dataclass(frozen=True, kw_only=True)
 class _ParsedTree:
-    """One parsed file with the definition nodes and character offsets every extractor shares."""
-
     source: bytes
     root: Node
     language: Language
@@ -461,7 +458,6 @@ def _definitions(tree: _ParsedTree, file: str) -> tuple[AnalyzedDefinition, ...]
 
 
 def _definition_signature(source: bytes, node: Node, identifier: Node) -> str:
-    """Render one compact syntax signature without language binding claims."""
     parameters = _parameters_node(node)
     if parameters is None:
         return _text(source, identifier)
@@ -596,7 +592,6 @@ def _qualified_uses(tree: _ParsedTree) -> tuple[AnalyzedQualifiedUse, ...]:
 
 
 def _structural_relationships(tree: _ParsedTree) -> tuple[AnalyzedStructuralRelationship, ...]:
-    """Extract exact structural syntax while leaving every target unresolved."""
     from tree_sitter import Query, QueryCursor
 
     source, root, language, spec, offsets = tree.source, tree.root, tree.language, tree.spec, tree.offsets

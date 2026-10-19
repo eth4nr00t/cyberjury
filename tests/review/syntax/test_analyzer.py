@@ -21,6 +21,7 @@ from tests.review.syntax.support import callgraph, syntax_facts
 
 
 def test_specs_ship_a_grammar_and_every_query_per_language():
+    """Each spec's queries compile against its grammar and declare the captures the analyzer reads."""
     from tree_sitter import Language, Query
 
     specs = load_specs()
@@ -59,29 +60,15 @@ def test_specs_ship_a_grammar_and_every_query_per_language():
 
 
 def test_every_language_whose_imports_name_a_symbol_ships_an_imports_query():
+    """Python, JavaScript, TypeScript, and TSX define import queries, and Go defines none."""
     specs = load_specs()
     for name in ("python", "javascript", "typescript", "tsx"):
         assert specs[name].imports, name
     assert specs["go"].imports == ()
 
 
-def test_language_specs_contain_syntax_configuration_only():
-    specs = load_specs()
-
-    forbidden = {
-        "resolution_languages",
-        "unqualified_call_scope",
-        "package_name_query",
-        "module_entries",
-        "local_receivers",
-        "default_exports",
-        "namespace_resolves_directory",
-        "namespace_binds",
-    }
-    assert all(not forbidden.intersection(vars(spec)) for spec in specs.values())
-
-
 def test_nul_parse_failure_becomes_a_source_limitation(tmp_path):
+    """A NUL byte inside a TS template literal marks render.ts unparsable while ok.ts keeps its graph."""
     source = b"export function render(value: string) {\n  return `${value}\x00${value}`;\n}\n"
     path = tmp_path / "render.ts"
     path.write_bytes(source)
@@ -96,6 +83,7 @@ def test_nul_parse_failure_becomes_a_source_limitation(tmp_path):
 
 
 def test_nul_in_code_uses_the_same_source_limitation_contract(tmp_path):
+    """A NUL byte inside a TS function name yields an unparsable limitation for render.ts."""
     (tmp_path / "render.ts").write_bytes(b"export function \x00render() { return true; }\n")
 
     facts = syntax_facts(tmp_path)
@@ -105,6 +93,7 @@ def test_nul_in_code_uses_the_same_source_limitation_contract(tmp_path):
 
 
 def test_definition_target_query_rejects_an_unknown_grammar_node(tmp_path):
+    """A misspelled node type in the definitions query raises AnalyzerConfigurationError "invalid query"."""
     specs = load_specs()
     specs["python"] = replace(
         specs["python"],
@@ -117,6 +106,7 @@ def test_definition_target_query_rejects_an_unknown_grammar_node(tmp_path):
 
 
 def test_one_extension_maps_to_one_language():
+    """No file extension is claimed by more than one language spec."""
     seen: dict[str, str] = {}
     for name, spec in load_specs().items():
         for ext in spec.extensions:
@@ -125,6 +115,7 @@ def test_one_extension_maps_to_one_language():
 
 
 def test_invalid_utf8_source_is_a_facts_limitation(tmp_path):
+    """A 0xff byte in app.py yields a "not valid UTF-8" limitation and only ok.py keeps facts."""
     (tmp_path / "app.py").write_bytes(b"def route():\n    return 1\n# \xff\n")
     (tmp_path / "ok.py").write_text("def ok():\n    return 1\n")
 
@@ -135,6 +126,7 @@ def test_invalid_utf8_source_is_a_facts_limitation(tmp_path):
 
 
 def test_a_definition_range_cuts_the_whole_definition_from_its_own_source(tmp_path):
+    """The range of target() slices exactly its two lines out of a file with neighbouring functions."""
     (tmp_path / "m.py").write_text(
         "def before():\n    return 0\n\n\ndef target():\n    return run_query()\n\n\ndef after():\n    return 2\n"
     )
@@ -144,6 +136,7 @@ def test_a_definition_range_cuts_the_whole_definition_from_its_own_source(tmp_pa
 
 
 def test_a_range_is_char_offsets_even_when_an_earlier_line_is_not_ascii(tmp_path):
+    """With "café" on an earlier line, the drink() range starts at its str index, not byte offset."""
     (tmp_path / "a.py").write_text('HEADER = "café"\n\n\ndef drink(x):\n    return 2\n')
     text = (tmp_path / "a.py").read_text()
     start, end = callgraph(tmp_path)["a.py"]["drink"][0]["range"]
@@ -152,6 +145,7 @@ def test_a_range_is_char_offsets_even_when_an_earlier_line_is_not_ascii(tmp_path
 
 
 def test_a_range_survives_crlf_line_endings(tmp_path):
+    """In a CRLF file the sink() range starts at the str index of "def sink"."""
     (tmp_path / "a.py").write_text("A = 1\r\nB = 2\r\nC = 3\r\n\r\ndef sink(x):\r\n    return x\r\n", newline="")
     text = (tmp_path / "a.py").read_text()
     start, end = callgraph(tmp_path)["a.py"]["sink"][0]["range"]
@@ -160,11 +154,13 @@ def test_a_range_survives_crlf_line_endings(tmp_path):
 
 
 def test_a_method_call_resolves_to_the_bare_callee_name(tmp_path):
+    """A TS call service.readOne(key) is recorded as the callee "readOne"."""
     (tmp_path / "a.ts").write_text("function outer() {\n  return service.readOne(key);\n}\n")
     assert callgraph(tmp_path)["a.ts"]["outer"][0]["calls"] == ["readOne"]
 
 
 def test_an_untyped_member_call_remains_unresolved_syntax(tmp_path):
+    """A client.get() call with two classes defining get records "get" but no candidate target ids."""
     (tmp_path / "views.py").write_text(
         "class A:\n    def get(self):\n        return 1\n\n"
         "class B:\n    def get(self):\n        return 2\n\n"
@@ -178,6 +174,7 @@ def test_an_untyped_member_call_remains_unresolved_syntax(tmp_path):
 
 
 def test_a_local_receiver_call_remains_a_syntax_observation(tmp_path):
+    """A self.inner() call records the callee "inner" without resolving it to Service.inner."""
     (tmp_path / "service.py").write_text(
         "class Service:\n    def outer(self):\n        return self.inner()\n\n    def inner(self):\n        return 1\n"
     )
@@ -189,21 +186,25 @@ def test_a_local_receiver_call_remains_a_syntax_observation(tmp_path):
 
 
 def test_python_recursion_is_preserved_as_an_unresolved_call_clue(tmp_path):
+    """A Python walk() calling itself keeps "walk" in its own call list."""
     (tmp_path / "r.py").write_text("def walk(n):\n    return walk(n - 1)\n")
     assert callgraph(tmp_path)["r.py"]["walk"][0]["calls"] == ["walk"]
 
 
 def test_typescript_recursion_is_preserved_as_an_unresolved_call_clue(tmp_path):
+    """A TypeScript walk() calling itself keeps "walk" in its own call list."""
     (tmp_path / "r.ts").write_text("function walk(n) {\n  return walk(n - 1);\n}\n")
     assert callgraph(tmp_path)["r.ts"]["walk"][0]["calls"] == ["walk"]
 
 
 def test_go_recursion_is_preserved_as_an_unresolved_call_clue(tmp_path):
+    """A Go walk() calling itself keeps "walk" in its own call list."""
     (tmp_path / "r.go").write_text("package main\nfunc walk(n int) int { return walk(n - 1) }\n")
     assert callgraph(tmp_path)["r.go"]["walk"][0]["calls"] == ["walk"]
 
 
 def test_same_name_attribute_call_is_not_filtered_as_recursion(tmp_path):
+    """A memories.update_memory_by_id() call inside update_memory_by_id() stays in that function's calls."""
     (tmp_path / "route.py").write_text(
         "def update_memory_by_id(memories, memory_id):\n    return memories.update_memory_by_id(memory_id)\n"
     )
@@ -211,16 +212,19 @@ def test_same_name_attribute_call_is_not_filtered_as_recursion(tmp_path):
 
 
 def test_same_name_member_call_is_not_filtered_as_recursion(tmp_path):
+    """A store.save() call inside a TypeScript save() stays in that function's calls."""
     (tmp_path / "route.ts").write_text("function save(store) {\n  return store.save();\n}\n")
     assert callgraph(tmp_path)["route.ts"]["save"][0]["calls"] == ["save"]
 
 
 def test_same_name_go_selector_call_is_not_filtered_as_recursion(tmp_path):
+    """A store.save() call inside a Go save() stays in that function's calls."""
     (tmp_path / "route.go").write_text("package main\nfunc save(store Store) { store.save() }\n")
     assert callgraph(tmp_path)["route.go"]["save"][0]["calls"] == ["save"]
 
 
 def test_two_definitions_sharing_a_name_in_one_file_both_survive(tmp_path):
+    """Two __init__ methods in classes A and B yield two entries, each ranging over its own body."""
     (tmp_path / "m.py").write_text(
         "class A:\n    def __init__(self):\n        self.a = 1\n\n\n"
         "class B:\n    def __init__(self):\n        self.b = 2\n"
@@ -232,18 +236,20 @@ def test_two_definitions_sharing_a_name_in_one_file_both_survive(tmp_path):
 
 
 def test_a_callee_comes_from_the_parsed_node_not_a_re_parse_of_its_source(tmp_path):
+    """An async TS class method post() records its call to save rather than a misparsed name."""
     (tmp_path / "a.ts").write_text("class Svc {\n  async post(k) { return save(k); }\n}\n")
     assert callgraph(tmp_path)["a.ts"]["post"][0]["calls"] == ["save"]
 
 
 def test_a_class_counts_as_a_definition_so_its_methods_ride_along(tmp_path):
+    """The range of class Resp includes the text of its set_status method."""
     (tmp_path / "m.py").write_text("class Resp:\n    def set_status(self, s):\n        self.s = s\n")
     start, end = callgraph(tmp_path)["m.py"]["Resp"][0]["range"]
     assert "set_status" in (tmp_path / "m.py").read_text()[start:end]
 
 
 def test_references_inside_a_decorated_definition_keep_their_owner(tmp_path):
-
+    """An os.path.join reference under an @route-decorated handler is owned by handler, as it is in plain."""
     (tmp_path / "app.py").write_text(
         'import os\n\n@route("/x")\ndef handler(name):\n    return os.path.join("a", name)\n\n'
         'def plain(name):\n    return os.path.join("b", name)\n'
@@ -261,6 +267,7 @@ def test_references_inside_a_decorated_definition_keep_their_owner(tmp_path):
 
 
 def test_tests_and_noise_directories_are_left_out(tmp_path):
+    """Only keep.py appears in the call graph, and test_skip.py and node_modules/dep.js are excluded."""
     (tmp_path / "keep.py").write_text("def keep():\n    return 1\n")
     (tmp_path / "test_skip.py").write_text("def test_skip():\n    return 1\n")
     (tmp_path / "node_modules").mkdir()
@@ -269,6 +276,7 @@ def test_tests_and_noise_directories_are_left_out(tmp_path):
 
 
 def test_a_file_over_the_parse_cap_preserves_other_facts(tmp_path):
+    """A huge.py beyond MAX_SOURCE_BYTES gets an "over the parse cap" limitation while small.py keeps facts."""
     limit = MAX_SOURCE_BYTES
     (tmp_path / "huge.py").write_text("def f():\n    return 1\n" + "PAD = 1\n" * (limit // 8))
     (tmp_path / "small.py").write_text("def g():\n    return 1\n")
@@ -279,6 +287,7 @@ def test_a_file_over_the_parse_cap_preserves_other_facts(tmp_path):
 
 
 def test_an_unreadable_source_fails_facts_extraction(monkeypatch, tmp_path):
+    """An OSError opening a snapshot file raises BackendUnavailable "cannot read source unreadable.py"."""
     source = tmp_path / "unreadable.py"
     source.write_text("def value():\n    return 1\n")
     snapshot = capture_source_snapshot(tmp_path)
@@ -296,6 +305,7 @@ def test_an_unreadable_source_fails_facts_extraction(monkeypatch, tmp_path):
 
 
 def test_a_syntactically_broken_file_preserves_other_facts(tmp_path):
+    """A broken.py yields a limitation with line and column while ok.py keeps its call graph."""
     (tmp_path / "broken.py").write_text("def f(:\n  ???\n")
     (tmp_path / "ok.py").write_text("def g():\n    return 1\n")
     facts = syntax_facts(tmp_path)
@@ -307,6 +317,7 @@ def test_a_syntactically_broken_file_preserves_other_facts(tmp_path):
 
 
 def test_parse_limitation_column_uses_characters_after_non_ascii_text(tmp_path):
+    """After "é" on line 1, the error column is the character index of "function" plus one."""
     source = 'const x = "é"; function broken( {\n'
     (tmp_path / "broken.js").write_text(source)
 
@@ -327,6 +338,7 @@ def test_parse_limitation_column_uses_characters_after_non_ascii_text(tmp_path):
     ],
 )
 def test_every_tree_sitter_language_uses_one_parse_limitation_contract(tmp_path, name, source, analyzer):
+    """A broken file in each language yields the same (source, analyzer, "unparsable") limitation."""
     (tmp_path / name).write_text(source)
 
     limitation = syntax_facts(tmp_path).limitations[0]
@@ -335,6 +347,7 @@ def test_every_tree_sitter_language_uses_one_parse_limitation_contract(tmp_path,
 
 
 def test_go_receiver_function_is_a_method(tmp_path):
+    """A Go func with a *Store receiver named Load is recorded with kind "method"."""
     (tmp_path / "service.go").write_text(
         "package service\ntype Store struct{}\nfunc (store *Store) Load(value int) int { return value }\n"
     )
@@ -346,6 +359,7 @@ def test_go_receiver_function_is_a_method(tmp_path):
 
 
 def test_an_unsupported_typescript_export_does_not_abort_other_files(tmp_path):
+    """A barrel.ts with "export type * from" yields one typescript limitation while ok.ts keeps facts."""
     (tmp_path / "barrel.ts").write_text("export type * from './model';\n")
     (tmp_path / "model.ts").write_text("export interface Model { id: string }\n")
     (tmp_path / "ok.ts").write_text("export function ok() { return true; }\n")
@@ -357,6 +371,7 @@ def test_an_unsupported_typescript_export_does_not_abort_other_files(tmp_path):
 
 
 def test_native_analyzer_matches_the_cross_language_structure_oracle(tmp_path):
+    """Python, JS, TS, and Go sources yield the expected definitions, callsites, and Go receivers."""
     sources = {
         "service.py": (
             "class Service:\n"
@@ -414,6 +429,7 @@ def test_native_analyzer_matches_the_cross_language_structure_oracle(tmp_path):
 
 
 def test_native_analyzer_output_does_not_depend_on_input_enumeration(tmp_path):
+    """Analyzing a.py and b.py in either order returns equal results."""
     specs = load_specs()
     inputs = []
     for name, source in (

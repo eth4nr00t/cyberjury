@@ -35,8 +35,7 @@ security review in this chat.
    - Without a git range, the first positional path is the Repository Review target.
 3. Collect optional flags and pass each only to the commands that accept it:
    - Diff flags: `--repository <path>`, `--git-range <range>`, `--workspace`, and `--concurrency`.
-   - Repository scaffold flags: `--workspace`.
-   - Repository run flags: `--workspace` and `--concurrency`.
+   - Repository flags: `--workspace` and `--concurrency`.
 
 ## Diff Review
 
@@ -62,15 +61,12 @@ After the command:
 Use one command.
 
 ```bash
-cyberjury review repository <target> --run [repository run flags]
+cyberjury review repository <target> [repository flags]
 ```
 
 If this exits nonzero, state that the repository review failed or is incomplete and include the
-error details. Do not call the review complete. Re-running `--run` on the same workspace resumes
-open units.
-
-Use `--scaffold` separately to inspect the unit plan before model review. Do not edit workspace
-files; findings come only from `--run`.
+error details. Do not call the review complete. Re-running the same command on the same workspace
+resumes open units. Do not edit workspace files.
 
 ## Response
 

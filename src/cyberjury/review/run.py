@@ -58,7 +58,6 @@ class ReviewRun:
 
 
 def _unit_cycle(value: object) -> ReviewCycle[Finding]:
-    """Parse one checkpointed unit cycle; a failed one counts as one error so it is reviewed again."""
     if not isinstance(value, dict) or set(value) != {"clean", "findings"}:
         raise ValueError("unit review record fields are invalid")
     if not isinstance(value["clean"], bool) or not isinstance(value["findings"], list):
@@ -80,7 +79,7 @@ def run_review[U: GroundedUnit](
 ) -> ReviewRun:
     """Review every open unit once, group the union into issues, and build the result.
 
-    Issues group the retained findings without removing any; the issue link judgment runs only
+    Issues group the findings without removing any. The issue link judgment runs only
     when the review has an issue judge. A failed link judgment leaves its findings in separate
     issues and is reported, not counted as an incomplete review.
     """

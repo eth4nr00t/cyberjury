@@ -133,7 +133,7 @@ class ReviewTarget[U: GroundedUnit]:
     """What genuinely differs between review targets around the shared Finder judgment.
 
     A target that covers all files answers for every facts limitation and needs at least one
-    unit; a diff answers only for the limitations its units scope.
+    unit. A diff answers only for the limitations its units scope.
     """
 
     kind: Literal["diff", "repository"]
@@ -236,7 +236,6 @@ class UnitFinder[U: GroundedUnit]:
         )
 
     def _validate_locations(self, unit: U, cycle: ReviewCycle[Finding]) -> ReviewCycle[Finding]:
-        """Keep findings whose primary location the target accepts; the rest stay explicitly incomplete."""
         evidence = _unit_evidence(unit, cycle)
         located = [
             (finding, self._target.locate(unit, finding, evidence, unit.grounding.source_spans))
@@ -254,5 +253,4 @@ class UnitFinder[U: GroundedUnit]:
 
 
 def _unit_evidence(unit: GroundedUnit, cycle: ReviewCycle[Finding]) -> tuple[SourceEvidence, ...]:
-    """Return every source receipt the unit's judgment held: initial grounding first, then delivered source."""
     return tuple(dict.fromkeys((*unit.grounding.source_evidence, *cycle.source_evidence)))

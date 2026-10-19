@@ -48,7 +48,7 @@ def attempt_path(directory: Path, case: str, number: int) -> Path:
 
 
 def read_json(path: str | Path) -> object:
-    """Return the UTF-8 JSON document at the path; malformed JSON raises `json.JSONDecodeError`."""
+    """Return the UTF-8 JSON document at the path, and malformed JSON raises `json.JSONDecodeError`."""
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
@@ -88,7 +88,6 @@ def load_attempt(path: str | Path) -> Attempt:
 
 
 def _issues(path: Path, data: dict, findings: dict[str, dict]) -> tuple[tuple[str, ...], ...]:
-    """Return each issue's member ids, representative first, or one issue per report without issues."""
     if "issues" not in data:
         return tuple((identity,) for identity in findings)
     issues = data["issues"]

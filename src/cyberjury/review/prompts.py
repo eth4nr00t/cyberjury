@@ -97,7 +97,7 @@ _EVIDENCE_RULES = """# Evidence
 - Source delivered under an id, initially or in an evidence exchange, is already read. Cite it directly and do not \
 request it again.
 - The evidence catalog lists published ids. Their source is delivered only on request, in an evidence exchange \
-under the same id; an id whose source was delivered is already read. Request an unread catalog id through \
+under the same id. An id whose source was delivered is already read. Request an unread catalog id through \
 `evidence_requests` before relying on it. Citing an unread published id also requests it, and that finding waits \
 until the source is delivered.
 - Use only exact ids published in this review. Search results alone are not finding evidence."""
@@ -132,7 +132,7 @@ def finding_schema(**extension: dict[str, object]) -> dict[str, object]:
 def finding_fields(extension: str = "") -> str:
     """Render the one finding field contract, with a target extension after the location fields."""
     location = (
-        "- `findings`: one entry per reported vulnerability; empty when there is none.\n"
+        "- `findings`: one entry per reported vulnerability, empty when there is none.\n"
         "- `title`: a short name for the vulnerability.\n"
         "- `category`: the broad security property violated or the direct attacker-visible effect.\n"
         "- `severity`: the grade on the severity rubric.\n"
@@ -150,8 +150,8 @@ def finding_fields(extension: str = "") -> str:
 
 
 REQUEST_FIELDS = (
-    "- `evidence_requests`: unread published ids needed to decide exploitability; empty when none is needed.\n"
-    "- `source_queries`: searches needed to decide exploitability; empty when none is needed or source "
+    "- `evidence_requests`: unread published ids needed to decide exploitability, empty when none is needed.\n"
+    "- `source_queries`: searches needed to decide exploitability, empty when none is needed or source "
     "navigation is unavailable."
 )
 

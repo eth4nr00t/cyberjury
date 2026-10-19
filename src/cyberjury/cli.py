@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
-import os
 import re
 import sys
 from dataclasses import dataclass
@@ -19,7 +18,6 @@ from cyberjury.providers.configuration import (
     ProviderCredentialsError,
     provider_configuration_from_env,
 )
-from cyberjury.providers.factory import PROVIDERS, nonnegative_int, positive_float
 from cyberjury.providers.metering import UsageMeter
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.contract import ContractReceipt
@@ -57,72 +55,36 @@ from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
 from cyberjury.telemetry import progress, stage_timer
 
 SLASH_COMMAND_FILE = Path(__file__).parent / "commands" / "slash-command.md"
-_RUN_ONLY_OPTIONS = {
-    "provider": "--provider",
-    "model": "--model",
-    "wire_api": "--wire-api",
-    "retries": "--retries",
-    "timeout": "--timeout",
-    "concurrency": "--concurrency",
-    "dry_run": "--dry-run",
-}
+ERROR_PREFIX = "error: "
+_COMMAND_FAILED = " failed: "
+_COMMAND_FAILURE = re.compile(rf"^(?:cyberjury|review|install-slash-command){_COMMAND_FAILED}")
+
+
+def failure_text(line: str) -> str | None:
+    """Return the failure message of one line this CLI printed to stderr, or None for any other line."""
+    if line.startswith(ERROR_PREFIX):
+        return line.removeprefix(ERROR_PREFIX)
+    match = _COMMAND_FAILURE.match(line)
+    return line[match.end() :] if match else None
 
 
 def positive_int(value: str) -> int:
     """Parse a concurrency limit."""
-    parsed = nonnegative_int(value)
+    try:
+        parsed = int(value)
+    except ValueError:
+        parsed = 0
     if parsed < 1:
         raise ValueError("must be a positive integer")
     return parsed
 
 
-def _nonempty_string(value: str) -> str:
-    if not value.strip():
-        raise argparse.ArgumentTypeError("must be a nonempty string")
-    return value
-
-
 def _default_workspace() -> str:
-    """Return a user-private path because the workspace holds sensitive review artifacts."""
-    return str(Path(os.environ.get("CYBERJURY_HOME") or Path.home() / ".cyberjury"))
+    return str(Path.home() / ".cyberjury")
 
 
 def _dry_run_response(_system: str, _messages: list[Message]) -> str:
-    """Return the minimum valid Finder reply."""
     return json.dumps({"findings": [], "evidence_requests": [], "source_queries": []})
-
-
-def _provider_configuration(args: argparse.Namespace) -> ProviderConfiguration:
-    """Resolve the environment seat with the seat and client policy flags applied."""
-    return provider_configuration_from_env(
-        provider=args.provider,
-        model=args.model,
-        wire_api=args.wire_api,
-        retries=args.retries,
-        timeout=args.timeout,
-    )
-
-
-def _add_model_args(target) -> None:
-    """Seat and client policy flags; unset values come from the CYBERJURY_* environment."""
-    target.add_argument("--provider", choices=PROVIDERS, default=None, help="model provider")
-    target.add_argument("--model", type=_nonempty_string, default=None, help="model name")
-    target.add_argument(
-        "--wire-api",
-        default=None,
-        dest="wire_api",
-        choices=("chat", "responses"),
-        help="OpenAI wire API, default responses, chat for endpoints that only serve Chat Completions",
-    )
-    target.add_argument(
-        "--retries", type=nonnegative_int, default=None, help="provider retry attempts on transient failure"
-    )
-    target.add_argument(
-        "--timeout",
-        type=positive_float,
-        default=None,
-        help="per-call deadline in seconds, also honored when a retry holds the bound",
-    )
 
 
 def _add_workspace_arg(target) -> None:
@@ -142,9 +104,6 @@ def _add_concurrency_arg(target, work: str) -> None:
     )
 
 
-_MODEL_GROUP_HELP = "API keys and endpoints come from CYBERJURY_* environment variables, see .env.example"
-
-
 def _add_diff_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--repository", required=True, help="repository containing the reviewed git range")
     parser.add_argument("--git-range", required=True, help="git range to diff, e.g. origin/main...HEAD")
@@ -155,42 +114,20 @@ def _add_diff_args(parser: argparse.ArgumentParser) -> None:
     )
     _add_concurrency_arg(parser, "diff unit reviews or issue link calls")
     _add_workspace_arg(parser)
-    _add_model_args(parser.add_argument_group("model backend", _MODEL_GROUP_HELP))
 
 
 def _add_repository_args(repository: argparse.ArgumentParser) -> None:
     repository.add_argument("directory", help="target repository to review")
-    _add_workspace_arg(repository)
     repository.add_argument(
-        "--review-id",
-        default=None,
-        help="continue one existing review session instead of the active session",
-    )
-    repository.add_argument(
-        "--fresh", action="store_true", help="start a new review session and preserve the previous session"
-    )
-    mode = repository.add_mutually_exclusive_group(required=True)
-    mode.add_argument(
-        "--scaffold",
-        action="store_true",
-        help="build the review workspace without model review: extract facts and plan units. "
-        "--run performs this setup automatically",
-    )
-    mode.add_argument(
-        "--run",
-        action="store_true",
-        help="run model review over the repository, not just scaffold: "
-        "each open unit is reviewed once, re-running resumes open work",
+        "--fresh", action="store_true", help="start a new review session instead of resuming the active one"
     )
     repository.add_argument(
         "--dry-run",
         action="store_true",
-        help="run only: drive the engine with a mock provider and no key, to smoke test the pipeline",
+        help="drive the engine with a mock provider and no key, to smoke test the pipeline",
     )
-
-    tuning = repository.add_argument_group("run tuning", "applies to --run")
-    _add_concurrency_arg(tuning, "how many unit reviews or issue link calls")
-    _add_model_args(repository.add_argument_group("model backend", f"applies to --run. {_MODEL_GROUP_HELP}"))
+    _add_concurrency_arg(repository, "unit reviews or issue link calls")
+    _add_workspace_arg(repository)
 
 
 def _add_install_args(inst: argparse.ArgumentParser) -> None:
@@ -213,7 +150,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     repository = review_subcommands.add_parser(
         "repository",
-        help="run a repository review: --scaffold or --run",
+        help="review a whole repository and resume open work when re-run",
         allow_abbrev=False,
     )
     _add_repository_args(repository)
@@ -226,34 +163,11 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-ERROR_PREFIX = "error: "
-_COMMAND_FAILED = " failed: "
-_COMMAND_FAILURE = re.compile(rf"^(?:cyberjury|review|install-slash-command){_COMMAND_FAILED}")
-
-
-def failure_text(line: str) -> str | None:
-    """Return the failure message of one line this CLI printed to stderr, or None for any other line."""
-    if line.startswith(ERROR_PREFIX):
-        return line.removeprefix(ERROR_PREFIX)
-    match = _COMMAND_FAILURE.match(line)
-    return line[match.end() :] if match else None
-
-
-def _report_loaded_env() -> None:
-    """Report settings loaded from the working directory environment file."""
-    env_loaded = load_env_file()
-    if not env_loaded:
-        return
-    count = len(env_loaded)
-    plural = "s" if count != 1 else ""
-    print(f"loaded {count} setting{plural} from .env: {', '.join(env_loaded)}", file=sys.stderr)
-
-
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI command and return a process-style exit code."""
     args = None
     try:
-        _report_loaded_env()
+        load_env_file()
         parser = _build_parser()
         args = parser.parse_args(argv)
         return _dispatch(args, parser)
@@ -265,8 +179,6 @@ def main(argv: list[str] | None = None) -> int:
 
 @dataclass(kw_only=True)
 class _AttemptContext:
-    """Resolved command state shared by every step of one review attempt."""
-
     args: argparse.Namespace
     session: ReviewSession
     attempt: ReviewAttempt
@@ -276,12 +188,6 @@ class _AttemptContext:
     snapshot: SourceSnapshot
     source: SourceSnapshot
     model_calls_recorded: bool = False
-
-
-def _review_action(args: argparse.Namespace) -> str:
-    if args.scope == "diff":
-        return "run"
-    return "scaffold" if args.scaffold else "run"
 
 
 def _review_intent(args: argparse.Namespace) -> ReviewIntent:
@@ -297,13 +203,7 @@ def _review_intent(args: argparse.Namespace) -> ReviewIntent:
     return ReviewIntent(target=target)
 
 
-def _provider_plan(
-    args: argparse.Namespace,
-    action: str,
-    configuration: ProviderConfiguration,
-) -> ProviderPlanRecord | None:
-    if action == "scaffold":
-        return None
+def _provider_plan(args: argparse.Namespace, configuration: ProviderConfiguration) -> ProviderPlanRecord:
     if args.dry_run:
         return ProviderPlanRecord(retries=None, timeout_seconds=None, seat=provider_seat_record(DRY_RUN_SEAT))
     return ProviderPlanRecord(
@@ -314,21 +214,18 @@ def _provider_plan(
 
 
 def _attempt_request(args: argparse.Namespace, configuration: ProviderConfiguration) -> ReviewAttemptRequest:
-    action = _review_action(args)
     concurrency = args.concurrency or DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
     return ReviewAttemptRequest(
-        action=action,
         engine_version=__version__,
-        concurrency=ConcurrencyRecord(review=concurrency) if action == "run" else None,
-        dry_run=args.dry_run if action == "run" else None,
+        concurrency=ConcurrencyRecord(review=concurrency),
+        dry_run=args.dry_run,
         fresh=args.fresh if args.scope == "repository" else None,
-        providers=_provider_plan(args, action, configuration),
+        providers=_provider_plan(args, configuration),
     )
 
 
 def _initialize_review_attempt(args: argparse.Namespace, *, source_stack: contextlib.ExitStack) -> _AttemptContext:
-    """Resolve all behavior-affecting command configuration once and bind it to an attempt."""
-    configuration = _provider_configuration(args)
+    configuration = provider_configuration_from_env()
     intent = _review_intent(args)
     request = _attempt_request(args, configuration)
     state_root = Path(args.workspace).expanduser().resolve()
@@ -340,8 +237,6 @@ def _initialize_review_attempt(args: argparse.Namespace, *, source_stack: contex
     session = (
         ReviewSession.create(args.workspace, intent)
         if intent.target.kind == "diff"
-        else ReviewSession.open_existing(args.workspace, intent, review_id=args.review_id)
-        if args.review_id is not None
         else ReviewSession.select_active(
             args.workspace,
             intent,
@@ -381,11 +276,6 @@ def _acquire_source(
     target: ResolvedTarget,
     source_stack: contextlib.ExitStack,
 ) -> tuple[SourceSnapshot, SourceSnapshot]:
-    """Capture the bound source snapshot and enter the private copy every consumer reads.
-
-    A diff reads the committed head tree, already private. A repository reads its live tree,
-    copied once so the review never sees later edits.
-    """
     if target.kind == "diff":
         snapshot = capture_source_snapshot(source_stack.enter_context(materialize_diff_target(target)))
         return snapshot, snapshot
@@ -395,15 +285,13 @@ def _acquire_source(
 
 
 def _record_model_calls(run: _AttemptContext) -> None:
-    """Persist the model call artifact once for a model backed action."""
-    if run.attempt.request.action != "run" or run.model_calls_recorded:
+    if run.model_calls_recorded:
         return
     run.attempt.record_model_calls(run.meter.document())
     run.model_calls_recorded = True
 
 
 def _report_skipped_files(skipped: tuple[SkippedFile, ...]) -> None:
-    """Report target files filtered before model work, separating noise from files without reviewable text."""
 
     def listed(items: list[str]) -> str:
         more = f", and {len(items) - 5} more" if len(items) > 5 else ""
@@ -421,7 +309,6 @@ def _report_skipped_files(skipped: tuple[SkippedFile, ...]) -> None:
 
 
 def _prepare(run: _AttemptContext) -> PreparedReview:
-    """Plan and ground the target units and bind their receipts before any model work."""
     with stage_timer("prepare"):
         prepared = (
             prepare_diff_review(run.target.patch.text, run.source)
@@ -436,7 +323,6 @@ def _prepare(run: _AttemptContext) -> PreparedReview:
 
 
 def _run_review(run: _AttemptContext, prepared: PreparedReview, seats: ReviewSeats) -> int:
-    """Review the prepared units, bind the result to the attempt, and report it."""
     request = run.attempt.request
     diff = run.target.kind == "diff"
     with stage_timer("review"):
@@ -453,10 +339,9 @@ def _run_review(run: _AttemptContext, prepared: PreparedReview, seats: ReviewSea
 
 
 def _report_review(run: _AttemptContext, result: ReviewRun) -> int:
-    """Report failures and incomplete state, print the machine result, and return the exit code."""
     outcome = result.outcome
     for error in result.issue_link_errors:
-        print(f"NOTE: {error}; those findings stay in separate issues", file=sys.stderr)
+        print(f"NOTE: {error}. Those findings stay in separate issues", file=sys.stderr)
     print(
         f"{len(outcome.findings)} findings in {len(result.findings.issues)} issues: "
         + ", ".join(f"{count} {severity}" for severity, count in result.findings.summary),
@@ -490,36 +375,17 @@ def _report_review(run: _AttemptContext, result: ReviewRun) -> int:
     return 0 if outcome.complete else 1
 
 
-def _report_scaffold(run: _AttemptContext, prepared: PreparedReview) -> int:
-    target = run.target.repository_root
-    print(
-        f"Assigned {len(prepared.unit_plan.expected_owned_paths)} production source files to "
-        f"{len(prepared.units)} review units. Unit plan: {run.session.workspace.path}/units.json",
-        file=sys.stderr,
-    )
-    print(
-        "This command sets up the review, it does not find anything itself. Next, run "
-        f"`cyberjury review repository {target} --workspace {run.args.workspace} --run`."
-    )
-    return 0
-
-
 def _execute_review(run: _AttemptContext) -> int:
-    """Prepare the target once, then run model review unless the action only scaffolds."""
     prepared = _prepare(run)
-    request = run.attempt.request
-    if request.action == "scaffold":
-        result = _report_scaffold(run, prepared)
-    else:
-        seats = review_seats(
-            run.providers,
-            meter=run.meter,
-            dry_run_provider=MockProvider(responder=_dry_run_response) if request.dry_run else None,
-        )
-        result = _run_review(run, prepared, seats)
+    seats = review_seats(
+        run.providers,
+        meter=run.meter,
+        dry_run_provider=MockProvider(responder=_dry_run_response) if run.attempt.request.dry_run else None,
+    )
+    result = _run_review(run, prepared, seats)
     if not run.snapshot.matches():
         print(
-            "NOTE: review source changed while the review was running; "
+            "NOTE: review source changed while the review was running, so "
             "the result describes the snapshot captured when the review started",
             file=sys.stderr,
         )
@@ -548,24 +414,12 @@ def _cmd_install_slash_command(args) -> int:
     return 0
 
 
-def _check_repository_flags(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
-    if args.scope != "repository":
-        return
-    if args.scaffold:
-        for dest, flag in _RUN_ONLY_OPTIONS.items():
-            if getattr(args, dest) not in (None, False):
-                parser.error(f"{flag} does not apply to repository --scaffold")
-    if args.fresh and args.review_id is not None:
-        parser.error("--fresh cannot be combined with --review-id")
-
-
 def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if args.command == "install-slash-command":
         return _cmd_install_slash_command(args)
     if args.command != "review":
         parser.print_help()
         return 1
-    _check_repository_flags(args, parser)
     with contextlib.ExitStack() as source_stack:
         run = _initialize_review_attempt(args, source_stack=source_stack)
         attempt = run.attempt

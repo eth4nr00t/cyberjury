@@ -39,6 +39,7 @@ def _call(provider):
 
 
 def test_metering_records_each_calls_usage_and_returns_the_inner_result():
+    """One call with 100 uncached and 80 cache-read tokens returns "ok" and snapshots 180 total input."""
     meter = UsageMeter()
     inner = _Fake(Usage(input_tokens=100, output_tokens=20, cache_read_tokens=80, cache_write_tokens=0))
     result = _call(MeteringProvider(inner, meter))
@@ -54,6 +55,7 @@ def test_metering_records_each_calls_usage_and_returns_the_inner_result():
 
 
 def test_meter_accumulates_across_calls():
+    """Two identical calls double model_requests, uncached input, output, and cache-write counts."""
     meter = UsageMeter()
     metered = MeteringProvider(_Fake(Usage(input_tokens=10, output_tokens=5, cache_write_tokens=10)), meter)
     _call(metered)
@@ -66,6 +68,7 @@ def test_meter_accumulates_across_calls():
 
 
 def test_summary_names_every_bucket_and_leads_with_the_whole_prompt():
+    """Three calls produce a summary with total_input=24 plus uncached, cache_read, cache_write, and output."""
     meter = UsageMeter()
     metered = MeteringProvider(
         _Fake(Usage(input_tokens=1, output_tokens=2, cache_read_tokens=3, cache_write_tokens=4)), meter
@@ -82,6 +85,7 @@ def test_summary_names_every_bucket_and_leads_with_the_whole_prompt():
 
 
 def test_snapshot_derives_the_whole_prompt_so_a_cache_hit_is_not_read_as_a_saving():
+    """Ten uncached plus 90 cache-read tokens report total_input_tokens as 100."""
     meter = UsageMeter()
     _call(MeteringProvider(_Fake(Usage(input_tokens=10, cache_read_tokens=90, output_tokens=2)), meter))
     snap = meter.snapshot()
@@ -92,6 +96,7 @@ def test_snapshot_derives_the_whole_prompt_so_a_cache_hit_is_not_read_as_a_savin
 
 
 def test_snapshot_is_a_copy_so_a_later_call_cannot_mutate_a_recorded_delta():
+    """A snapshot taken after a 5-token call still reads 5 after a later 7-token call."""
     meter = UsageMeter()
     _call(MeteringProvider(_Fake(Usage(input_tokens=5)), meter))
     before = meter.snapshot()
@@ -100,6 +105,8 @@ def test_snapshot_is_a_copy_so_a_later_call_cannot_mutate_a_recorded_delta():
 
 
 def test_a_failed_call_is_recorded_but_adds_no_usage():
+    """A provider raising "down" leaves model_requests at 0 but logs one call with status "failed"."""
+
     class _Down(Provider):
         def complete(self, **_kwargs):
             raise RuntimeError("down")
@@ -113,6 +120,7 @@ def test_a_failed_call_is_recorded_but_adds_no_usage():
 
 
 def test_meter_documents_one_run_after_a_call_boundary():
+    """A document from the call boundary holds only the second call, renumbered to sequence 1 with 12 input tokens."""
     meter = UsageMeter()
     provider = MeteringProvider(_Fake(Usage(input_tokens=7, cache_read_tokens=5, output_tokens=3)), meter)
     with model_call_context(role="finder", trigger="provider_request"):
@@ -133,6 +141,7 @@ def test_meter_documents_one_run_after_a_call_boundary():
 
 
 def test_meter_records_role_unit_prompt_size_usage_duration_and_status():
+    """A finder call in unit-a records the exact field set, including prompt_chars of system plus prompt."""
     meter = UsageMeter()
     provider = MeteringProvider(_Fake(Usage(input_tokens=3, output_tokens=2)), meter)
 
@@ -166,6 +175,7 @@ def test_meter_records_role_unit_prompt_size_usage_duration_and_status():
 
 
 def test_a_validation_failure_marks_the_same_call_failed():
+    """Recording an "invalid response" parse flips the just-made call to failed with that reason."""
     meter = UsageMeter()
     with model_call_context(role="finder", trigger="initial_judgment"):
         _call(MeteringProvider(_Fake(Usage()), meter))
@@ -176,6 +186,7 @@ def test_a_validation_failure_marks_the_same_call_failed():
 
 
 def test_scheduler_scope_supplies_unit_to_nested_model_calls():
+    """A call inside model_call_scope(unit_id="unit-a") records that unit and the initial_judgment trigger."""
     meter = UsageMeter()
     provider = MeteringProvider(_Fake(Usage()), meter)
 
@@ -189,6 +200,7 @@ def test_scheduler_scope_supplies_unit_to_nested_model_calls():
 
 
 def test_a_candidate_model_call_binds_the_candidate_instead_of_a_scheduler_unit():
+    """An issue_link call with candidate_id="candidate-a" records that candidate and an empty unit_id."""
     meter = UsageMeter()
     provider = MeteringProvider(_Fake(Usage()), meter)
 
@@ -202,6 +214,7 @@ def test_a_candidate_model_call_binds_the_candidate_instead_of_a_scheduler_unit(
 
 
 def test_model_calls_document_binds_ordered_calls_and_usage():
+    """The v1 document validates, and a forged hash or rehashed edited usage raises ValueError."""
     meter = UsageMeter()
     _call(MeteringProvider(_Fake(Usage(input_tokens=3, output_tokens=2)), meter))
 

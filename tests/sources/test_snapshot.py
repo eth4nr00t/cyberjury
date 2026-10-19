@@ -17,6 +17,7 @@ def _scope(root: Path) -> tuple[str, ...]:
 
 
 def test_snapshot_id_is_stable(tmp_path):
+    """Three captures of an unchanged a.py and b.ts tree produce one identical snapshot_id."""
     (tmp_path / "a.py").write_text("a = 1\n", encoding="utf-8")
     (tmp_path / "b.ts").write_text("export const b = 2\n", encoding="utf-8")
 
@@ -26,6 +27,7 @@ def test_snapshot_id_is_stable(tmp_path):
 
 @pytest.mark.parametrize("change", ["modify", "delete", "add", "rename", "executable"])
 def test_snapshot_detects_file_and_scope_drift(tmp_path, change):
+    """Modifying, deleting, adding, renaming, or chmod +x on app.py makes matches() return False."""
     source = tmp_path / "app.py"
     source.write_text("before\n", encoding="utf-8")
     snapshot = SourceSnapshot.capture(tmp_path, _scope(tmp_path), scope_provider=lambda: _scope(tmp_path))
@@ -45,6 +47,7 @@ def test_snapshot_detects_file_and_scope_drift(tmp_path, change):
 
 
 def test_snapshot_records_internal_symlink_identity_and_rejects_external_target(tmp_path):
+    """Retargeting a link between same-content files is drift, and a link outside the root fails capture."""
     first = tmp_path / "first.py"
     second = tmp_path / "second.py"
     first.write_text("same\n")
@@ -76,11 +79,13 @@ def test_snapshot_records_internal_symlink_identity_and_rejects_external_target(
     ],
 )
 def test_snapshot_rejects_unsafe_or_duplicate_paths(tmp_path, files):
+    """Parent-escaping, absolute, duplicated, dot-segment, or backslash paths raise SourceSnapshotError."""
     with pytest.raises(SourceSnapshotError):
         SourceSnapshot.capture(tmp_path, files)
 
 
 def test_snapshot_accepts_names_that_are_only_unportable_to_other_filesystems(tmp_path):
+    """Windows-reserved names like aux.c, case twins README/readme, "notes.", and "a:b.txt" are all captured."""
     names = ("drivers/aux.c", "include/con.h", "README", "readme", "notes.", "a:b.txt")
     for name in names:
         path = tmp_path / name
@@ -93,6 +98,7 @@ def test_snapshot_accepts_names_that_are_only_unportable_to_other_filesystems(tm
 
 
 def test_git_work_tree_snapshot_lists_tracked_and_unignored_files_without_walking_ignored_trees(tmp_path):
+    """Listing yields .gitignore, app.py, new.py, skipping ignored .venv, build.log, and deleted files."""
     git(tmp_path, "init", "--quiet")
     (tmp_path / ".gitignore").write_text(".venv/\nbuild.log\n", encoding="utf-8")
     (tmp_path / "app.py").write_text("tracked\n", encoding="utf-8")
@@ -116,6 +122,7 @@ def test_git_work_tree_snapshot_lists_tracked_and_unignored_files_without_walkin
 
 
 def test_snapshot_rejects_unsupported_file_type(tmp_path):
+    """Capturing a FIFO named events.pipe raises SourceSnapshotError mentioning "regular file"."""
     fifo = tmp_path / "events.pipe"
     os.mkfifo(fifo)
 
@@ -124,6 +131,7 @@ def test_snapshot_rejects_unsupported_file_type(tmp_path):
 
 
 def test_snapshot_policy_is_profile_independent_and_includes_all_source_inputs(tmp_path):
+    """Files under lib/, dependencies/, and node_modules/ are captured, and editing lib/dependency.py changes the id."""
     (tmp_path / "src").mkdir()
     (tmp_path / "lib").mkdir()
     (tmp_path / "dependencies").mkdir()
@@ -144,6 +152,7 @@ def test_snapshot_policy_is_profile_independent_and_includes_all_source_inputs(t
 
 
 def test_snapshot_fails_with_the_unreadable_source_path(monkeypatch, tmp_path):
+    """A PermissionError opening app.py surfaces as SourceSnapshotError naming app.py and "access denied"."""
     source = tmp_path / "app.py"
     source.write_text("value = 1\n", encoding="utf-8")
     original_open = Path.open
@@ -160,6 +169,7 @@ def test_snapshot_fails_with_the_unreadable_source_path(monkeypatch, tmp_path):
 
 
 def test_materialize_copies_exact_bytes_modes_and_relative_symlinks(tmp_path):
+    """A materialized copy keeps CRLF bytes, the executable run.sh, and link.py -> app.py, and the same id."""
     root = tmp_path / "source"
     (root / "bin").mkdir(parents=True)
     (root / "app.py").write_bytes(b"value = 1\r\n" * 200_000)

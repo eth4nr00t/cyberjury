@@ -25,6 +25,7 @@ _FINDING = Finding(
 
 
 def test_checkpoint_form_preserves_identity_provenance_and_anchor():
+    """A to_dict/from_dict round trip keeps candidate id, operation id, evidence refs, found_by, and spans."""
     restored = Finding.from_dict(_FINDING.to_dict())
 
     assert restored == _FINDING
@@ -38,6 +39,7 @@ def test_checkpoint_form_preserves_identity_provenance_and_anchor():
 
 
 def test_cited_spans_never_change_the_candidate_identity():
+    """Dropping cited_spans from the finding leaves its candidate_id unchanged."""
     unbound = replace(_FINDING, cited_spans=())
 
     assert unbound.candidate_id == _FINDING.candidate_id
@@ -59,5 +61,6 @@ def test_cited_spans_never_change_the_candidate_identity():
     ],
 )
 def test_checkpoint_form_rejects_mistyped_fields(field, value):
+    """Bad severities, string or bool lines, partial anchors or spans, and extra keys make from_dict raise."""
     with pytest.raises(ValueError, match="finding"):
         Finding.from_dict(_FINDING.to_dict() | {field: value})

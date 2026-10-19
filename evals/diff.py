@@ -27,23 +27,18 @@ type Progress = Callable[[str], None]
 
 @dataclass(frozen=True, kw_only=True)
 class _CaseProgress:
-    """Report one benchmark case's lifecycle as progress lines."""
-
     progress: Progress | None
     prefix: str
     started: float
 
     def say(self, text: str) -> None:
-        """Publish one line naming the run and case."""
         if self.progress is not None:
             self.progress(f"{self.prefix} {text}")
 
     def failed(self, error: str) -> None:
-        """Publish a failed case without implying completion."""
         self.say(f"failed after {self._elapsed()}s: {error}")
 
     def finished(self, reports: int) -> None:
-        """Publish a complete case with its report count."""
         self.say(f"finished in {self._elapsed()}s, reports={reports}")
 
     def _elapsed(self) -> float:
@@ -51,15 +46,12 @@ class _CaseProgress:
 
 
 class _Tee(io.TextIOBase):
-    """Forward command diagnostics while keeping every failure line the command printed."""
-
     def __init__(self, stream: io.TextIOBase) -> None:
         self._stream = stream
         self._failures: list[str] = []
 
     @property
     def failure(self) -> str:
-        """Return the failures the command reported, in order."""
         return "; ".join(self._failures)
 
     def write(self, text: str) -> int:
@@ -81,7 +73,6 @@ def run(
     cases: list[BenchmarkCase],
     *,
     workspace: Path,
-    model_override: str | None = None,
     runs: int = 1,
     concurrency: int | None = None,
     progress: Progress | None = None,
@@ -104,7 +95,7 @@ def run(
                 started=time.monotonic(),
             )
             status.say("started")
-            record = _review_case(case, number, case_workspace(workspace, case, number), model_override, concurrency)
+            record = _review_case(case, number, case_workspace(workspace, case, number), concurrency)
             if record["complete"]:
                 status.finished(len(record["findings"]))
             else:
@@ -119,7 +110,6 @@ def _review_case(
     case: BenchmarkCase,
     number: int,
     workspace: Path,
-    model_override: str | None,
     concurrency: int | None,
 ) -> dict[str, object]:
     if workspace.exists():
@@ -129,8 +119,6 @@ def _review_case(
     git_range = f"{case.target['base']}..{case.target['commit']}"
     validate_change_anchors(case, resolve_diff_target(root, git_range).patch.text)
     argv = ["review", "diff", "--repository", str(root), "--git-range", git_range, "--workspace", str(workspace)]
-    if model_override:
-        argv += ["--model", model_override]
     if concurrency:
         argv += ["--concurrency", str(concurrency)]
     diagnostics = _Tee(sys.stderr)

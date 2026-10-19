@@ -11,6 +11,7 @@ import pytest
 
 import cyberjury.cli as climod
 from cyberjury.cli import main
+from cyberjury.envfile import load_env_file
 from cyberjury.providers import configuration as provider_configuration_module
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import GroundingCoverage
@@ -27,11 +28,13 @@ from tests.support import git
 
 @pytest.fixture(autouse=True)
 def _private_state_home(monkeypatch, tmp_path_factory):
-    monkeypatch.setenv("CYBERJURY_HOME", str(tmp_path_factory.mktemp("state-home")))
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(climod, "load_env_file", lambda: [])
 
 
 def test_install_slash_command_writes_the_file(tmp_path):
+    """Writing to --dir creates cyberjury-review.md naming both review commands and their target flags."""
     rc = main(["install-slash-command", "--dir", str(tmp_path)])
     assert rc == 0
     f = tmp_path / "cyberjury-review.md"
@@ -44,6 +47,7 @@ def test_install_slash_command_writes_the_file(tmp_path):
 
 
 def test_install_slash_command_refuses_to_clobber_without_force(tmp_path, capsys):
+    """An existing cyberjury-review.md is kept with an 'already exists' error unless --force overwrites it."""
     target = tmp_path / "cyberjury-review.md"
     target.write_text("my own prompt")
     assert main(["install-slash-command", "--dir", str(tmp_path)]) == 1
@@ -54,6 +58,7 @@ def test_install_slash_command_refuses_to_clobber_without_force(tmp_path, capsys
 
 
 def test_install_slash_command_writes_both_agent_dirs(monkeypatch, tmp_path):
+    """Without --dir the identical command file lands in ~/.claude/commands and ~/.codex/prompts."""
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     assert main(["install-slash-command"]) == 0
     claude = tmp_path / ".claude" / "commands" / "cyberjury-review.md"
@@ -64,22 +69,14 @@ def test_install_slash_command_writes_both_agent_dirs(monkeypatch, tmp_path):
 
 
 def test_default_workspace_is_user_private(monkeypatch, tmp_path):
+    """The default state workspace resolves to ~/.cyberjury under the user's home directory."""
     from cyberjury.cli import _default_workspace
 
-    monkeypatch.setenv("CYBERJURY_HOME", str(tmp_path / "state"))
-    assert _default_workspace() == str(tmp_path / "state")
-
-    monkeypatch.delenv("CYBERJURY_HOME", raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     assert _default_workspace() == str(tmp_path / "home" / ".cyberjury")
 
 
-def test_slash_command_does_not_pin_a_shared_workspace():
-    assert "/var/tmp" not in climod.SLASH_COMMAND_FILE.read_text()
-
-
 def _fake_run(prepared, kwargs, *, failures=(), grounding=None, errors=0, failure_reason=""):
-    """Return one review result bound to the prepared snapshot without model work."""
     outcome = ReviewOutcome(
         findings=(),
         failures=tuple(failures),
@@ -133,26 +130,21 @@ def _seed_source(repository: Path) -> None:
 
 
 def test_diff_without_key_errors_loud(monkeypatch, diff_target):
+    """With ANTHROPIC_API_KEY and OPENAI_API_KEY unset, a diff review exits with 'no reachable API key'."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(SystemExit, match="no reachable API key"):
         main(["review", "diff", *diff_target.args])
 
 
-def test_diff_openai_without_key_errors_loud(monkeypatch, diff_target):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    with pytest.raises(SystemExit, match="no reachable API key"):
-        main(["review", "diff", *diff_target.args, "--provider", "openai"])
-
-
 def test_review_diff_dry_run_uses_repository_grounding(capsys, diff_target):
+    """A --dry-run diff over one added a.py exits 0 and prints an empty findings list as JSON."""
     rc = main(["review", "diff", *diff_target.args, "--dry-run"])
     assert rc == 0
     assert json.loads(capsys.readouterr().out)["findings"]["findings"] == []
 
 
 def _git_change(repo: Path, base: dict[str, str], head: dict[str, str]) -> SimpleNamespace:
-    """Commit the base files, then the head files over them, and return the two-dot range arguments."""
     repo.mkdir()
     git(repo, "init", "--quiet")
     for files, message in ((base, "base"), (head, "head")):
@@ -173,10 +165,12 @@ def _git_change(repo: Path, base: dict[str, str], head: dict[str, str]) -> Simpl
 
 @pytest.fixture
 def diff_target(tmp_path):
+    """Commit one added file over an empty base and return its two-dot range arguments."""
     return _git_change(tmp_path / "repo", {}, {"a.py": "x = 1\n"})
 
 
 def test_diff_source_root_uses_resolved_head_revision(tmp_path):
+    """The materialized root of A..<sha> holds the head content of app.py and is removed on exit."""
     change = _git_change(tmp_path / "repo", {"app.py": "old\n"}, {"app.py": "new\n"})
     ref = git(change.repository, "rev-parse", "HEAD")
 
@@ -189,6 +183,7 @@ def test_diff_source_root_uses_resolved_head_revision(tmp_path):
 
 
 def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, diff_target):
+    """A dry-run diff review checks out its revision exactly once and deletes that checkout afterwards."""
     original = climod.materialize_diff_target
     roots = []
 
@@ -206,6 +201,7 @@ def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, d
 
 
 def test_review_diff_dry_run_uses_real_git_range_and_grounding(tmp_path, capsys):
+    """A three-dot range adding a SQL concat dry-runs to empty findings and issues with timing on stderr."""
     change = _git_change(
         tmp_path / "repo",
         {"app.py": "def run(name):\n    return name\n"},
@@ -225,6 +221,7 @@ def test_review_diff_dry_run_uses_real_git_range_and_grounding(tmp_path, capsys)
 
 
 def test_docs_only_diff_skips_model_calls(tmp_path, capsys):
+    """A range touching only README.md reports it as a noise skip in stderr and outcome skipped_files."""
     change = _git_change(
         tmp_path / "repo",
         {"app.py": "def run():\n    return True\n", "README.md": "Before\n"},
@@ -240,6 +237,7 @@ def test_docs_only_diff_skips_model_calls(tmp_path, capsys):
 
 
 def test_hunkless_diff_sections_are_listed_as_skipped_in_the_outcome(tmp_path, capsys):
+    """Mode-only, rename-only, and empty new files are skipped with reasons while the outcome stays complete."""
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "--quiet")
@@ -282,6 +280,7 @@ def _capture_diff_review(monkeypatch):
 
 
 def test_review_diff_grounds_units_and_judges_issue_links_on_the_finder(monkeypatch, diff_target):
+    """The single diff unit carries +x = 1 and a.py source, with a seat-labelled judge and concurrency 8."""
     seen = _capture_diff_review(monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(default="{}"))
@@ -298,6 +297,7 @@ def test_review_diff_grounds_units_and_judges_issue_links_on_the_finder(monkeypa
 
 
 def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
+    """Of app.py, docs, and tests changes only app.py is planned, and grounding.json binds to units.json."""
     change = _git_change(
         tmp_path / "repo",
         {},
@@ -323,6 +323,7 @@ def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
 
 
 def test_review_diff_empty_git_range_is_clean(monkeypatch, capsys, diff_target):
+    """A HEAD..HEAD range with a mock provider exits 0 with no findings and a complete outcome."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.setattr(
         "cyberjury.providers.configuration.make_provider",
@@ -345,6 +346,7 @@ def test_review_diff_empty_git_range_is_clean(monkeypatch, capsys, diff_target):
 
 
 def test_incomplete_diff_review_exits_nonzero_and_surfaces_the_error(monkeypatch, capsys, diff_target, tmp_path):
+    """One engine error exits 1, prints 'the review is incomplete', and records the attempt as incomplete."""
     monkeypatch.setattr(climod, "run_review", lambda prepared, **k: _fake_run(prepared, k, errors=1))
     rc = main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"])
     assert rc == 1
@@ -356,6 +358,7 @@ def test_incomplete_diff_review_exits_nonzero_and_surfaces_the_error(monkeypatch
 
 
 def test_incomplete_diff_review_surfaces_grounding_limitations(monkeypatch, capsys, diff_target):
+    """A facts grounding limitation exits 1 and prints 'structured facts unavailable: facts:app.ts:3:8'."""
     grounding = GroundingCoverage(limitations=("facts:app.ts:3:8",))
     monkeypatch.setattr(
         climod,
@@ -394,18 +397,20 @@ def test_incomplete_diff_review_surfaces_failed_batch_details(monkeypatch, capsy
     assert "the review is incomplete" in err
 
 
-def test_review_repository_scaffold_writes_the_unit_plan_without_markdown_workflow(tmp_path):
+def test_review_repository_writes_the_unit_plan(tmp_path):
+    """A dry-run over a directory with only app.py writes units.json listing a single app.py unit."""
     repository = tmp_path / "svc"
     repository.mkdir()
     (repository / "app.py").write_text("x = 1\n")
     ws = tmp_path / "ws"
-    rc = main(["review", "repository", str(repository), "--workspace", str(ws), "--scaffold"])
+    rc = main(["review", "repository", str(repository), "--workspace", str(ws), "--dry-run"])
     assert rc == 0
     review = _repository_project(ws, repository).parents[1]
     assert [unit["name"] for unit in json.loads((review / "units.json").read_text())["units"]] == ["app.py"]
 
 
-def test_review_repository_scaffold_skips_ignored_trees_of_a_git_work_tree(tmp_path):
+def test_review_repository_skips_ignored_trees_of_a_git_work_tree(tmp_path):
+    """A .gitignore'd .venv tree and its lib64 symlink are left out of snapshot.json and the unit plan."""
     repository = tmp_path / "svc"
     repository.mkdir()
     git(repository, "init", "--quiet")
@@ -416,7 +421,7 @@ def test_review_repository_scaffold_skips_ignored_trees_of_a_git_work_tree(tmp_p
     (repository / ".venv" / "lib64").symlink_to("lib", target_is_directory=True)
     ws = tmp_path / "ws"
 
-    assert main(["review", "repository", str(repository), "--workspace", str(ws), "--scaffold"]) == 0
+    assert main(["review", "repository", str(repository), "--workspace", str(ws), "--dry-run"]) == 0
 
     review = _repository_project(ws, repository).parents[1]
     files = [entry["path"] for entry in json.loads((review / "snapshot.json").read_text())["files"]]
@@ -432,9 +437,9 @@ def _graphable(root):
 
 
 def test_review_repository_grounds_units_with_syntax_facts(tmp_path):
-    """Scaffold extracts syntax facts before it grounds the planned units, delivering candidate callee source."""
+    """Review extracts syntax facts before it grounds the planned units, delivering candidate callee source."""
     ws = tmp_path / "ws"
-    rc = main(["review", "repository", str(_graphable(tmp_path / "svc")), "--workspace", str(ws), "--scaffold"])
+    rc = main(["review", "repository", str(_graphable(tmp_path / "svc")), "--workspace", str(ws), "--dry-run"])
     assert rc == 0
     review = _repository_project(ws, tmp_path / "svc").parents[1]
     grounding = json.loads((review / "grounding.json").read_text())
@@ -455,7 +460,8 @@ def _flask_repository(root):
     return root
 
 
-def test_repository_run_keeps_its_result_when_the_live_source_changes(tmp_path, monkeypatch, capsys):
+def test_repository_review_keeps_its_result_when_the_live_source_changes(tmp_path, monkeypatch, capsys):
+    """Editing app.py after the review finishes prints a source-changed NOTE but still writes findings."""
     repository = _flask_repository(tmp_path / "svc")
     original = climod.run_review
 
@@ -465,7 +471,7 @@ def test_repository_run_keeps_its_result_when_the_live_source_changes(tmp_path, 
         return result
 
     monkeypatch.setattr(climod, "run_review", review_then_edit)
-    rc = main(["review", "repository", str(repository), "--workspace", str(tmp_path / "ws"), "--run", "--dry-run"])
+    rc = main(["review", "repository", str(repository), "--workspace", str(tmp_path / "ws"), "--dry-run"])
 
     assert rc == 0
     err = capsys.readouterr().err
@@ -474,6 +480,7 @@ def test_repository_run_keeps_its_result_when_the_live_source_changes(tmp_path, 
 
 
 def test_diff_review_keeps_its_result_when_the_source_check_fails(monkeypatch, capsys, diff_target, tmp_path):
+    """A failed snapshot match prints the source-changed NOTE yet exits 0 and writes outcome.json."""
     monkeypatch.setattr(climod.SourceSnapshot, "matches", lambda self: False)
 
     assert main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"]) == 0
@@ -485,7 +492,8 @@ def test_diff_review_keeps_its_result_when_the_source_check_fails(monkeypatch, c
     assert (attempt / "outcome.json").is_file()
 
 
-def test_repository_run_with_model_errors_exits_nonzero(tmp_path, monkeypatch):
+def test_repository_review_with_model_errors_exits_nonzero(tmp_path, monkeypatch):
+    """A provider answering 'not json at all' to every finder call makes the repository review exit 1."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     repository = _flask_repository(tmp_path / "svc")
     ws = tmp_path / "ws"
@@ -500,13 +508,13 @@ def test_repository_run_with_model_errors_exits_nonzero(tmp_path, monkeypatch):
             str(repository),
             "--workspace",
             str(ws),
-            "--run",
         ]
     )
     assert rc == 1
 
 
-def test_run_builds_one_finder_provider(monkeypatch, tmp_path):
+def test_repository_review_builds_one_finder_provider(monkeypatch, tmp_path):
+    """A live repository review calls make_provider exactly once for its single finder seat."""
     providers = []
 
     def fake_make_provider(name, **kwargs):
@@ -519,7 +527,7 @@ def test_run_builds_one_finder_provider(monkeypatch, tmp_path):
     _seed_source(tmp_path)
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    assert main(["review", "repository", str(tmp_path), "--run"]) == 0
+    assert main(["review", "repository", str(tmp_path)]) == 0
     assert len(providers) == 1
 
 
@@ -530,13 +538,14 @@ def test_run_builds_one_finder_provider(monkeypatch, tmp_path):
         (["--concurrency", "4"], 4),
     ],
 )
-def test_run_concurrency_uses_the_api_default(monkeypatch, tmp_path, args, expected):
-    captured = _capture_run(monkeypatch, tmp_path)
-    main(["review", "repository", str(tmp_path), "--run", *args])
+def test_repository_review_concurrency_uses_the_api_default(monkeypatch, tmp_path, args, expected):
+    """Repository concurrency is 8 without a flag and 4 with --concurrency 4."""
+    captured = _capture_repository_review(monkeypatch, tmp_path)
+    main(["review", "repository", str(tmp_path), *args])
     assert captured["concurrency"] == expected
 
 
-def _patch_run(monkeypatch, tmp_path, **result):
+def _patch_repository_review(monkeypatch, tmp_path, **result):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     _seed_source(tmp_path)
     monkeypatch.setattr(
@@ -546,18 +555,22 @@ def _patch_run(monkeypatch, tmp_path, **result):
     )
 
 
-def test_run_with_failed_calls_exits_nonzero_and_warns(monkeypatch, tmp_path, capsys):
+def test_repository_review_with_failed_calls_exits_nonzero_and_warns(monkeypatch, tmp_path, capsys):
+    """A rate-limited unit failure exits 1 and prints 'review unit 1/2 failed for app.py' with the reason."""
     failure = ReviewUnitFailure(index=1, total=2, paths=("app.py",), reason="RuntimeError: provider rate limited")
-    _patch_run(monkeypatch, tmp_path, failures=[failure], errors=1)
-    rc = main(["review", "repository", str(tmp_path), "--run"])
+    _patch_repository_review(monkeypatch, tmp_path, failures=[failure], errors=1)
+    rc = main(["review", "repository", str(tmp_path)])
     err = capsys.readouterr().err
     assert rc == 1
     assert "error: review unit 1/2 failed for app.py: RuntimeError: provider rate limited" in err
 
 
-def test_run_failure_reason_exits_nonzero_and_asks_to_rerun(monkeypatch, tmp_path, capsys):
-    _patch_run(monkeypatch, tmp_path, errors=1, failure_reason="structured facts unavailable: facts:app.py")
-    rc = main(["review", "repository", str(tmp_path), "--run"])
+def test_repository_review_failure_reason_exits_nonzero_and_asks_to_rerun(monkeypatch, tmp_path, capsys):
+    """A facts failure_reason exits 1, prints the reason as an error, and says 'Re-run to retry open work'."""
+    _patch_repository_review(
+        monkeypatch, tmp_path, errors=1, failure_reason="structured facts unavailable: facts:app.py"
+    )
+    rc = main(["review", "repository", str(tmp_path)])
     err = capsys.readouterr().err
     assert rc == 1
     assert "error: structured facts unavailable: facts:app.py" in err
@@ -565,8 +578,9 @@ def test_run_failure_reason_exits_nonzero_and_asks_to_rerun(monkeypatch, tmp_pat
 
 
 def test_abbreviated_live_flag_is_rejected(tmp_path):
+    """Argparse prefix matching is disabled, so --conc 2 exits with usage code 2."""
     with pytest.raises(SystemExit) as exc:
-        main(["review", "repository", str(tmp_path), "--run", "--conc", "2"])
+        main(["review", "repository", str(tmp_path), "--conc", "2"])
     assert exc.value.code == 2
 
 
@@ -574,13 +588,11 @@ def test_abbreviated_live_flag_is_rejected(tmp_path):
     "flag",
     [
         ("--concurrency", "0"),
-        ("--retries", "-1"),
-        ("--timeout", "0"),
-        ("--timeout", "nan"),
-        ("--model", ""),
+        ("--concurrency", "two"),
     ],
 )
 def test_diff_rejects_invalid_cli_values(flag, capsys):
+    """A --concurrency of 0 or 'two' exits with usage code 2 and names the flag on stderr."""
     with pytest.raises(SystemExit) as exc:
         main(
             [
@@ -598,42 +610,21 @@ def test_diff_rejects_invalid_cli_values(flag, capsys):
     assert flag[0] in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(
-    "args",
-    [
-        ["--scaffold", "--model", "unused-model"],
-        ["--scaffold", "--provider", "openai"],
-        ["--scaffold", "--concurrency", "2"],
-        ["--scaffold", "--dry-run"],
-    ],
-)
-def test_repository_rejects_flags_outside_the_selected_action(args, capsys, tmp_path):
-    with pytest.raises(SystemExit) as exc:
-        main(["review", "repository", str(tmp_path), *args])
-    assert exc.value.code == 2
-    assert "does not apply" in capsys.readouterr().err
+def test_failure_text_reads_the_failures_the_cli_prints(capsys, diff_target, tmp_path):
+    """A bare HEAD range yields one parsed failure 'git range must use A..B or A...B', and NOTE lines yield None."""
+    args = ["review", "diff", "--repository", str(diff_target.repository), "--git-range", "HEAD"]
+    assert main([*args, "--workspace", str(tmp_path / "state"), "--dry-run"]) == 1
 
-
-def test_invalid_numeric_environment_uses_the_cli_error_boundary(monkeypatch, capsys, diff_target):
-    monkeypatch.setenv("CYBERJURY_RETRIES", "not-an-int")
-    assert main(["review", "diff", *diff_target.args, "--dry-run"]) == 1
     err = capsys.readouterr().err
-    assert "CYBERJURY_RETRIES must be a nonnegative integer" in err
+    failures = [text for line in err.splitlines() if (text := climod.failure_text(line))]
+
+    assert failures == ["git range must use A..B or A...B"]
     assert "Traceback" not in err
-
-
-def test_failure_text_reads_the_failures_the_cli_prints(monkeypatch, capsys, diff_target):
-    monkeypatch.setenv("CYBERJURY_RETRIES", "not-an-int")
-    main(["review", "diff", *diff_target.args, "--dry-run"])
-
-    failures = [text for line in capsys.readouterr().err.splitlines() if (text := climod.failure_text(line))]
-
-    assert failures == ["CYBERJURY_RETRIES must be a nonnegative integer"]
     assert climod.failure_text("error: the review is incomplete") == "the review is incomplete"
     assert climod.failure_text("NOTE: review source changed while the review was running") is None
 
 
-def _capture_run(monkeypatch, repository):
+def _capture_repository_review(monkeypatch, repository):
     captured = {}
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     _seed_source(repository)
@@ -646,22 +637,23 @@ def _capture_run(monkeypatch, repository):
     return captured
 
 
-def test_repository_run_uses_the_finder_seat(monkeypatch, tmp_path):
-    """Repository run reviews with the finder seat and its seat provenance label."""
-    captured = _capture_run(monkeypatch, tmp_path)
-    main(["review", "repository", str(tmp_path), "--run"])
+def test_repository_review_uses_the_finder_seat(monkeypatch, tmp_path):
+    """Repository review uses the finder seat and its seat provenance label."""
+    captured = _capture_repository_review(monkeypatch, tmp_path)
+    main(["review", "repository", str(tmp_path)])
     assert captured["seats"].finder is not None
     assert captured["seats"].finder_label.startswith("seat-")
 
 
 def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target, tmp_path):
+    """The request.json records the seat id and --concurrency 5, model-calls.json is empty, and no key leaks."""
     captured = {}
 
     def fake_review(prepared, **kwargs):
         captured.update(kwargs)
         return _fake_run(prepared, kwargs)
 
-    monkeypatch.setenv("CYBERJURY_API_KEY", "secret-canary")
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-canary")
     monkeypatch.setattr(climod, "run_review", fake_review)
     assert main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--concurrency", "5"]) == 0
     review_dir = next((tmp_path / "reviews").iterdir())
@@ -669,18 +661,42 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     request = json.loads((attempt_dir / "request.json").read_text())
     model_calls = json.loads((attempt_dir / "model-calls.json").read_text())
 
-    assert "schedule" not in request
     assert request["providers"]["seat"]["seat_id"].startswith("seat-")
     assert request["concurrency"]["review"] == captured["concurrency"] == 5
     assert request["concurrency"] == {"review": 5}
-    assert "verification" not in request
-    assert not (attempt_dir / "verification.json").exists()
     assert model_calls["schema"] == "cyberjury.model-calls/v1"
     assert model_calls["calls"] == []
     assert "secret-canary" not in "".join(path.read_text() for path in review_dir.rglob("*.json*"))
 
 
+def test_the_review_reads_its_model_from_the_working_directory_env(monkeypatch, diff_target, tmp_path):
+    """CYBERJURY_MODEL and OPENAI_API_KEY from ./.env select an openai seat running model-from-env."""
+    monkeypatch.setattr(climod, "load_env_file", load_env_file)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".env").write_text("CYBERJURY_MODEL=model-from-env\nOPENAI_API_KEY=key-from-env\n", encoding="utf-8")
+    monkeypatch.chdir(project)
+    for name in ("CYBERJURY_MODEL", "OPENAI_API_KEY"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+    captured = {}
+
+    def fake_review(prepared, **kwargs):
+        captured.update(kwargs)
+        return _fake_run(prepared, kwargs)
+
+    monkeypatch.setattr(climod, "run_review", fake_review)
+
+    assert main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path / "state")]) == 0
+
+    assert captured["seats"].finder_model == "model-from-env"
+    attempt = next(next((tmp_path / "state" / "reviews").iterdir()).joinpath("attempts").iterdir())
+    seat = json.loads((attempt / "request.json").read_text())["providers"]["seat"]
+    assert (seat["provider"], seat["model"]) == ("openai", "model-from-env")
+
+
 def test_diff_dry_run_persists_calls_bound_to_planned_units(diff_target, tmp_path):
+    """A dry-run diff records model calls whose unit_id is a planned unit and whose trigger is known."""
     assert main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"]) == 0
     review = next((tmp_path / "reviews").iterdir())
     attempt = next(review.joinpath("attempts").iterdir())
@@ -690,11 +706,11 @@ def test_diff_dry_run_persists_calls_bound_to_planned_units(diff_target, tmp_pat
     assert unit_ids
     assert model_calls["calls"]
     assert all(call["unit_id"] in unit_ids for call in model_calls["calls"])
-    assert all("round" not in call for call in model_calls["calls"])
     assert all(call["trigger"] in {"initial_judgment", "evidence_followup"} for call in model_calls["calls"])
 
 
 def test_repository_dry_run_persists_calls_bound_to_planned_units(tmp_path):
+    """A dry-run over a Flask app records model calls whose unit_id each names a planned unit."""
     repository = _flask_repository(tmp_path / "svc")
     state = tmp_path / "state"
 
@@ -704,7 +720,6 @@ def test_repository_dry_run_persists_calls_bound_to_planned_units(tmp_path):
                 "review",
                 "repository",
                 str(repository),
-                "--run",
                 "--workspace",
                 str(state),
                 "--dry-run",
@@ -719,25 +734,25 @@ def test_repository_dry_run_persists_calls_bound_to_planned_units(tmp_path):
 
     assert model_calls["calls"]
     assert all(call["unit_id"] in unit_ids for call in model_calls["calls"])
-    assert all("round" not in call for call in model_calls["calls"])
 
 
-def test_repository_actions_share_review_with_distinct_attempts(tmp_path):
+def test_repository_reruns_share_review_with_distinct_attempts(tmp_path):
+    """Two dry-runs of one repository reuse one review directory and add two complete attempts."""
     repository = _flask_repository(tmp_path / "svc")
     state_root = tmp_path / "state"
 
-    assert main(["review", "repository", str(repository), "--workspace", str(state_root), "--scaffold"]) == 0
-    assert main(["review", "repository", str(repository), "--workspace", str(state_root), "--run", "--dry-run"]) == 0
+    assert main(["review", "repository", str(repository), "--workspace", str(state_root), "--dry-run"]) == 0
+    assert main(["review", "repository", str(repository), "--workspace", str(state_root), "--dry-run"]) == 0
 
     reviews = list((state_root / "reviews").iterdir())
     assert len(reviews) == 1
     attempts = sorted((reviews[0] / "attempts").iterdir())
-    actions = sorted(json.loads((attempt / "request.json").read_text())["action"] for attempt in attempts)
-    assert actions == ["run", "scaffold"]
+    assert len(attempts) == 2
     assert all(json.loads((attempt / "attempt.json").read_text())["state"] == "complete" for attempt in attempts)
 
 
 def test_provider_preflight_failure_is_terminal_and_redacted(monkeypatch, diff_target, tmp_path):
+    """A missing API key leaves a failed attempt.json whose content has no authorization= header text."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -752,6 +767,7 @@ def test_provider_preflight_failure_is_terminal_and_redacted(monkeypatch, diff_t
 
 
 def test_model_call_persistence_failure_marks_the_attempt_failed(monkeypatch, diff_target, tmp_path):
+    """When writing model-calls.json raises, the dry-run exits 1 and attempt.json records state failed."""
     monkeypatch.setattr(climod, "_execute_review", _complete_stage_one_only)
 
     def fail_record(_args):
@@ -772,6 +788,7 @@ def test_stage_one_request_is_shared_across_targets(
     tmp_path,
     scope,
 ):
+    """Diff and repository runs share a seat request and write target, snapshot, contract, facts, and units."""
     captured = {}
 
     def fake_dispatch(run):
@@ -783,9 +800,7 @@ def test_stage_one_request_is_shared_across_targets(
     monkeypatch.setattr(climod, "_execute_review", fake_dispatch)
     change = _git_change(tmp_path / "repo", {}, {"app.py": "source\n"})
     target_args = (
-        ["diff", *change.args, "--dry-run"]
-        if scope == "diff"
-        else ["repository", str(change.repository), "--run", "--dry-run"]
+        ["diff", *change.args, "--dry-run"] if scope == "diff" else ["repository", str(change.repository), "--dry-run"]
     )
 
     assert (
@@ -821,12 +836,13 @@ def test_stage_one_request_is_shared_across_targets(
 
 
 def test_repository_without_reviewable_source_fails_before_model_calls(tmp_path):
+    """A repository holding only README.md exits 1 with empty units and model calls and a failed attempt."""
     repository = tmp_path / "repo"
     repository.mkdir()
     (repository / "README.md").write_text("unknown target\n")
     state = tmp_path / "state"
 
-    assert main(["review", "repository", str(repository), "--run", "--dry-run", "--workspace", str(state)]) == 1
+    assert main(["review", "repository", str(repository), "--dry-run", "--workspace", str(state)]) == 1
 
     review = next((state / "reviews").iterdir())
     attempt = next((review / "attempts").iterdir())
@@ -838,6 +854,7 @@ def test_repository_without_reviewable_source_fails_before_model_calls(tmp_path)
 
 
 def test_diff_runs_get_independent_review_sessions(monkeypatch, diff_target, tmp_path):
+    """Two identical diff dry-runs create two review directories with the same target and snapshot hashes."""
     monkeypatch.setattr(climod, "_execute_review", _complete_stage_one_only)
     command = ["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"]
 
@@ -853,45 +870,25 @@ def test_diff_runs_get_independent_review_sessions(monkeypatch, diff_target, tmp
 
 
 def test_repository_configuration_change_requires_fresh(monkeypatch, tmp_path, capsys):
+    """Changing CYBERJURY_MODEL between runs exits 1 citing --fresh, which then starts a second review."""
     monkeypatch.setattr(climod, "_execute_review", _complete_stage_one_only)
     repository = tmp_path / "repo"
     repository.mkdir()
     (repository / "app.py").write_text("value = 1\n")
-    base = ["review", "repository", str(repository), "--run", "--workspace", str(tmp_path / "state")]
+    base = ["review", "repository", str(repository), "--workspace", str(tmp_path / "state")]
 
-    assert main([*base, "--model", "model-a"]) == 0
-    assert main([*base, "--model", "model-b"]) == 1
+    monkeypatch.setenv("CYBERJURY_MODEL", "model-a")
+    assert main(base) == 0
+    monkeypatch.setenv("CYBERJURY_MODEL", "model-b")
+    assert main(base) == 1
     assert "--fresh" in capsys.readouterr().err
-    assert main([*base, "--model", "model-b", "--fresh"]) == 0
+    assert main([*base, "--fresh"]) == 0
 
     assert len(list((tmp_path / "state" / "reviews").iterdir())) == 2
 
 
-def test_explicit_review_id_must_already_exist(tmp_path, capsys):
-    repository = tmp_path / "repo"
-    repository.mkdir()
-    state = tmp_path / "state"
-
-    assert (
-        main(
-            [
-                "review",
-                "repository",
-                str(repository),
-                "--scaffold",
-                "--workspace",
-                str(state),
-                "--review-id",
-                "review-" + "c" * 32,
-            ]
-        )
-        == 1
-    )
-    assert "does not exist" in capsys.readouterr().err
-    assert not (state / "reviews").exists()
-
-
 def test_state_root_inside_repository_is_rejected_before_workspace_creation(tmp_path, capsys):
+    """A --workspace inside the repository exits 1 with 'state root cannot be inside' and is never created."""
     repository = tmp_path / "repo"
     repository.mkdir()
     state = repository / ".state"
@@ -902,7 +899,7 @@ def test_state_root_inside_repository_is_rejected_before_workspace_creation(tmp_
                 "review",
                 "repository",
                 str(repository),
-                "--scaffold",
+                "--dry-run",
                 "--workspace",
                 str(state),
             ]
@@ -915,6 +912,7 @@ def test_state_root_inside_repository_is_rejected_before_workspace_creation(tmp_
 
 
 def test_invalid_committed_git_range_records_failed_attempt_before_models(tmp_path, capsys):
+    """A bare HEAD git range exits 1, records a failed attempt, and writes no target.json."""
     repository = tmp_path / "repo"
     repository.mkdir()
     git(repository, "init", "--quiet")

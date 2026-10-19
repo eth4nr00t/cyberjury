@@ -34,7 +34,6 @@ def _report(finding: dict) -> dict:
 
 
 def _location(report: dict) -> tuple[str, int, int]:
-    """Order reports by file and line, then by label, so reports of the same place share an entry."""
     line = report.get("line")
     return str(report.get("file") or ""), line if isinstance(line, int) else 0, int(report["label"].rsplit("#", 1)[1])
 
@@ -45,7 +44,6 @@ def default_mapping_path(out: Path) -> Path:
 
 
 def _reference_attempts(references: Sequence[Path]) -> list[Attempt]:
-    """Load reference attempts from runs directories or from the private mapping of an earlier round."""
     attempts: list[Attempt] = []
     for reference in references:
         if not reference.is_file():
@@ -207,7 +205,7 @@ def write_ledgers(
     labels = mapping["labels"]
     if set(results) != set(labels):
         missing, unknown = sorted(set(labels) - set(results)), sorted(set(results) - set(labels))
-        raise ValueError(f"adjudicator results must cover every label once; missing {missing}, unknown {unknown}")
+        raise ValueError(f"adjudicator results must cover every label once, missing {missing}, unknown {unknown}")
     by_attempt: dict[str, list[str]] = {path: [] for path in mapping["attempts"]}
     for label, where in labels.items():
         by_attempt[where["attempt"]].append(label)
@@ -233,8 +231,8 @@ def write_ledgers(
     ]
     if stale and not supersede:
         raise ValueError(
-            f"{len(stale)} attempts already have a ledger from another adjudication round, for example {stale[0]}; "
-            "pass --supersede to replace every ledger of this round's attempts"
+            f"{len(stale)} attempts already have a ledger from another adjudication round, for example {stale[0]}. "
+            "Pass --supersede to replace every ledger of this round's attempts"
         )
     for path in stale:
         path.unlink()
@@ -256,7 +254,6 @@ def write_ledgers(
 
 
 def _ledger_round(path: Path) -> str | None:
-    """Return the round of an existing ledger, or an empty id for a ledger of an unknown format."""
     if not path.is_file():
         return None
     try:
@@ -268,11 +265,6 @@ def _ledger_round(path: Path) -> str | None:
 
 
 def _root_canonical(label: str, results: dict, labels: dict) -> str | None:
-    """Follow a duplicate's canonical through other duplicates of its run to the report that is not one.
-
-    Adjudicators of a split case name canonicals in other entries, so a canonical may itself be a
-    duplicate of an earlier report with the same root cause.
-    """
     seen = {label}
     canonical = results[label]["canonical"]
     while canonical is not None:

@@ -230,7 +230,7 @@ class CandidateCallContext:
 
 
 _CALL_CANDIDATE_HEADER = (
-    "Unverified direct call candidates from this unit. Each candidate callee is a syntax match; "
+    "Unverified direct call candidates from this unit. Each candidate callee is a syntax match, and "
     "each line states where its source is available:"
 )
 _RECEIPT_PLACEHOLDER = f"source `src-{'0' * 12}` in the evidence catalog"
@@ -248,8 +248,6 @@ type _Call = tuple[CallsiteEvidence, DefinitionEvidence, DefinitionEvidence]
 
 
 class _CandidateSources:
-    """Read each candidate call source once and map character ranges to line numbers."""
-
     def __init__(self, root: str | Path) -> None:
         self._base = Path(root).resolve()
         self._texts: dict[str, str] = {}
@@ -272,8 +270,6 @@ class _CandidateSources:
 
 @dataclass(frozen=True)
 class _CallListing:
-    """Render caller and call lines of the candidate call clues."""
-
     sources: _CandidateSources
     calls_by_definition: Mapping[str, list[str]]
 
@@ -286,13 +282,13 @@ class _CallListing:
         expression = " ".join(callsite.expression.split())
         expression = expression if len(expression) <= 120 else expression[:117] + "..."
         text = (
-            f"  - {inline_source(expression)} at {one_line_source(callsite.source.path)}:{line}; candidate callee "
+            f"  - {inline_source(expression)} at {one_line_source(callsite.source.path)}:{line}, candidate callee "
             f"{one_line_source(callee.source.path)}:{one_line_source(callee.name)} lines "
             f"{callee_start}-{callee_end}, {receipt}"
         )
         callee_calls = tuple(dict.fromkeys(self.calls_by_definition.get(callee.id, ())))[:12]
         if callee_calls:
-            text += f"; candidate callee calls: {', '.join(_inline_code(call) for call in callee_calls)}"
+            text += f", candidate callee calls: {', '.join(_inline_code(call) for call in callee_calls)}"
         return text
 
     def render(self, calls: Iterable[_Call], receipt: Callable[[DefinitionEvidence], str]) -> list[str]:
@@ -322,7 +318,6 @@ def _single_candidate_calls(
     seed_ids: set[str],
     callsite_ids: frozenset[str] | None,
 ) -> list[_Call]:
-    """Return seed callsites without a receiver, in source order, that have exactly one candidate callee."""
     definitions = {definition.id: definition for definition in relationships.definitions}
     targets = {
         relationship.callsite_id: relationship
@@ -346,7 +341,6 @@ def _single_candidate_calls(
 
 
 def _budgeted_calls(listing: _CallListing, calls: list[_Call], max_chars: int) -> tuple[list[_Call], int]:
-    """Keep the calls whose placeholder listing fits the character limit and count the rest."""
     lines = [_CALL_CANDIDATE_HEADER]
     included: list[_Call] = []
     omitted = 0
@@ -369,7 +363,6 @@ def _callee_sources(
     seed_ids: set[str],
     budget: int,
 ) -> tuple[list[tuple[DefinitionEvidence, SourceEvidence, str]], int]:
-    """Read the exact source of each non-seed callee that fits the remaining budget and count the rest."""
     selected_sources: list[tuple[DefinitionEvidence, SourceEvidence, str]] = []
     used = 0
     omitted = 0
@@ -397,7 +390,6 @@ def _deliver_or_publish(
     catalog: tuple[EvidenceItem, ...],
     deliver_budget: int,
 ) -> tuple[list[SourceEvidence], list[EvidenceItem], dict[str, str]]:
-    """Deliver callee sources within the delivery budget, publish the rest, and name each receipt."""
     delivered: list[SourceEvidence] = []
     published: list[EvidenceItem] = []
     receipts = {item.identity: _catalog_receipt(item.id) for item in catalog}
@@ -462,7 +454,6 @@ def candidate_call_context(
 
 
 def _inline_code(source: str) -> str:
-    """Render one source spelling as a single safe code span."""
     return inline_source(" ".join(source.split()))
 
 
@@ -511,7 +502,6 @@ def definition_evidence(root: str | Path, plan: DefinitionUnitPlan) -> tuple[Evi
 
 
 def _definition_preview(source: str, max_chars: int = 240) -> str:
-    """Render a compact exact declaration without exposing an implementation body."""
     parts: list[str] = []
     for raw in split_lines(source):
         line = raw.strip()
@@ -640,7 +630,7 @@ def syntax_hints(
             continue
         truncated = f", first {max_chars_per_file} characters" if len(hints) > max_chars_per_file else ""
         blocks.append(
-            f"{one_line_source(file)}: syntax hints (unverified; cite only delivered source){truncated}:\n"
+            f"{one_line_source(file)}: syntax hints (unverified, cite only delivered source){truncated}:\n"
             f"{fenced_source(hints[:max_chars_per_file])}"
         )
     return "\n\n".join(blocks)
@@ -675,7 +665,7 @@ class GroundingContext:
     """Prompt context with an explicit source boundary and reviewed files.
 
     `seed` is the code under review, `text` holds engine notices and call candidates, and
-    `syntax_hints` holds bounded unverified hints; delivered source follows `text`, and the
+    `syntax_hints` holds bounded unverified hints. Delivered source follows `text`, and the
     syntax hints follow the delivered source.
     """
 
@@ -823,7 +813,6 @@ def _cited_spans(
     seed_spans: tuple[SourceSpan, ...],
     source_evidence: tuple[SourceEvidence, ...],
 ) -> list[tuple[str, SourceSpan]]:
-    """Pair each cited span with its ref: seed spans first, then cited source evidence in delivery order."""
     candidates: list[tuple[str, SourceSpan]] = []
     if "seed" in evidence_refs:
         candidates.extend(("seed", span) for span in seed_spans)

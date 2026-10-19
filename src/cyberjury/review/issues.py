@@ -1,6 +1,6 @@
-"""Group retained findings into issues: findings that one code change fixes.
+"""Group reported findings into issues: findings that one code change fixes.
 
-Grouping never removes a finding; every member is still reported and counted. Findings
+Grouping never removes a finding. Every member is still reported and counted. Findings
 that report the same category at the same primary location, one file and one line, form one
 issue without a model. Findings of different groups become a candidate pair when each cites
 source covering the other's primary location, or when one does and both cite overlapping lines
@@ -56,7 +56,6 @@ class Issue:
 
 
 def _group_key(finding: Finding) -> tuple[str, int, str]:
-    """Return the deterministic grouping key: one primary location and one reported category."""
     return (normalized_location_path(finding.file), finding.line, finding.category)
 
 
@@ -99,13 +98,11 @@ def group_issues(findings: Sequence[Finding], links: Iterable[tuple[str, str]] =
 
 
 def _covers(finding: Finding, other: Finding) -> bool:
-    """Report whether the finding cites source that covers the other finding's primary location."""
     file = normalized_location_path(other.file)
     return any(span.file == file and span.start_line <= other.line <= span.end_line for span in finding.cited_spans)
 
 
 def _shares_cited_source(first: Finding, second: Finding) -> bool:
-    """Report whether the two findings cite overlapping lines of one source file."""
     return any(
         left.file == right.file and left.start_line <= right.end_line and right.start_line <= left.end_line
         for left in first.cited_spans
@@ -114,7 +111,6 @@ def _shares_cited_source(first: Finding, second: Finding) -> bool:
 
 
 def _traces_same_source(first: Finding, second: Finding) -> bool:
-    """Require mutual coverage, or one-sided coverage of a location plus overlapping cited source."""
     forward, backward = _covers(first, second), _covers(second, first)
     return (forward and backward) or ((forward or backward) and _shares_cited_source(first, second))
 
@@ -164,7 +160,6 @@ class IssueLinkError(RuntimeError):
 
 
 def _source_window(root: str, finding: Finding) -> str:
-    """Return the numbered source lines around one finding's primary location."""
     path = resolve_source_path(root, normalized_location_path(finding.file))
     if path is None:
         raise IssueLinkError(f"source of {finding.file} is unavailable for the issue link judgment")

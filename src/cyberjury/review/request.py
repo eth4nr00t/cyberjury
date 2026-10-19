@@ -8,7 +8,6 @@ from typing import Literal
 
 from cyberjury.canonical import canonical_sha256
 
-type ReviewAction = Literal["run", "scaffold"]
 type ReviewTargetKind = Literal["diff", "repository"]
 
 INTENT_SCHEMA = "cyberjury.review-intent/v1"
@@ -68,9 +67,9 @@ def endpoint_identity(api_base: str | None) -> str:
     return f"sha256:{hashlib.sha256(api_base.encode()).hexdigest()}"
 
 
-def seat_identity(provider: str, model: str, endpoint: str, wire_api: str | None) -> str:
+def seat_identity(provider: str, model: str, endpoint: str) -> str:
     """Identify one effective model transport without any credential value."""
-    material = "\x1f".join((provider, model, endpoint, wire_api or ""))
+    material = "\x1f".join((provider, model, endpoint))
     return f"seat-{hashlib.sha256(material.encode()).hexdigest()[:20]}"
 
 
@@ -82,7 +81,6 @@ class ProviderSeatRecord:
     provider: str
     model: str
     endpoint_identity: str
-    wire_api: str | None
 
     def to_dict(self) -> dict[str, object]:
         """Return the strict provider seat wire form."""
@@ -91,7 +89,6 @@ class ProviderSeatRecord:
             "provider": self.provider,
             "model": self.model,
             "endpoint_identity": self.endpoint_identity,
-            "wire_api": self.wire_api,
         }
 
 
@@ -116,12 +113,11 @@ class ProviderPlanRecord:
 class ReviewAttemptRequest:
     """One immutable review execution request."""
 
-    action: ReviewAction
     engine_version: str
-    concurrency: ConcurrencyRecord | None
-    dry_run: bool | None
+    concurrency: ConcurrencyRecord
+    dry_run: bool
     fresh: bool | None
-    providers: ProviderPlanRecord | None
+    providers: ProviderPlanRecord
 
     @property
     def request_sha256(self) -> str:
@@ -131,8 +127,6 @@ class ReviewAttemptRequest:
     @property
     def judgment_configuration_sha256(self) -> str:
         """Identify policy that controls reusable repository judgment results."""
-        if self.action != "run" or self.providers is None:
-            raise ValueError("only run requests have reusable judgment configuration")
         providers = self.providers.to_dict()
         semantic = {
             "provider_seat": providers["seat"],
@@ -144,12 +138,11 @@ class ReviewAttemptRequest:
     def semantic_dict(self) -> dict[str, object]:
         """Return the stable command semantics consumed by target adapters."""
         semantic = {
-            "action": self.action,
             "engine_version": self.engine_version,
-            "concurrency": self.concurrency.to_dict() if self.concurrency is not None else None,
+            "concurrency": self.concurrency.to_dict(),
             "dry_run": self.dry_run,
             "fresh": self.fresh,
-            "providers": self.providers.to_dict() if self.providers is not None else None,
+            "providers": self.providers.to_dict(),
         }
         return semantic
 

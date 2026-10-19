@@ -16,11 +16,13 @@ A, B, C, D = ("candidate-" + letter * 20 for letter in "abcd")
 
 @pytest.fixture
 def cases(benchmark_project):
+    """Load every case of the benchmark project."""
     return load_cases([benchmark_project.benchmark])
 
 
 @pytest.fixture
 def runs_dirs(tmp_path, write_attempt):
+    """Write two runs directories, the first with a complete and a failed attempt."""
     first_runs, second_runs = tmp_path / "first_runs", tmp_path / "second_runs"
     write_attempt(first_runs, 1, (A, B))
     write_attempt(first_runs, 2, (), complete=False)
@@ -54,6 +56,7 @@ def _result(packets, verdicts):
 
 
 def test_packets_hide_report_provenance_and_include_no_earlier_verdicts(tmp_path, cases, runs_dirs, benchmark_project):
+    """Two runs give one packet of three reports labelled by run A/B, without candidate ids or verdicts."""
     out = tmp_path / "adjudication"
 
     counts = build_packets(cases, list(runs_dirs), out, groups=1)
@@ -89,6 +92,7 @@ def test_packets_hide_report_provenance_and_include_no_earlier_verdicts(tmp_path
 
 
 def test_grouped_reports_are_adjudicated_one_by_one_without_their_issue(tmp_path, cases, write_attempt):
+    """Three reports grouped into two issues reach the packet with no issue keys and get one verdict each."""
     runs = tmp_path / "grouped"
     write_attempt(runs, 1, (A, B, C), issues=((B, A), (C,)))
     out = tmp_path / "adjudication"
@@ -110,6 +114,7 @@ def test_grouped_reports_are_adjudicated_one_by_one_without_their_issue(tmp_path
 
 
 def test_a_large_case_is_split_into_entries_that_index_each_other(tmp_path, cases, runs_dirs):
+    """With max_reports=2, three reports split into entries of 2 and 1 that list each other's labels."""
     out = tmp_path / "adjudication"
 
     counts = build_packets(cases, list(runs_dirs), out, groups=1, max_reports=2)
@@ -129,6 +134,7 @@ def test_a_large_case_is_split_into_entries_that_index_each_other(tmp_path, case
 
 
 def test_split_entries_keep_reports_of_the_same_place_from_every_run_together(tmp_path, cases, write_attempt):
+    """Reports at lines 2 and 9 from two runs split into one entry per line, each holding both runs."""
     runs = tmp_path / "runs"
     lines = {A: 2, B: 9, C: 9, D: 2}
     for number, candidates in ((1, (A, B)), (2, (C, D))):
@@ -147,6 +153,7 @@ def test_split_entries_keep_reports_of_the_same_place_from_every_run_together(tm
 
 
 def test_a_duplicate_of_a_duplicate_resolves_to_the_first_canonical(tmp_path, cases, write_attempt):
+    """C marked duplicate of B, itself a duplicate of A, is written with canonical_id A."""
     runs = tmp_path / "runs"
     write_attempt(runs, 1, (A, B, C))
     out = tmp_path / "adjudication"
@@ -168,6 +175,7 @@ def test_a_duplicate_of_a_duplicate_resolves_to_the_first_canonical(tmp_path, ca
 
 
 def test_the_private_mapping_cannot_be_written_inside_the_packet_directory(tmp_path, cases, runs_dirs):
+    """A mapping_path under the packet directory raises ValueError and creates no packet directory."""
     out = tmp_path / "adjudication"
 
     with pytest.raises(ValueError, match="outside the adjudicator packet directory"):
@@ -177,6 +185,7 @@ def test_the_private_mapping_cannot_be_written_inside_the_packet_directory(tmp_p
 
 
 def test_overlapping_runs_directories_package_each_attempt_once(tmp_path, cases, runs_dirs):
+    """Passing one runs directory twice plus its parent still packages 2 attempts and 3 reports."""
     counts = build_packets(cases, [runs_dirs[0], runs_dirs[0], tmp_path], tmp_path / "adjudication", groups=1)
 
     assert (counts["attempts"], counts["reports"]) == (2, 3)
@@ -187,6 +196,7 @@ def test_overlapping_runs_directories_package_each_attempt_once(tmp_path, cases,
 def test_packets_include_earlier_verdicts_only_from_requested_references(
     tmp_path, cases, runs_dirs, write_ledger, write_attempt
 ):
+    """A ledger under a reference directory adds its "supported" verdict without the candidate id."""
     reference = write_attempt(tmp_path / "earlier", 1, (A,))
     write_ledger(reference, {A: ("supported", ("create-missing-owner",))})
 
@@ -201,6 +211,7 @@ def test_packets_include_earlier_verdicts_only_from_requested_references(
 
 
 def test_references_follow_the_private_mapping_of_an_earlier_round(tmp_path, cases, runs_dirs):
+    """A round-one mapping as reference carries its three ledger verdicts into the round-two packet."""
     first = tmp_path / "round-one"
     build_packets(cases, list(runs_dirs), first, groups=1)
     _result(first, {f"Claim {A}": "supported"})
@@ -220,6 +231,7 @@ def test_references_follow_the_private_mapping_of_an_earlier_round(tmp_path, cas
 
 
 def test_references_without_ledgers_are_counted_as_empty(tmp_path, cases, runs_dirs):
+    """A reference runs directory with no ledgers adds zero decisions and counts one ledgerless attempt."""
     counts = build_packets(cases, [runs_dirs[0]], tmp_path / "adjudication", groups=1, references=[runs_dirs[1]])
 
     (entry,) = json.loads((tmp_path / "adjudication" / "packet-1.json").read_text(encoding="utf-8"))
@@ -229,6 +241,7 @@ def test_references_without_ledgers_are_counted_as_empty(tmp_path, cases, runs_d
 
 
 def test_results_become_ledgers_beside_each_attempt(tmp_path, cases, runs_dirs, benchmark_project):
+    """Each case directory gets ledger-01.json with round, rubric, and checks hashes plus verdicts."""
     out = tmp_path / "adjudication"
     build_packets(cases, list(runs_dirs), out, groups=1)
     _result(out, {f"Claim {A}": "supported", f"Claim {C}": "supported"})
@@ -250,6 +263,7 @@ def test_results_become_ledgers_beside_each_attempt(tmp_path, cases, runs_dirs, 
 
 
 def test_a_ledger_with_evidence_outside_the_pinned_source_is_rejected_and_not_written(tmp_path, cases, runs_dirs):
+    """Evidence at views.py:30, past the pinned file's end, reports a failure and writes no ledger."""
     out = tmp_path / "adjudication"
     build_packets(cases, [runs_dirs[1]], out, groups=1)
     result = _result(out, {})
@@ -266,6 +280,7 @@ def test_a_ledger_with_evidence_outside_the_pinned_source_is_rejected_and_not_wr
 def test_attempts_recorded_before_a_check_fix_are_adjudicated_against_the_fixed_checks(
     tmp_path, cases, runs_dirs, benchmark_project
 ):
+    """Packets built from edited checks write ledgers carrying the edited checks hash."""
     name = benchmark_project.diff_case
     fixed = cases | {
         name: replace(cases[name], checks=tuple(replace(check, locations=()) for check in cases[name].checks))
@@ -281,6 +296,7 @@ def test_attempts_recorded_before_a_check_fix_are_adjudicated_against_the_fixed_
 
 
 def test_checks_changed_after_the_packets_were_built_stop_the_ledgers(tmp_path, cases, runs_dirs, benchmark_project):
+    """Editing check locations between building packets and writing ledgers raises ValueError."""
     out = tmp_path / "adjudication"
     build_packets(cases, list(runs_dirs), out, groups=1)
     _result(out, {})
@@ -294,6 +310,7 @@ def test_checks_changed_after_the_packets_were_built_stop_the_ledgers(tmp_path, 
 
 
 def test_results_must_cover_every_label(tmp_path, cases, runs_dirs):
+    """A result missing one record raises "cover every label once"."""
     out = tmp_path / "adjudication"
     build_packets(cases, list(runs_dirs), out, groups=1)
     result = _result(out, {})
@@ -305,6 +322,7 @@ def test_results_must_cover_every_label(tmp_path, cases, runs_dirs):
 
 
 def test_a_duplicate_must_name_a_report_of_its_own_run(tmp_path, cases, runs_dirs):
+    """Marking run A's report a duplicate of run B's report raises "outside its run"."""
     out = tmp_path / "adjudication"
     build_packets(cases, list(runs_dirs), out, groups=1)
     result = _result(out, {})
@@ -319,6 +337,7 @@ def test_a_duplicate_must_name_a_report_of_its_own_run(tmp_path, cases, runs_dir
 
 
 def test_a_later_round_does_not_silently_mix_with_ledgers_of_an_earlier_round(tmp_path, cases, runs_dirs):
+    """Ledgers from round one block round two until supersede=True, which removes the stale ledger."""
     first, second = tmp_path / "round-one", tmp_path / "round-two"
     build_packets(cases, list(runs_dirs), first, groups=1)
     _result(first, {f"Claim {A}": "supported", f"Claim {C}": "supported"})

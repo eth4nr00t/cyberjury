@@ -39,12 +39,14 @@ def _receipt(path):
 
 @pytest.fixture
 def cases(benchmark_project):
+    """Load every case of the benchmark project."""
     return load_cases([benchmark_project.benchmark])
 
 
 def test_report_counts_recall_per_run_and_check_precision_and_cost(
     tmp_path, cases, write_attempt, write_ledger, benchmark_project
 ):
+    """Three runs give recall 1/2, precision 0.5, one failed attempt, and one metered request with 5 cache reads."""
     runs = tmp_path / "runs"
     write_ledger(write_attempt(runs, 1, (A, B)), {A: _CREDIT, B: ("duplicate", ())})
     write_ledger(write_attempt(runs, 2, (B,)), {B: ("not_actionable", ())})
@@ -75,6 +77,7 @@ def test_report_counts_recall_per_run_and_check_precision_and_cost(
 
 
 def test_report_withholds_precision_and_fails_while_work_is_open(tmp_path, cases, write_attempt, write_ledger):
+    """A needs_review verdict and a ledgerless attempt leave precision None and produce two failures."""
     runs = tmp_path / "runs"
     write_ledger(write_attempt(runs, 1, (A,)), {A: ("needs_review", ())})
     write_attempt(runs, 2, (B,))
@@ -90,6 +93,7 @@ def test_report_withholds_precision_and_fails_while_work_is_open(tmp_path, cases
 
 
 def test_report_fails_a_run_that_mixes_rubrics():
+    """Two ledger rounds with different rubric hashes fail with run mixes ledgers under different rubrics."""
     summary = {
         "failed": [],
         "unadjudicated": [],
@@ -102,6 +106,7 @@ def test_report_fails_a_run_that_mixes_rubrics():
 
 
 def test_report_rejects_a_ledger_that_no_longer_matches_its_attempt(tmp_path, cases, write_attempt, write_ledger):
+    """Appending a space to an adjudicated attempt makes its ledger fail with does not identify this attempt."""
     runs = tmp_path / "runs"
     attempt = write_attempt(runs, 1, (A,))
     write_ledger(attempt, {A: _CREDIT})

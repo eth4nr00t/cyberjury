@@ -8,6 +8,7 @@ from evals.benchmarks import targets
 
 
 def test_git_url_targets_fetch_exact_commits(tmp_path, monkeypatch):
+    """When cat-file misses, base abc123 and commit def456 are each fetched from origin by hash."""
     calls = []
 
     def fake_run(cmd, **kwargs):
@@ -24,6 +25,7 @@ def test_git_url_targets_fetch_exact_commits(tmp_path, monkeypatch):
 
 
 def test_url_targets_are_cached_under_a_target_neutral_directory():
+    """A repo.git URL target resolves to a repo- prefixed directory under benchmark-targets."""
     path = targets.target_repository({"url": "https://example.com/org/repo.git", "commit": "def456"})
 
     assert path.parent.name == "benchmark-targets"

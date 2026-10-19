@@ -153,7 +153,6 @@ def _git_header_path(header: str) -> str:
 
 
 def _decode_git_path(raw: str) -> str:
-    """Decode one Git header path and remove its side prefix."""
     value = raw.strip()
     if not value or value == "/dev/null":
         return ""

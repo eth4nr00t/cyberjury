@@ -27,6 +27,7 @@ _ANCHOR = ChangeAnchor(file="app.py", line=10, side="new")
 
 @pytest.mark.parametrize("anchor", [None, _ANCHOR], ids=["repository", "diff"])
 def test_findings_at_one_location_stay_separate_unless_they_are_the_same_report(anchor):
+    """Variants differing in title, category, entrypoint, line, or file all count as six new findings."""
     accumulator = finding_accumulator()
     first = _finding(change_anchor=anchor)
     variants = [
@@ -42,6 +43,7 @@ def test_findings_at_one_location_stay_separate_unless_they_are_the_same_report(
 
 
 def test_distinct_change_anchors_stay_separate():
+    """Diff anchors at app.py new-side lines 10 and 11 are kept as two findings."""
     accumulator = finding_accumulator()
     findings = [_finding(change_anchor=ChangeAnchor(file="app.py", line=line, side="new")) for line in (10, 11)]
 
@@ -50,6 +52,7 @@ def test_distinct_change_anchors_stay_separate():
 
 
 def test_distinct_source_operations_at_one_location_stay_separate():
+    """Two findings at app.py:10 with call-first and call-second operation ids are both kept."""
     accumulator = finding_accumulator()
     findings = [_finding(source_operation_id=operation) for operation in ("call-first", "call-second")]
 
@@ -57,6 +60,7 @@ def test_distinct_source_operations_at_one_location_stay_separate():
 
 
 def test_one_source_operation_does_not_fold_findings_at_different_lines():
+    """Findings at lines 63 and 64 sharing source operation call-outer are both kept."""
     accumulator = finding_accumulator()
     findings = [_finding(line=line, source_operation_id="call-outer") for line in (63, 64)]
 
@@ -65,6 +69,7 @@ def test_one_source_operation_does_not_fold_findings_at_different_lines():
 
 @pytest.mark.parametrize("anchor", [None, _ANCHOR], ids=["repository", "diff"])
 def test_an_exact_duplicate_keeps_the_first_report_and_adds_evidence_refs_and_provenance(anchor):
+    """A case and spacing variant keeps the first severity and evidence, joins attack paths, and unions refs."""
     accumulator = finding_accumulator()
     first = _finding(
         title="SQL injection in X",
@@ -101,5 +106,6 @@ def test_an_exact_duplicate_keeps_the_first_report_and_adds_evidence_refs_and_pr
 
 
 def test_the_merge_rule_names_every_identity_field_the_model_controls():
+    """MERGE_RULE mentions title, category, entrypoint, file, line, and change_anchor in backticks."""
     for name in ("title", "category", "entrypoint", "file", "line", "change_anchor"):
         assert f"`{name}`" in MERGE_RULE

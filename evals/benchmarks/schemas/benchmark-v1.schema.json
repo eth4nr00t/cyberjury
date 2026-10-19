@@ -73,7 +73,7 @@
       }
     },
     "checkId": {
-      "description": "<subject>-<weakness> in kebab-case. subject names the feature or component that holds the defect, such as mail-test or storage-path-template. weakness is one of: missing-permission (model or object permission check missing), idor (object fetched by id without ownership or visibility scoping), missing-owner (created object has no owner and becomes visible to all), privilege-escalation, information-disclosure, path-traversal, stored-xss, ssrf, csrf, injection, denial-of-service, authentication-bypass, symlink-following. One vulnerability keeps one id across cases; distinct vulnerabilities of one case get distinct ids.",
+      "description": "<subject>-<weakness> in kebab-case. subject names the feature or component that holds the defect, such as mail-test or storage-path-template. weakness is one of: missing-permission (model or object permission check missing), idor (object fetched by id without ownership or visibility scoping), missing-owner (created object has no owner and becomes visible to all), privilege-escalation, information-disclosure, path-traversal, stored-xss, ssrf, csrf, injection, denial-of-service, authentication-bypass, symlink-following. One vulnerability keeps one id across cases, and distinct vulnerabilities of one case get distinct ids.",
       "type": "string",
       "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*-(?:missing-permission|idor|missing-owner|privilege-escalation|information-disclosure|path-traversal|stored-xss|ssrf|csrf|injection|denial-of-service|authentication-bypass|symlink-following)$",
       "maxLength": 80
@@ -106,7 +106,7 @@
       }
     },
     "repositoryCase": {
-      "description": "A review of the whole repository at repository.commit; its id is repository-<first 7 hex of repository.commit>.",
+      "description": "A review of the whole repository at repository.commit. Its id is repository-<first 7 hex of repository.commit>.",
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "kind", "checks"],
@@ -121,7 +121,7 @@
       }
     },
     "diffCase": {
-      "description": "A review of the change base..commit; its id is diff-<first 7 hex of commit>, and every check carries change_anchors.",
+      "description": "A review of the change base..commit. Its id is diff-<first 7 hex of commit>, and every check carries change_anchors.",
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "kind", "base", "commit", "checks"],

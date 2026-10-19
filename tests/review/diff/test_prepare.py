@@ -24,11 +24,12 @@ def _patch(path: str, before: str, after: str) -> str:
 
 
 def _configuration() -> ProviderConfiguration:
-    finder = ProviderSeat(provider="openai", model="finder", api_key="key")
+    finder = ProviderSeat(provider="openai", model="finder")
     return ProviderConfiguration(seat=finder, retries=0, timeout=10)
 
 
 def test_dry_run_review_binds_receipts_skips_noise_and_issue_judgment(tmp_path):
+    """README.md is skipped as noise, app.py is planned with a matching receipt, and no issue judge runs."""
     (tmp_path / "app.py").write_text("def run(name):\n    return name\n", encoding="utf-8")
     (tmp_path / "README.md").write_text("After\n", encoding="utf-8")
     diff = _patch("app.py", "def run():", "def run(name):") + _patch("README.md", "Before", "After")
@@ -56,6 +57,7 @@ def test_dry_run_review_binds_receipts_skips_noise_and_issue_judgment(tmp_path):
     ],
 )
 def test_file_sections_without_a_hunk_are_skipped_without_review_units(tmp_path, section, reason):
+    """Rename, mode, and empty new or deleted file sections record their skip reason and plan no units."""
     (tmp_path / "new.py").write_text("def run():\n    return True\n", encoding="utf-8")
 
     prepared = prepare_diff_review(section, capture_source_snapshot(tmp_path))
@@ -66,6 +68,8 @@ def test_file_sections_without_a_hunk_are_skipped_without_review_units(tmp_path,
 
 
 def test_nonempty_input_without_a_diff_hunk_fails_before_facts_extraction(tmp_path, monkeypatch):
+    """Plain 'ordinary text' raises 'no unified diff hunk' without calling syntax facts extraction."""
+
     def unexpected_facts(*args, **kwargs):
         raise AssertionError("facts extraction must not run for invalid input")
 

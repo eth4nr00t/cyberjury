@@ -117,8 +117,6 @@ class EvidenceJudgment[T]:
 
 @dataclass(frozen=True, kw_only=True)
 class _ParsedEvidenceReply[T]:
-    """One validated model reply before its evidence is delivered."""
-
     findings: list[T]
     requested: list[str]
     source_queries: list[dict[str, object]]
@@ -128,20 +126,12 @@ class _ParsedEvidenceReply[T]:
 
 @dataclass(frozen=True, kw_only=True)
 class _DeliveredEvidence:
-    """One atomic evidence batch from every published source catalog."""
-
     text: str
     coverage: GroundingCoverage
     source_evidence: tuple[SourceEvidence, ...]
 
 
 class _RejectedBatch(Exception):
-    """One reply batch the engine did not commit, with the local fact the next reply must correct.
-
-    ``kind`` selects the correction budget. When that budget is spent the judgment ends with
-    ``failure_reason`` and ``unresolved``, or re-raises ``fatal`` on the first model call.
-    """
-
     def __init__(
         self,
         kind: str,
@@ -151,7 +141,6 @@ class _RejectedBatch(Exception):
         unresolved: tuple[str, ...],
         fatal: Exception | None = None,
     ) -> None:
-        """Record the correction text and the terminal state used when no correction remains."""
         self.kind = kind
         self.instruction = instruction
         self.failure_reason = failure_reason
@@ -161,18 +150,13 @@ class _RejectedBatch(Exception):
 
 
 class _MalformedEvidenceRequest(EvidenceRequestError):
-    """A reply's `evidence_requests` violates the id format, so none of the reply is committed."""
-
     def __init__(self, failure: str, findings: tuple[object, ...], requested: tuple[str, ...]) -> None:
-        """Retain the reply findings for failure fallback and the well formed requested ids."""
         self.findings = findings
         self.requested = requested
         super().__init__(failure)
 
 
 class _EvidenceExchange[T]:
-    """The state of one bounded evidence exchange: findings, coverage, budgets, and the next prompt."""
-
     def __init__(
         self,
         context: GroundingContext,
@@ -186,7 +170,6 @@ class _EvidenceExchange[T]:
         finding_prompt_record: Callable[[T], Mapping[str, object]],
         merge_rule: str,
     ) -> None:
-        """Bind the unit context and record its initially delivered source."""
         self.context = context
         self.navigation = navigation
         self.findings_from_reply = findings_from_reply
@@ -247,7 +230,6 @@ class _EvidenceExchange[T]:
         failure_reason: str,
         findings: list[T] | None = None,
     ) -> EvidenceJudgment[T]:
-        """End the exchange with every retained finding unless the final findings are given."""
         return _evidence_judgment(
             findings=self._retained_findings() if findings is None else findings,
             coverage=self.coverage,
@@ -259,7 +241,6 @@ class _EvidenceExchange[T]:
     def read_reply(
         self, ask: Callable[[EvidencePromptContext], RoleReply], call_index: int
     ) -> _ParsedEvidenceReply[T] | EvidenceJudgment[T]:
-        """Ask once and parse the reply, turning a correctable violation into a rejected batch."""
         with model_call_context(
             role="finder",
             trigger="initial_judgment" if call_index == 0 else "evidence_followup",
@@ -313,7 +294,6 @@ class _EvidenceExchange[T]:
                 return self.finish((f"model response {call_index + 1} failed",), _failure_reason(exc))
 
     def accept(self, reply: _ParsedEvidenceReply[T]) -> EvidenceJudgment[T] | None:
-        """Commit a parsed reply: finish on a judgment, or deliver its requests and continue."""
         requested = reply.requested
         repeated_queries = tuple(
             query
@@ -387,7 +367,6 @@ class _EvidenceExchange[T]:
         return None
 
     def reject(self, rejected: _RejectedBatch, call_index: int) -> EvidenceJudgment[T] | None:
-        """Spend one correction of the rejected kind and ask again, or end once that budget is spent."""
         if self.corrections[rejected.kind] < 1:
             if rejected.fatal is not None and call_index == 0:
                 raise rejected.fatal from None
@@ -442,11 +421,10 @@ def run_evidence_judgment[T](
         call_index += 1
 
 
-_CORRECTED_RESPONSE = "Return the corrected response; previously accepted findings are kept."
+_CORRECTED_RESPONSE = "Return the corrected response. Previously accepted findings are kept."
 
 
 def _malformed_request_correction(failure: str, valid_ids: tuple[str, ...]) -> str:
-    """Correct a malformed request batch without echoing any invalid identifier."""
     resubmit = (
         " These requested ids are published and may be requested again: "
         + ", ".join(f"`{item}`" for item in valid_ids)
@@ -456,7 +434,7 @@ def _malformed_request_correction(failure: str, valid_ids: tuple[str, ...]) -> s
     )
     return (
         f"The previous response was not committed because {failure}. No evidence was delivered and none of its "
-        f"findings were accepted.{resubmit} Request only exact ids published in this review; do not invent or "
+        f"findings were accepted.{resubmit} Request only exact ids published in this review. Do not invent or "
         f"transform ids. {_CORRECTED_RESPONSE}"
     )
 
@@ -474,7 +452,6 @@ def _delivery_rejection(
     requested: list[str],
     available_ids: set[str],
 ) -> _RejectedBatch | None:
-    """Classify one undelivered exchange into its correction, or None when no correction applies."""
     failure = str(exc)
     if isinstance(exc, EvidenceBudgetError):
         return _RejectedBatch(
@@ -531,7 +508,6 @@ def _continue_prompt(
     merge_rule: str,
     durable: bool = False,
 ) -> EvidencePromptContext:
-    """Keep delivered evidence and replace the correction, accepted findings, and budget."""
     text = instruction.strip()
     return replace(
         prompt,
@@ -550,7 +526,6 @@ def _evidence_judgment[T](
     unresolved: tuple[str, ...] = (),
     failure_reason: str = "",
 ) -> EvidenceJudgment[T]:
-    """Build one terminal evidence result without dropping prior coverage."""
     grounding = (
         merge_grounding_coverage((coverage, GroundingCoverage(unresolved=unresolved))) if unresolved else coverage
     )
@@ -563,7 +538,6 @@ def _evidence_judgment[T](
 
 
 def _accepted_instruction(accepted: tuple[Mapping[str, object], ...], merge_rule: str) -> str:
-    """Render findings already accepted from earlier responses with how the union merges a later one."""
     if not accepted:
         return ""
     return (
@@ -583,7 +557,6 @@ def _parse_evidence_reply[T](
     evidence_ids: set[str],
     navigation: SourceNavigationSession | None,
 ) -> _ParsedEvidenceReply[T]:
-    """Validate one reply before changing accumulated findings or coverage."""
     findings = findings_from_reply(reply)
     raw_requests = reply.get("evidence_requests", [])
     try:
@@ -627,7 +600,6 @@ def _parse_evidence_reply[T](
 
 
 def _with_request_budget(prompt: EvidencePromptContext, remaining: int) -> EvidencePromptContext:
-    """Publish the bounded request budget as the final prompt control."""
     return replace(
         prompt,
         budget=_request_budget_instruction(remaining, navigation_available=prompt.navigation_available),
@@ -635,7 +607,6 @@ def _with_request_budget(prompt: EvidencePromptContext, remaining: int) -> Evide
 
 
 def _request_budget_instruction(remaining: int, *, navigation_available: bool) -> str:
-    """Tell the model whether another evidence request can be fulfilled."""
     if remaining == 0:
         return (
             "No evidence or source request batches remain. Return the final judgment using only source "
@@ -656,7 +627,6 @@ def _partition_evidence_bound_findings[T](
     available: set[str],
     requested: set[str],
 ) -> tuple[list[T], list[T]]:
-    """Keep evidence bound findings and defer ones awaiting requested source."""
     accepted: list[T] = []
     deferred: list[T] = []
     invalid: list[int] = []
@@ -688,7 +658,6 @@ def _deliver_evidence_exchange(
     source_queries: list[dict[str, object]],
     target_chars: int,
 ) -> _DeliveredEvidence:
-    """Deliver one request batch under one budget and one coverage commit."""
     transaction = navigation.transaction() if navigation is not None else nullcontext()
     with transaction:
         exact = (
@@ -727,7 +696,6 @@ def _deliver_exact_evidence(
     *,
     target_chars: int,
 ) -> SourceNavigationResult:
-    """Dispatch registered evidence ids without asking the model where they live."""
     ids = evidence_request_ids(requested)
     published_by_id = {item.id: item for item in context.evidence}
     published_ids = tuple(item for item in ids if item in published_by_id)
@@ -773,7 +741,6 @@ def _implicit_reference_requests[T](
     navigation: SourceNavigationSession | None,
     evidence_requests: list[object],
 ) -> list[object]:
-    """Turn exact unread citations into requests without accepting their finding."""
     requested = {item for item in evidence_requests if isinstance(item, str)}
     for finding in findings:
         for reference in evidence_refs(finding):

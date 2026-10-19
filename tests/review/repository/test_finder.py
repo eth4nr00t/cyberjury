@@ -52,6 +52,7 @@ def _assessed_empty(*, evidence_requests=None, source_queries=None):
 
 
 def test_repository_system_carries_the_review_contract_and_field_meanings():
+    """The system prompt embeds the brief, rubric, navigation section, and backticks every schema field."""
     system = repository_finder_system(
         review_brief="# Security Reasoning Kernel\nKERNEL-X",
         severity_rubric="# Severity Rubric\nRUBRIC-X",
@@ -70,11 +71,11 @@ def test_repository_system_carries_the_review_contract_and_field_meanings():
         assert text in system
     for field in (*REPOSITORY_FINDING_SCHEMA["properties"], "evidence_requests", "source_queries"):
         assert f"`{field}`" in system
-    assert "Respond with a single JSON object" not in system
     assert system.count("Cite it directly and do not request it again") == 1
 
 
 def test_repository_reviewer_keeps_embedded_markdown_fence_in_source(tmp_path):
+    """A source line containing ``` is fenced with ~~~ so the triple backtick reaches the prompt intact."""
     (tmp_path / "app.py").write_text('marker = "```"\n', encoding="utf-8")
     provider = MockProvider(default=_assessed_empty())
 
@@ -89,6 +90,7 @@ def test_repository_reviewer_keeps_embedded_markdown_fence_in_source(tmp_path):
 
 
 def test_repository_prompt_never_carries_the_unit_name(tmp_path):
+    """A unit named with a backtick and newline leaks neither fragment into the prompt."""
     (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
     provider = MockProvider(default=_assessed_empty())
 
@@ -100,8 +102,6 @@ def test_repository_prompt_never_carries_the_unit_name(tmp_path):
     prompt = provider.calls[0]["messages"][0].content
     assert "app`unit" not in prompt
     assert "next heading" not in prompt
-    assert "terminal rule assessment" not in prompt
-    assert "do not request paths or symbols" not in prompt
 
 
 def _complete_finding(**fields):
@@ -131,11 +131,13 @@ def _complete_finding(**fields):
     ],
 )
 def test_findings_from_reply_requests_a_correction_for_invalid_semantics(change, message):
+    """Blank title or evidence, an escaping path, line 0, or empty evidence_refs raise a correction."""
     with pytest.raises(CorrectableRoleResponseError, match=message):
         findings_from_reply({"findings": [_complete_finding(**change)]})
 
 
 def test_findings_from_reply_carries_the_valid_findings_of_a_corrected_reply():
+    """A reply whose second finding has line 0 raises a correction that keeps the first finding."""
     valid = _complete_finding()
 
     with pytest.raises(CorrectableRoleResponseError, match=r"findings\[1\]\.line") as caught:
@@ -145,6 +147,7 @@ def test_findings_from_reply_carries_the_valid_findings_of_a_corrected_reply():
 
 
 def test_repository_candidate_rejects_a_model_supplied_mismatched_identity():
+    """A reply finding that supplies candidate_id fails the unit with "unknown fields: candidate_id"."""
     reviewer = finder(MockProvider(default=_finder_reply([_complete_finding(candidate_id="candidate-wrong")])))
 
     with pytest.raises(UnitReviewError, match="unknown fields: candidate_id"):
@@ -152,6 +155,7 @@ def test_repository_candidate_rejects_a_model_supplied_mismatched_identity():
 
 
 def test_repository_correction_states_the_shared_merge_rule_for_accepted_findings():
+    """The correction prompt says accepted findings are final, quotes MERGE_RULE, and echoes them."""
     provider = MockProvider(
         responses=[_finder_reply([_complete_finding(), _complete_finding(title="second", line=0)]), _finder_reply()]
     )
@@ -161,11 +165,10 @@ def test_repository_correction_states_the_shared_merge_rule_for_accepted_finding
     correction = provider.calls[1]["messages"][0].content
     assert f"cannot be edited or withdrawn. {MERGE_RULE} Return only new findings." in correction
     assert '"entrypoint": "GET /accounts/<id>"' in correction
-    assert '"endpoint"' not in correction
-    assert '"symbol"' not in correction
 
 
 def test_repository_review_reports_a_malformed_finding_as_failed_work():
+    """A finding with only severity yields no findings, one error, and a "missing fields" reason."""
     reviewer = finder(MockProvider(default=_finder_reply([{"severity": "HIGH"}])))
 
     cycle = reviewer.review_unit(_U[0])
@@ -176,6 +179,7 @@ def test_repository_review_reports_a_malformed_finding_as_failed_work():
 
 
 def test_model_reviewer_builds_prompt_and_parses(tmp_path):
+    """One reply yields an IDOR finding, and the seed source is sent and both calls share a cache prefix."""
     (tmp_path / "app.py").write_text("def handler():\n    return 'ok'\n")
     reply = _finder_reply(
         [
@@ -203,8 +207,6 @@ def test_model_reviewer_builds_prompt_and_parses(tmp_path):
     assert cands[0].category == "insecure-direct-object-reference"
 
     sent = prov.calls[0]["messages"][0].content
-    assert "# Unit Review Mandate" not in sent
-    assert "LENS" not in sent
     assert "Severity Rubric" in prov.calls[0]["system"]
     assert "def handler" in sent
     assert sent.startswith("Code under review, cited as `seed`:\n")
@@ -219,6 +221,7 @@ def test_model_reviewer_builds_prompt_and_parses(tmp_path):
 
 
 def test_repository_reviewer_accepts_a_model_supplied_category(tmp_path):
+    """A free-form category "idor" from the model is kept on the finding as given."""
     (tmp_path / "app.py").write_text("def handler():\n    return 'ok'\n")
     reply = _finder_reply(
         [
@@ -241,6 +244,7 @@ def test_repository_reviewer_accepts_a_model_supplied_category(tmp_path):
 
 
 def test_repository_finding_location_must_be_covered_by_its_cited_source(tmp_path):
+    """A finding at other.py citing only the app.py seed fails with "cited source receipt"."""
     (tmp_path / "app.py").write_text("def handler():\n    return 'ok'\n", encoding="utf-8")
     reply = _finder_reply(
         [
@@ -263,6 +267,7 @@ def test_repository_finding_location_must_be_covered_by_its_cited_source(tmp_pat
 
 
 def test_repository_location_uses_the_canonical_path_from_its_receipt():
+    """A finding at ./views.py is relocated to views.py, the path of its seed source span."""
     finding = Finding(
         title="missing ownership check",
         severity="HIGH",
@@ -281,6 +286,7 @@ def test_repository_location_uses_the_canonical_path_from_its_receipt():
 
 
 def test_model_reviewer_can_request_one_published_source_fragment():
+    """An evidence request reveals the fragment text only in the second call, which yields the finding."""
     evidence = EvidenceItem.create(
         identity="models.py:Account:0:28",
         label="models.py:Account, import Account from views.py [supported]",
@@ -320,6 +326,7 @@ def test_model_reviewer_can_request_one_published_source_fragment():
 
 
 def test_repository_location_accepts_preexisting_source_evidence():
+    """A finding citing existing SourceEvidence for service.py lines 7-8 keeps file, line 8, and refs."""
     evidence = SourceEvidence(
         id="src-existing",
         identity="service.py:load:0:20",
@@ -344,6 +351,7 @@ def test_repository_location_accepts_preexisting_source_evidence():
 
 
 def test_non_entrypoint_runs_one_judgment_even_when_it_finds_a_candidate():
+    """A unit whose first reply returns a finding makes a single provider call and keeps that finding."""
     finding = {
         "title": "first",
         "category": "other",
@@ -371,6 +379,7 @@ def test_non_entrypoint_runs_one_judgment_even_when_it_finds_a_candidate():
 
 
 def test_repository_uses_one_profile_brief_judgment(tmp_path):
+    """A clean source unit makes one cached call with the kernel only in the system prompt."""
     (tmp_path / "app.py").write_text("alpha beta\n")
     provider = MockProvider(default=_assessed_empty())
     reviewer = finder(provider)
@@ -385,6 +394,7 @@ def test_repository_uses_one_profile_brief_judgment(tmp_path):
 
 
 def test_repository_navigation_keeps_profile_coverage_and_runs_a_final_evidence_sweep(tmp_path):
+    """A search_symbols query triggers a follow-up call sharing system and prefix that shows the source."""
     source = "class ModelWithOwner:\n    owner_scope = True\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
     navigator = navigator_from_callgraph(
@@ -425,6 +435,7 @@ def test_repository_navigation_keeps_profile_coverage_and_runs_a_final_evidence_
 
 
 def test_repository_published_evidence_does_not_change_the_profile_brief():
+    """Published evidence ids land in the cache prefix while the evidence body stays out of the prompt."""
     provider = MockProvider(default=_assessed_empty())
     reviewer = finder(provider)
     evidence = EvidenceItem.create(
@@ -444,6 +455,7 @@ def test_repository_published_evidence_does_not_change_the_profile_brief():
 
 
 def test_model_reviewer_raises_on_unparseable_reply():
+    """A reply of plain prose fails the unit with "reply had no complete JSON"."""
     prov = MockProvider(default="sorry, no JSON here")
     reviewer = finder(prov)
     with pytest.raises(UnitReviewError, match="reply had no complete JSON"):
@@ -451,6 +463,7 @@ def test_model_reviewer_raises_on_unparseable_reply():
 
 
 def test_model_reviewer_empty_findings_is_not_an_error():
+    """A reply with an empty findings list reviews to an empty result without raising."""
     prov = MockProvider(default=_finder_reply())
     reviewer = finder(prov)
     assert review(reviewer, _U[0]) == []
@@ -462,17 +475,17 @@ class _SequencedOpenAIClient:
 
         self.requests = []
         self._replies = list(replies)
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+        self.responses = SimpleNamespace(create=self._create)
 
     def _create(self, **kwargs):
         from types import SimpleNamespace
 
         self.requests.append(kwargs)
-        reply = self._replies.pop(0)
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply))])
+        return SimpleNamespace(output_text=self._replies.pop(0), status="completed")
 
 
 def test_initial_and_followup_calls_of_one_unit_share_one_openai_cache_key(tmp_path):
+    """OpenAI prompt_cache_key matches across one unit's initial and follow-up calls but not other units."""
     from cyberjury.providers.openai import OpenAIProvider
 
     source = "class ModelWithOwner:\n    owner_scope = True\n"
@@ -488,7 +501,7 @@ def test_initial_and_followup_calls_of_one_unit_share_one_openai_cache_key(tmp_p
             _assessed_empty(),
         ]
     )
-    reviewer = finder(OpenAIProvider(client=client, wire_api="chat"), model="gpt-4o")
+    reviewer = finder(OpenAIProvider(client=client), model="gpt-4o")
     unit = _grounded_unit("views", GroundingContext(text="seed()", navigator=navigator), tmp_path)
     other = _grounded_unit("other", GroundingContext(text="other()", navigator=navigator), tmp_path)
 
@@ -498,9 +511,9 @@ def test_initial_and_followup_calls_of_one_unit_share_one_openai_cache_key(tmp_p
     initial, followup, other_unit = client.requests
     assert initial["prompt_cache_key"] == followup["prompt_cache_key"]
     assert other_unit["prompt_cache_key"] != initial["prompt_cache_key"]
-    assert initial["messages"][0] == followup["messages"][0] == other_unit["messages"][0]
-    initial_user = initial["messages"][1]["content"]
-    followup_user = followup["messages"][1]["content"]
+    assert initial["instructions"] == followup["instructions"] == other_unit["instructions"]
+    initial_user = initial["input"][0]["content"]
+    followup_user = followup["input"][0]["content"]
     shared = len(initial_user) - len("Evidence request budget: 8 request batches remain.")
     assert followup_user[:shared] == initial_user[:shared]
     assert "owner_scope = True" in followup_user[shared:]

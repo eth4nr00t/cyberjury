@@ -6,10 +6,12 @@ from cyberjury.json_parse import parse_json_object
 
 
 def test_parses_a_direct_object():
+    """A bare JSON object string parses to the same dict."""
     assert parse_json_object('{"a": 1}') == {"a": 1}
 
 
 def test_a_reply_repeating_one_object_is_that_object():
+    """Two equal objects with different key order, separated by whitespace, parse to that one dict."""
     assert parse_json_object('{"a": 1, "b": [2]} \n{"b": [2], "a": 1}') == {"a": 1, "b": [2]}
 
 
@@ -29,4 +31,5 @@ def test_a_reply_repeating_one_object_is_that_object():
     ],
 )
 def test_rejects_anything_but_one_complete_object(text):
+    """Empty text, prose, arrays, truncated or fenced JSON, two distinct objects, or trailing text: None."""
     assert parse_json_object(text) is None

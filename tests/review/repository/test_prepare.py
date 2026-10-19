@@ -25,6 +25,7 @@ def delete_user(uid):
 
 
 def prepare_target(target):
+    """Prepare a Repository Review of the target's current source."""
     return prepare_repository_review(capture_source_snapshot(target))
 
 
@@ -52,12 +53,14 @@ def _go_lib(tmp_path):
 
 
 def test_prepare_reviews_library_source_without_export_rules(tmp_path):
+    """A Go library with only matcher.go plans matcher.go as its single owned path and unit."""
     res = prepare_target(_go_lib(tmp_path))
     assert res.unit_plan.expected_owned_paths == ("matcher.go",)
     assert [unit.name for unit in res.units] == ["matcher.go"]
 
 
 def test_prepare_plans_a_django_url_module_for_review(tmp_path):
+    """A Django project with manage.py and app/urls.py lists app/urls.py among owned paths."""
     d = tmp_path / "dj"
     d.mkdir()
     (d / "manage.py").write_text("import django\n")
@@ -69,6 +72,7 @@ def test_prepare_plans_a_django_url_module_for_review(tmp_path):
 
 
 def test_prepare_assigns_downstream_logic_to_review_units(tmp_path):
+    """The file app/managers/auth_manager.py gets its own unit while files under app/tests are never owned."""
     d = tmp_path / "dj"
     (d / "app" / "managers").mkdir(parents=True)
     (d / "app" / "tests").mkdir()
@@ -84,6 +88,7 @@ def test_prepare_assigns_downstream_logic_to_review_units(tmp_path):
 
 
 def test_prepare_splits_a_large_candidate_into_slice_units(tmp_path):
+    """A views.py of 200 padded routes becomes views.py#1, views.py#2, ..., the first starting at offset 0."""
     d = tmp_path / "big"
     d.mkdir()
     header = "from flask import Flask\napp = Flask(__name__)\n\n"
@@ -112,18 +117,21 @@ def _block_facts(monkeypatch):
 
 
 def test_prepare_grounds_units_with_the_extracted_facts(tmp_path, monkeypatch):
+    """Stubbed facts for app.py become the unit's fenced syntax hints and the grounding receipt matches."""
     calls = _block_facts(monkeypatch)
     res = prepare_target(_target(tmp_path))
 
     assert len(calls) == 1
     assert [unit.grounding.syntax_hints for unit in res.units] == [
-        "app.py: syntax hints (unverified; cite only delivered source):\n```\ndef f():\n    return 1\n```"
+        "app.py: syntax hints (unverified, cite only delivered source):\n```\ndef f():\n    return 1\n```"
     ]
     assert [record.unit_id for record in res.grounding.contexts] == [unit.id for unit in res.units]
     assert res.grounding.unit_plan_receipt_sha256 == res.unit_plan.receipt_sha256
 
 
 def test_prepare_fails_loud_when_facts_extraction_cannot_run(tmp_path, monkeypatch):
+    """A RuntimeError from syntax facts extraction raises BackendUnavailable "no grounding"."""
+
     def unavailable(*_args):
         raise RuntimeError("facts toolchain is unavailable")
 
@@ -134,6 +142,7 @@ def test_prepare_fails_loud_when_facts_extraction_cannot_run(tmp_path, monkeypat
 
 
 def test_prepare_fails_loud_on_an_unreadable_source(monkeypatch, tmp_path):
+    """A PermissionError opening app.py raises SourceSnapshotError naming app.py and "access denied"."""
     target = _target(tmp_path)
     source = target / "app.py"
     original_open = type(source).open
@@ -150,6 +159,7 @@ def test_prepare_fails_loud_on_an_unreadable_source(monkeypatch, tmp_path):
 
 
 def test_prepare_records_binary_undecodable_and_empty_files_as_skipped(tmp_path):
+    """A PNG, a Latin-1 legacy.py, and an empty.py are skipped with reasons, and only app.py is planned."""
     target = _target(tmp_path)
     (target / "banner.png").write_bytes(b"\x89PNG\r\n\x1a\n\0binary")
 
@@ -168,6 +178,7 @@ def test_prepare_records_binary_undecodable_and_empty_files_as_skipped(tmp_path)
 
 
 def test_plain_repository_still_prepares(tmp_path):
+    """A directory holding only notes.txt prepares with no owned paths and no units."""
     d = tmp_path / "plain"
     d.mkdir()
     (d / "notes.txt").write_text("hi")

@@ -36,6 +36,7 @@ def _extracted(root: Path, diff: str):
 
 
 def test_changed_definition_is_requestable_without_an_initial_prefix(tmp_path):
+    """Editing the Handler header leaves its body out of the prompt but lists it as requestable evidence."""
     source = "class Handler(Base):\n    owner = request.user\n    control = check(owner)\n    return_value = 1\n"
     (tmp_path / "app.py").write_text(source, encoding="utf-8")
     file_seed = definition("app.py", "<file>", 0, len(source))
@@ -63,6 +64,7 @@ def test_changed_definition_is_requestable_without_an_initial_prefix(tmp_path):
 
 
 def test_importing_source_stays_behind_navigation_instead_of_being_preselected(tmp_path):
+    """A change to service.apply leaves the importing views.py and its permission line out of the prompt."""
     changed = "def apply(value):\n    return value\n"
     related = "from service import apply\n\nclass Route:\n    permission = require_user\n    handler = apply\n"
     (tmp_path / "service.py").write_text(changed, encoding="utf-8")
@@ -78,6 +80,7 @@ def test_importing_source_stays_behind_navigation_instead_of_being_preselected(t
 
 
 def test_diff_context_collects_a_changed_source_path_with_spaces(tmp_path):
+    """A new file named 'app route.py' is grounded with its source window and complete coverage."""
     source = "def route():\n    return sink()\n"
     (tmp_path / "app route.py").write_text(source)
     diff = (
@@ -97,6 +100,7 @@ def test_diff_context_collects_a_changed_source_path_with_spaces(tmp_path):
 
 
 def test_diff_context_discloses_only_source_limitations_in_the_unit_scope(tmp_path):
+    """A facts limitation on related.py is disclosed while the one on out-of-scope unrelated.py is not."""
     source = "def route():\n    return 1\n"
     for name in ("app.py", "related.py", "unrelated.py"):
         (tmp_path / name).write_text(source)
@@ -121,6 +125,7 @@ def test_diff_context_discloses_only_source_limitations_in_the_unit_scope(tmp_pa
 
 
 def test_fallback_diff_context_renders_facts_and_current_source(tmp_path):
+    """Without seeds, app.py gets syntax hints from facts plus a lines 1-5 window as initial source."""
     (tmp_path / "app.py").write_text(
         "def get_client():\n    return current_user_client()\n\ndef tool():\n    return get_client()\n",
         encoding="utf-8",
@@ -131,7 +136,7 @@ def test_fallback_diff_context_renders_facts_and_current_source(tmp_path):
     ctx = _ground(tmp_path, diff, facts)
 
     assert ctx.files == ("app.py",)
-    assert ctx.syntax_hints.startswith("app.py: syntax hints (unverified; cite only delivered source):\n```\n")
+    assert ctx.syntax_hints.startswith("app.py: syntax hints (unverified, cite only delivered source):\n```\n")
     assert "tool()  calls get_client" in ctx.syntax_hints
     [window] = ctx.source_evidence
     assert window.text.startswith("# file: app.py lines 1-5\n1 | def get_client():")
@@ -140,7 +145,7 @@ def test_fallback_diff_context_renders_facts_and_current_source(tmp_path):
 
 
 def test_diff_navigation_exposes_go_package_callers_as_candidates(tmp_path):
-
+    """Searching callers of the changed Go CheckPolicy returns ApplyPolicy and its call on page 0."""
     helper = 'package app\n\nfunc CheckPolicy(value string) bool {\n    return value != ""\n}\n'
     caller = "package app\n\nfunc ApplyPolicy(value string) bool {\n    return CheckPolicy(value)\n}\n"
     (tmp_path / "policy.go").write_text(helper)
@@ -179,7 +184,7 @@ def test_diff_navigation_exposes_go_package_callers_as_candidates(tmp_path):
 
 
 def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_path):
-
+    """A changed route() delivers service.py:load as source, or only as requestable under a 1-char cap."""
     (tmp_path / "route.py").write_text(
         "from service import load\n\ndef route(value):\n    return load(value)\n",
         encoding="utf-8",
@@ -223,7 +228,7 @@ def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_p
 
 
 def test_diff_keeps_alias_calls_and_navigation_sources_before_model_analysis(tmp_path):
-
+    """Facts keep the client(value) default-import call, the route.ts import edge, and tsconfig.json."""
     (tmp_path / "service.ts").write_text("export default function actual(value: number) { return value; }\n")
     (tmp_path / "route.ts").write_text(
         "import client from './service';\nexport function route(value: number) { return client(value); }\n"
@@ -248,6 +253,7 @@ def test_diff_keeps_alias_calls_and_navigation_sources_before_model_analysis(tmp
 
 
 def test_collect_diff_context_respects_total_budget(tmp_path):
+    """Forty changed 200-line files yield units whose source text stays within the per-unit context cap."""
     diff_parts: list[str] = []
     for i in range(40):
         path = tmp_path / f"app_{i}.py"
@@ -266,6 +272,7 @@ def test_collect_diff_context_respects_total_budget(tmp_path):
 
 
 def test_diff_planning_and_grounding_are_distinct_deterministic_steps(tmp_path):
+    """Planned units have no grounding, grounded units keep the same diffs and snapshot, and reruns match."""
     source = "def route():\n    return sink()\n"
     (tmp_path / "route.py").write_text(source)
     diff = "diff --git a/route.py b/route.py\n+++ b/route.py\n@@ -1,2 +1,2 @@\n+def route():\n+    return sink()\n"
@@ -282,6 +289,7 @@ def test_diff_planning_and_grounding_are_distinct_deterministic_steps(tmp_path):
 
 
 def test_collect_diff_context_reports_only_rendered_files(tmp_path):
+    """A diff for a missing.py absent from disk yields no files and empty context text."""
     diff = "diff --git a/missing.py b/missing.py\n+++ b/missing.py\n@@ -1,0 +1,1 @@\n+print(1)\n"
 
     ctx = _ground(tmp_path, diff)
@@ -291,6 +299,7 @@ def test_collect_diff_context_reports_only_rendered_files(tmp_path):
 
 
 def test_deleted_diff_source_is_bound_by_the_patch_not_the_post_change_snapshot(tmp_path):
+    """A diff deleting deleted.py grounds the unit with no snapshot files from the post-change tree."""
     diff = (
         "diff --git a/deleted.py b/deleted.py\n"
         "--- a/deleted.py\n"
@@ -305,6 +314,7 @@ def test_deleted_diff_source_is_bound_by_the_patch_not_the_post_change_snapshot(
 
 
 def test_collect_diff_context_handles_hunk_lines_beyond_current_source(tmp_path):
+    """A hunk at line 100 of a one-line app.py is reported as outside current source length 1."""
     (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -100,1 +100,1 @@\n-print(0)\n+print(1)\n"
 
@@ -314,6 +324,7 @@ def test_collect_diff_context_handles_hunk_lines_beyond_current_source(tmp_path)
 
 
 def test_diff_units_share_one_facts_context_for_batch_context(tmp_path):
+    """Units for a.py and b.py built from one shared grounding each deliver only their own file."""
     (tmp_path / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
     (tmp_path / "b.py").write_text("def b():\n    return 2\n", encoding="utf-8")
     diff_a = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -1,0 +1,1 @@\n+print(a())\n"
@@ -336,6 +347,7 @@ def test_diff_units_share_one_facts_context_for_batch_context(tmp_path):
     ],
 )
 def test_prepared_fallback_units_keep_current_repository_context(tmp_path, path, source):
+    """Unseeded app.py or policy.yaml changes deliver one window starting at line 1 with current content."""
     (tmp_path / path).write_text(source)
     collector = shared_grounding(tmp_path)
     diff = f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n"
@@ -349,6 +361,7 @@ def test_prepared_fallback_units_keep_current_repository_context(tmp_path, path,
 
 
 def test_changed_file_windows_center_on_every_changed_region_of_any_text_file(tmp_path):
+    """A change at line 900 of a 2000-line HTML file yields a 895-905 window before a line-1 window."""
     lines = [f"<p>line {number}</p>" for number in range(1, 2001)]
     (tmp_path / "page.html").write_text("\n".join(lines) + "\n", encoding="utf-8")
     diff = (
@@ -365,6 +378,7 @@ def test_changed_file_windows_center_on_every_changed_region_of_any_text_file(tm
 
 
 def test_changed_file_windows_stay_inside_the_context_budget_as_exact_line_ranges(tmp_path):
+    """A 4000-line app.py yields one window from line 1 that fits the cap and ends on a whole line."""
     from cyberjury.review.context import delivered_source_block
     from cyberjury.review.diff.context import changed_file_sources
 
@@ -380,6 +394,7 @@ def test_changed_file_windows_stay_inside_the_context_budget_as_exact_line_range
 
 
 def test_a_changed_file_without_a_seed_definition_gets_windows_and_hints_beside_seeded_files(tmp_path):
+    """Unseeded settings.py gets a window and hints while seeded views.py keeps only definition evidence."""
     (tmp_path / "views.py").write_text("def show(request):\n    return render(request)\n", encoding="utf-8")
     (tmp_path / "settings.py").write_text(
         "import os\n\nSECRET_KEY = os.environ.get('KEY')\nDEBUG = True\n", encoding="utf-8"

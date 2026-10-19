@@ -16,6 +16,7 @@ def _system(navigation: bool = True) -> str:
 
 
 def test_system_carries_scope_boundary_kernel_rubric_evidence_and_field_meanings():
+    """The system prompt has the injection warning, old:new gutter, KERNEL-X, RUBRIC-X, and every field."""
     system = _system()
 
     for text in (
@@ -32,16 +33,15 @@ def test_system_carries_scope_boundary_kernel_rubric_evidence_and_field_meanings
         assert text in system
     for field in (*DIFF_FINDING_SCHEMA["properties"], "evidence_requests", "source_queries"):
         assert f"`{field}`" in system
-    assert "Respond with a single JSON object" not in system
-    assert "Do not omit a candidate" not in system
-    assert "high-confidence" not in system
 
 
 def test_system_omits_navigation_only_when_navigation_is_unavailable():
+    """Passing empty navigation drops the # Source Navigation section from the system prompt."""
     assert "# Source Navigation" not in _system(navigation=False)
 
 
 def test_diff_seed_keeps_embedded_markdown_fences_inside_the_numbered_diff():
+    """A diff adding a triple-backtick string is wrapped in a ~~~diff fence that closes after that line."""
     seed = diff_seed("+++ b/app.py\n@@ -0,0 +1 @@\n+marker = '```'\n")
 
     assert seed.startswith("Code under review, cited as `seed` (numbered unified diff):\n~~~diff\n")
@@ -49,6 +49,7 @@ def test_diff_seed_keeps_embedded_markdown_fences_inside_the_numbered_diff():
 
 
 def test_diff_and_repository_share_one_finding_contract_except_the_change_anchor():
+    """Diff and repository output-field sections and schemas match exactly once change_anchor is removed."""
     repository = repository_finder_system(
         review_brief="# Security Reasoning Kernel\nKERNEL-X",
         severity_rubric="# Severity Rubric\nRUBRIC-X",
@@ -63,5 +64,3 @@ def test_diff_and_repository_share_one_finding_contract_except_the_change_anchor
     assert [name for name in DIFF_FINDING_SCHEMA["properties"] if name != "change_anchor"] == list(
         REPOSITORY_FINDING_SCHEMA["properties"]
     )
-    for removed in ("recommendation", "confidence", "symbol", "description", "exploit_scenario", "endpoint"):
-        assert f"`{removed}`" not in _system() + repository

@@ -11,6 +11,7 @@ def _provider(findings):
 
 
 def test_review_keeps_distinct_entrypoint_paths_at_one_location():
+    """Two app.py:1 SQL injection reports via POST /query and QueryView.post stay two findings."""
     base = {
         "file": "app.py",
         "line": 1,
@@ -30,6 +31,7 @@ def test_review_keeps_distinct_entrypoint_paths_at_one_location():
 
 
 def test_review_preserves_a_valid_anchor_after_an_invalid_duplicate():
+    """Duplicates anchored at unchanged line 10 and added line 11 fold to one finding anchored at 11."""
     diff = (
         "diff --git a/app.py b/app.py\n"
         "--- a/app.py\n"

@@ -40,6 +40,7 @@ def _source(root, file="views.py", lines=40):
 
 
 def test_findings_at_one_line_with_one_category_form_one_issue_and_keep_every_member():
+    """Two line-2 views.py reports (one as ./views.py) fold by location, and the line-9 report stays alone."""
     first = _finding("save skips the owner check", line=2)
     second = _finding("record save lacks authorization", file="./views.py", line=2)
     other = _finding("load skips the owner check", line=9)
@@ -52,12 +53,14 @@ def test_findings_at_one_line_with_one_category_form_one_issue_and_keep_every_me
 
 
 def test_findings_on_different_lines_of_one_function_are_separate_issues():
+    """Owner and quota reports at views.py lines 2 and 3 give two single-member issues."""
     findings = [_finding("save checks no owner", line=2), _finding("save checks no quota", line=3)]
 
     assert [len(issue.members) for issue in group_issues(findings)] == [1, 1]
 
 
 def test_findings_at_one_line_with_different_categories_are_separate_issues():
+    """An authorization and a denial-of-service report at line 2 do not fold into one issue."""
     first = _finding("missing owner check", line=2)
     second = replace(_finding("unbounded size", line=2), category="denial-of-service")
 
@@ -68,6 +71,7 @@ GATE = ("gate.py", 1, 9)
 
 
 def test_one_function_with_two_lines_is_two_issues_until_a_judgment_links_them():
+    """Line 2 and 4 reports citing views.py 1-9 stay two issues but form one link candidate pair."""
     first = _finding("missing owner check", line=2, cites=[("views.py", 1, 9)])
     second = _finding("unbounded size", line=4, cites=[("views.py", 1, 9)])
 
@@ -78,6 +82,7 @@ def test_one_function_with_two_lines_is_two_issues_until_a_judgment_links_them()
 
 
 def test_issue_ids_membership_and_link_candidates_are_stable_under_input_permutation():
+    """Reordering four findings keeps issue ids, member candidate ids, and the single link pair identical."""
     findings = [
         _finding("a", line=2, cites=[("views.py", 1, 30)]),
         _finding("b", line=2, cites=[("views.py", 1, 30)]),
@@ -98,6 +103,7 @@ def test_issue_ids_membership_and_link_candidates_are_stable_under_input_permuta
 
 
 def test_link_candidates_need_mutual_coverage_or_one_sided_coverage_with_a_common_cited_span():
+    """Pairs form for a caller/sink sharing gate.py and for files citing each other, and a lone citer stays out."""
     caller = _finding("caller", file="views.py", line=5, cites=[("models.py", 10, 20), GATE])
     sink = _finding("sink", file="models.py", line=12, cites=[GATE])
     mutual = _finding("mutual", file="tasks.py", line=3, cites=[("views.py", 1, 9)])
@@ -114,6 +120,7 @@ def test_link_candidates_need_mutual_coverage_or_one_sided_coverage_with_a_commo
 
 
 def test_overlapping_cited_spans_in_one_file_count_as_common_source():
+    """Only gate.py spans 1-9 and 6-14 overlap and pair, and spans 10-14 and other.py citations stay unpaired."""
     caller = _finding("caller", file="views.py", line=5, cites=[("models.py", 10, 20), ("gate.py", 1, 9)])
     sink = _finding("sink", file="models.py", line=12, cites=[("gate.py", 6, 14)])
     adjacent = _finding("adjacent", file="models.py", line=14, cites=[("gate.py", 10, 14)])
@@ -125,6 +132,7 @@ def test_overlapping_cited_spans_in_one_file_count_as_common_source():
 
 
 def test_link_candidates_ask_once_per_pair_of_groups():
+    """Two callers folded at views.py:5 and one sink yield a single link candidate, not two."""
     caller = _finding("caller", file="views.py", line=5, cites=[("models.py", 1, 40), GATE])
     caller_again = _finding("caller again", file="views.py", line=5, cites=[("models.py", 1, 40), GATE])
     sink = _finding("sink", file="models.py", line=12, cites=[GATE])
@@ -141,6 +149,7 @@ def _linked_pair(root):
 
 
 def test_a_judgment_links_two_issues_only_when_one_change_fixes_both(tmp_path):
+    """The judge sees two pairs, links only view and model, and the issue is marked linked by judgment."""
     view, model = _linked_pair(tmp_path)
     separate = _finding("separate", file="models.py", line=30, cites=[("views.py", 1, 9), GATE])
     judge = StubIssueJudge(lambda pair: model.candidate_id in pair and view.candidate_id in pair)
@@ -156,6 +165,7 @@ def test_a_judgment_links_two_issues_only_when_one_change_fixes_both(tmp_path):
 
 
 def test_the_model_judge_asks_one_closed_schema_question_from_structured_fields_and_cited_source(tmp_path):
+    """One mock call carries both locations and numbered cited lines with a strict same_fix/reason schema."""
     view, model = _linked_pair(tmp_path)
     provider = MockProvider(default=json.dumps({"same_fix": True, "reason": "the save owner check fixes both"}))
     judge = ModelIssueJudge(provider=provider, model="mock", seat_id="seat-test")
@@ -178,6 +188,7 @@ def test_the_model_judge_asks_one_closed_schema_question_from_structured_fields_
 
 
 def test_the_same_fix_contract_counts_containment_but_not_shared_context():
+    """The system prompt counts a contained defect as same-fix, not a shared entrypoint, file, or sink."""
     system = issues_module._SYSTEM
 
     assert "One change at one place removes the defect that each finding describes." in system
@@ -187,6 +198,7 @@ def test_the_same_fix_contract_counts_containment_but_not_shared_context():
 
 
 def test_decisions_under_an_earlier_judge_contract_are_asked_again(tmp_path, monkeypatch):
+    """A checkpoint written under a patched system prompt is re-asked once, then reused on the third run."""
     findings = list(_linked_pair(tmp_path))
     store = CheckpointStore(tmp_path / "work" / "issue-links", "cyberjury.issue-link-decision/v1")
     provider = MockProvider(default=json.dumps({"same_fix": False, "reason": "each needs its own change"}))
@@ -204,6 +216,7 @@ def test_decisions_under_an_earlier_judge_contract_are_asked_again(tmp_path, mon
 
 
 def test_link_decisions_are_reused_from_their_checkpoint(tmp_path):
+    """A second run with a never-linking judge makes no calls and returns the checkpointed links."""
     findings = list(_linked_pair(tmp_path))
     store = CheckpointStore(tmp_path / "work" / "issue-links", "cyberjury.issue-link-decision/v1")
     first, resumed = StubIssueJudge(), StubIssueJudge(lambda pair: False)
@@ -216,6 +229,7 @@ def test_link_decisions_are_reused_from_their_checkpoint(tmp_path):
 
 
 def test_a_failed_judgment_links_nothing_and_is_retried_on_resume(tmp_path):
+    """A rate-limited judge yields no links and an error, and the resumed run asks again and links the pair."""
     findings = list(_linked_pair(tmp_path))
     store = CheckpointStore(tmp_path / "work" / "issue-links", "cyberjury.issue-link-decision/v1")
 
@@ -234,11 +248,13 @@ def test_a_failed_judgment_links_nothing_and_is_retried_on_resume(tmp_path):
     "value", [{"same_fix": "yes", "reason": "r"}, {"same_fix": True}, {"same_fix": True, "reason": ""}]
 )
 def test_a_checkpointed_decision_must_keep_its_closed_shape(value):
+    """A non-boolean same_fix, a missing reason, or an empty reason makes LinkDecision.from_dict raise."""
     with pytest.raises(ValueError, match="issue link decision"):
         LinkDecision.from_dict(value)
 
 
 def test_grouping_never_drops_a_finding():
+    """Seven findings over three lines plus one judged link group into sizes 5 and 2 with all members kept."""
     findings = [_finding(f"report {number}", line=number % 3 + 1) for number in range(7)]
 
     issues = group_issues(findings, [(findings[0].candidate_id, findings[1].candidate_id)])

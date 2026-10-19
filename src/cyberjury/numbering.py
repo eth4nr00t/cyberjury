@@ -38,7 +38,6 @@ def numbered_source(rel: str, text: str, first_line: int) -> str:
 
 
 def _span(count: str | None) -> int:
-    """A hunk header omits the length when it covers one line."""
     return 1 if count is None else int(count)
 
 

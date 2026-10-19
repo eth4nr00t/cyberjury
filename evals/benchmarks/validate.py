@@ -55,7 +55,6 @@ def _validate_checks(case: dict) -> None:
 
 
 def _validate_source_locations(cases: list[dict], source_root: Path) -> None:
-    """Validate the locations of the repository case, which reviews the checkout at repository.commit."""
     resolved_root = source_root.resolve()
     for case in cases:
         if case["kind"] != "repository":

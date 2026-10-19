@@ -50,6 +50,7 @@ def _locate(finding, ranges, source_evidence=(), seed_spans=()):
 
 
 def test_diff_review_accepts_an_unlisted_source_language():
+    """A Rust handler.rs diff completes with exactly one model call though Rust is not a listed language."""
     diff = "diff --git a/handler.rs b/handler.rs\n@@ -0,0 +1 @@\n+fn handle() {}\n"
     provider = MockProvider(default=reply([]))
 
@@ -60,6 +61,7 @@ def test_diff_review_accepts_an_unlisted_source_language():
 
 
 def test_large_diff_is_reviewed_per_file():
+    """With max_chars=1, a.py and b.py go to separate finder calls and sql_injection becomes sql-injection."""
     response = reply(
         [
             {
@@ -86,6 +88,7 @@ def test_large_diff_is_reviewed_per_file():
 
 
 def test_diff_result_exposes_per_call_role_and_status_measurements():
+    """A metered review records a finder call with positive prompt_chars, a duration, and ok status."""
     meter = UsageMeter()
     provider = MeteringProvider(MockProvider(default=reply([])), meter)
 
@@ -101,6 +104,7 @@ def test_diff_result_exposes_per_call_role_and_status_measurements():
 
 
 def test_diff_model_call_records_semantic_response_failures():
+    """A finding missing required fields marks the call failed with that reason and the review incomplete."""
     meter = UsageMeter()
     provider = MeteringProvider(MockProvider(default=reply([{"severity": "HIGH"}])), meter)
 
@@ -113,6 +117,7 @@ def test_diff_model_call_records_semantic_response_failures():
 
 
 def test_diff_model_call_after_exact_evidence_delivery_is_a_followup():
+    """Requesting an evidence id yields two calls, triggered as initial_judgment then evidence_followup."""
     evidence = EvidenceItem.create(
         identity="policy.py:guard:0:20",
         label="policy.py:guard",
@@ -139,6 +144,7 @@ def test_diff_model_call_after_exact_evidence_delivery_is_a_followup():
 
 
 def test_large_diff_uses_batch_specific_context():
+    """Each of two per-file units sends only its own grounding text, once each across the two prompts."""
     provider = MockProvider(default=reply([]))
 
     units = [
@@ -160,6 +166,7 @@ def test_large_diff_uses_batch_specific_context():
 
 
 def test_empty_diff_is_complete_without_model_work():
+    """A whitespace-only diff is complete and the provider receives no calls."""
     provider = MockProvider(default="{}")
 
     result = review("  \n", provider=provider)
@@ -178,6 +185,7 @@ def test_diff_review_exposes_the_complete_outcome_contract():
 
 
 def test_planned_diff_unit_fails_before_model_call_when_grounding_is_incomplete():
+    """A unit whose required definition is omitted from grounding fails with one error and no model call."""
     provider = MockProvider(default=reply([]))
     fragment = definition("policy.py", "Policy", 0, 20)
     context = GroundingContext(
@@ -202,6 +210,7 @@ def test_planned_diff_unit_fails_before_model_call_when_grounding_is_incomplete(
 
 
 def test_planned_diff_unit_reviews_raw_source_when_only_structured_facts_are_limited():
+    """A fact limitation still sends one call but leaves the outcome incomplete and reports the limitation."""
     provider = MockProvider(default=reply([]))
     context = GroundingContext(
         text="raw source",
@@ -226,6 +235,7 @@ def test_planned_diff_unit_reviews_raw_source_when_only_structured_facts_are_lim
 
 
 def test_diff_finder_can_request_one_published_source_fragment():
+    """A requested evidence id gets its text only in the second call, and the cited finding is returned."""
     evidence = EvidenceItem.create(
         identity="policy.py:Policy:0:24",
         label="policy.py:Policy, import Policy from app.py [supported]",
@@ -260,6 +270,7 @@ def test_diff_finder_can_request_one_published_source_fragment():
 
 
 def test_diff_review_keeps_an_out_of_range_location_explicitly_incomplete():
+    """Line 45 outside hunk +30,3 is incomplete, while b/app.py:31 is accepted as app.py with an anchor."""
     diff = "diff --git a/app.py b/app.py\n@@ -20,2 +30,3 @@\n context\n+sink(user)\n context\n"
     provider = MockProvider(
         default=reply(
@@ -292,6 +303,7 @@ def test_diff_review_keeps_an_out_of_range_location_explicitly_incomplete():
 
 
 def test_diff_review_accepts_an_unchanged_location_with_a_new_change_anchor():
+    """A finding on unchanged line 20 anchored to added line 21 is accepted with that anchor intact."""
     diff = (
         "diff --git a/policy.py b/policy.py\n"
         "--- a/policy.py\n"
@@ -324,6 +336,7 @@ def test_diff_review_accepts_an_unchanged_location_with_a_new_change_anchor():
 
 
 def test_diff_review_accepts_a_surviving_location_anchored_to_a_deleted_control():
+    """A finding on surviving line 10 anchored to the deleted old-side auth line is accepted as complete."""
     diff = (
         "diff --git a/app.py b/app.py\n"
         "--- a/app.py\n"
@@ -355,6 +368,7 @@ def test_diff_review_accepts_a_surviving_location_anchored_to_a_deleted_control(
 
 
 def test_diff_review_rejects_an_anchor_that_is_only_context():
+    """An anchor on a context line yields no findings and puts the claim in incomplete."""
     diff = "diff --git a/app.py b/app.py\n@@ -20,2 +20,2 @@\n context\n+sink(user)\n"
     provider = MockProvider(
         default=reply(
@@ -379,6 +393,7 @@ def test_diff_review_rejects_an_anchor_that_is_only_context():
 
 
 def test_diff_review_accepts_a_cross_file_change_anchor():
+    """A finding in operation.py anchored to an added line in exposure.py is accepted with that anchor."""
     diff = (
         "diff --git a/operation.py b/operation.py\n"
         "--- a/operation.py\n"
@@ -416,6 +431,7 @@ def test_diff_review_accepts_a_cross_file_change_anchor():
 
 
 def test_diff_review_accepts_a_cited_repository_location_outside_the_patch():
+    """A handler.py:41 location outside the patch is accepted when it cites evidence covering lines 40-41."""
     evidence = SourceEvidence(
         id="src-handler",
         identity="handler.py:handle:0:80",
@@ -459,6 +475,7 @@ def test_diff_review_accepts_a_cited_repository_location_outside_the_patch():
 
 
 def test_diff_review_rejects_an_uncited_repository_location_outside_the_patch():
+    """A handler.py:41 location outside the patch is not located when the finding cites no evidence for it."""
     ranges = DiffLineRanges(
         current={"routes.py": ((1, 1),)},
         old={},
@@ -480,6 +497,7 @@ def test_diff_review_rejects_an_uncited_repository_location_outside_the_patch():
 
 
 def test_diff_accepts_an_unchanged_primary_location_covered_by_seed():
+    """A ./handler.py:41 location inside a seed span maps to handler.py, with b/ stripped from the anchor."""
     ranges = DiffLineRanges(
         current={"routes.py": ((1, 1),)},
         old={},
@@ -494,6 +512,7 @@ def test_diff_accepts_an_unchanged_primary_location_covered_by_seed():
 
 
 def test_diff_path_normalization_prefers_a_real_side_named_directory():
+    """When the diff itself has a b/app.py path, the b/ prefix is kept rather than stripped as a side."""
     ranges = DiffLineRanges(
         current={"b/app.py": ((1, 1),)},
         old={},
@@ -508,6 +527,7 @@ def test_diff_path_normalization_prefers_a_real_side_named_directory():
 
 
 def test_diff_review_keeps_a_canonicalized_path_when_every_finding_is_valid():
+    """A b/app.py finding and anchor are canonicalized to app.py and the review stays complete."""
     provider = MockProvider(
         default=reply(
             [
@@ -531,6 +551,7 @@ def test_diff_review_keeps_a_canonicalized_path_when_every_finding_is_valid():
 
 
 def test_diff_unit_rejects_an_invalid_anchor_instead_of_overwriting_it():
+    """An anchor naming b.py, which is absent from the ranges, makes the a.py finding unlocatable."""
     ranges = DiffLineRanges(
         current={"a.py": ((1, 1),)},
         old={},
@@ -542,6 +563,7 @@ def test_diff_unit_rejects_an_invalid_anchor_instead_of_overwriting_it():
 
 
 def test_diff_unit_preserves_a_distinct_valid_anchor_for_an_added_location():
+    """A finding on added line 1 keeps its own anchor on added line 2 instead of being re-anchored."""
     ranges = DiffLineRanges(
         current={"a.py": ((1, 2),)},
         old={},
@@ -553,6 +575,7 @@ def test_diff_unit_preserves_a_distinct_valid_anchor_for_an_added_location():
 
 
 def test_diff_review_accepts_a_non_source_change_location_and_anchor():
+    """A policy.yaml change flipping require_approval is accepted as both finding location and anchor."""
     diff = (
         "diff --git a/policy.yaml b/policy.yaml\n"
         "--- a/policy.yaml\n"
@@ -583,6 +606,7 @@ def test_diff_review_accepts_a_non_source_change_location_and_anchor():
 
 
 def test_diff_review_keeps_a_deleted_file_location_incomplete():
+    """A finding on a line of a file deleted to /dev/null is incomplete and yields no findings."""
     provider = MockProvider(
         default=reply(
             [
@@ -605,6 +629,7 @@ def test_diff_review_keeps_a_deleted_file_location_incomplete():
 
 
 def test_diff_review_passes_context_to_the_runner():
+    """String context passed to review appears verbatim in the first finder prompt."""
     provider = MockProvider(default=reply([]))
     review(_DIFF, provider=provider, context="def get_client(): return per_user_token")
     sent = provider.calls[0]["messages"][0].content
@@ -623,6 +648,7 @@ _VULN = {
 
 
 def test_diff_review_is_not_degraded_by_a_complete_finding():
+    """One fully cited CRITICAL finding leaves the outcome complete with that single finding."""
     provider = MockProvider(default=reply([dict(_VULN)]))
     result = review(_DIFF, provider=provider)
     assert result.outcome.complete is True
@@ -630,6 +656,7 @@ def test_diff_review_is_not_degraded_by_a_complete_finding():
 
 
 def test_diff_review_reports_one_progress_call_per_batch():
+    """Two per-file units report on_unit progress as (1, 2) then (2, 2)."""
     seen = []
 
     review(
@@ -664,6 +691,7 @@ def test_diff_review_records_failed_batch_and_continues():
 
 
 def test_an_unparseable_reply_is_corrected_once_instead_of_failing_the_unit():
+    """A reply holding two JSON objects gets one correction prompt, and the corrected finding completes it."""
     finding = {
         "file": "a.py",
         "line": 1,
@@ -681,6 +709,7 @@ def test_an_unparseable_reply_is_corrected_once_instead_of_failing_the_unit():
 
 
 def test_diff_review_groups_its_findings_into_issues_through_the_shared_step(tmp_path):
+    """Two same-line findings and one other-line finding form one issue linked by judgment and location."""
     (tmp_path / "app.py").write_text("first = 1\nsecond = 2\n", encoding="utf-8")
     diff = "+++ b/app.py\n@@ -0,0 +1,2 @@\n+first = 1\n+second = 2\n"
     provider = MockProvider(

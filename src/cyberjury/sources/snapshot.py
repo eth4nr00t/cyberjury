@@ -33,7 +33,6 @@ type ScopeProvider = Callable[[], tuple[str, ...]]
 
 
 def _snapshot_id(entries: tuple[SourceFileSnapshot, ...]) -> str:
-    """Identify one canonical source manifest independently from its runtime root."""
     return canonical_sha256({"schema": SNAPSHOT_SCHEMA, "files": [entry.to_dict() for entry in entries]})
 
 
@@ -118,7 +117,6 @@ class SourceFileSnapshot:
 
 
 def _source_file(root: Path, relative: str, sink: BinaryIO | None = None) -> SourceFileSnapshot:
-    """Hash one source path in bounded chunks, optionally copying its bytes into ``sink``."""
     path = root / relative
     try:
         metadata = path.lstat()
@@ -174,7 +172,6 @@ def _source_file(root: Path, relative: str, sink: BinaryIO | None = None) -> Sou
 
 
 def _stable_stat(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
-    """Compare content identity fields while ignoring read-induced access time changes."""
     return (
         value.st_dev,
         value.st_ino,

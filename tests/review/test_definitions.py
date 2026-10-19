@@ -5,6 +5,7 @@ from tests.review.support import definition
 
 
 def test_definitions_group_by_first_seen_name_in_source_order():
+    """Both load definitions group ahead of route in source position order, with the <file> scope last."""
     file_scope = definition("a.py", "<file>", 0, 200)
     load = definition("a.py", "load", 10, 50)
     route = definition("a.py", "route", 60, 90)

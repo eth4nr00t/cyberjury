@@ -36,7 +36,7 @@ class UnsupportedSessionFormatError(WorkspaceCorruptionError):
         """Name the session, the incompatible part, and the way forward."""
         super().__init__(
             f"session {session_id} has an unsupported session format ({detail}), "
-            "it was likely written by an older cyberjury version; start a new session with --fresh"
+            "it was likely written by an older cyberjury version. Start a new session with --fresh"
         )
 
 
@@ -207,12 +207,9 @@ class SessionLocator:
 
 
 class _JsonDirectory:
-    """Immutable local JSON artifacts inside one workspace directory."""
-
     path: Path
 
     def write_json_once(self, name: str, value: dict[str, object]) -> None:
-        """Create one immutable JSON file or verify its existing content."""
         path = self._local(name)
         if path.exists():
             if _read_json(path) != value:
@@ -221,7 +218,6 @@ class _JsonDirectory:
         _atomic_json(path, value)
 
     def read_json(self, name: str) -> dict[str, object]:
-        """Read one local JSON file without allowing path traversal."""
         return _read_json(self._local(name))
 
     def _local(self, name: str) -> Path:
@@ -399,7 +395,7 @@ class AttemptWorkspace(_JsonDirectory):
                 self._session_lock = None
 
     def interrupt_stale(self) -> None:
-        """Close an attempt a prior process left running; the caller holds the session lock."""
+        """Close an attempt a prior process left running. The caller holds the session lock."""
         if self.read_state()["state"] != "running":
             return
         started = datetime.strptime(self.started_at, _TIMESTAMP).replace(tzinfo=UTC)

@@ -14,7 +14,6 @@ def canonical_category(category: str) -> str:
 
 
 def _attack_path_identity(*, target: str, path_anchor: str) -> str:
-    """Identify one entry path independently from its security violations."""
     normalized = " ".join(path_anchor.lower().split())
     material = "\x1f".join(("attack-path-v1", target, normalized))
     return f"path-{hashlib.sha256(material.encode('utf-8')).hexdigest()[:20]}"

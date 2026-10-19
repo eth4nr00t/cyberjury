@@ -4,12 +4,14 @@ from cyberjury.review.detection import load_detection
 
 
 def test_detection_skips_dependency_directories():
+    """The loaded detection config lists .venv and node_modules among its skipped directories."""
     d = load_detection()
     assert ".venv" in d.skip_dirs
     assert "node_modules" in d.skip_dirs
 
 
 def test_is_test_path_by_directory_segment():
+    """Paths under tests/ or spec/ count as tests, while app/views.py does not."""
     d = load_detection()
     assert d.is_test_path("app/tests/views.py")
     assert d.is_test_path("spec/billing.js")
@@ -17,6 +19,7 @@ def test_is_test_path_by_directory_segment():
 
 
 def test_is_test_path_by_naming_convention_across_ecosystems():
+    """Python test_ prefixes, Go _test suffixes, and JS/TS .spec and .test names count as tests."""
     d = load_detection()
     assert d.is_test_path("app/test_views.py")
     assert d.is_test_path("app/views_test.go")
@@ -25,12 +28,14 @@ def test_is_test_path_by_naming_convention_across_ecosystems():
 
 
 def test_is_test_path_keeps_production_sampleish_names():
+    """Files like sample_rate.py, mock_billing.py, example_config.py, and latest.py are not test paths."""
     d = load_detection()
     for f in ("app/sample_rate.py", "app/mock_billing.py", "app/example_config.py", "app/latest.py"):
         assert not d.is_test_path(f), f
 
 
 def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
+    """Docs, lockfiles, test files, node_modules, dist, vendor, and coverage paths are classified as noise."""
     d = load_detection()
     for f in (
         "README.md",
@@ -54,6 +59,7 @@ def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
 
 
 def test_is_noise_path_keeps_source_and_security_relevant_non_source():
+    """Source plus SQL migrations, shell entrypoints, Dockerfile, Terraform, and YAML config are not noise."""
     d = load_detection()
     for f in (
         "app/views.py",

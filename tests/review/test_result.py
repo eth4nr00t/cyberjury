@@ -21,6 +21,7 @@ CANDIDATE = "candidate-" + "1" * 20
 
 
 def finding() -> FindingRecord:
+    """Return one complete candidate finding record."""
     return FindingRecord(
         id=CANDIDATE,
         title="Object access lacks an ownership check",
@@ -39,6 +40,7 @@ def finding() -> FindingRecord:
 
 
 def single(record: FindingRecord) -> FindingsArtifact:
+    """Wrap one finding record in a findings artifact with its own issue."""
     issue = IssueRecord(
         id=record.issue_id,
         representative=record.id,
@@ -49,6 +51,7 @@ def single(record: FindingRecord) -> FindingsArtifact:
 
 
 def test_findings_round_trip_preserves_canonical_content_identity():
+    """Serializing and parsing a one-finding artifact returns an equal artifact with the same content hash."""
     artifact = single(finding())
 
     restored = FindingsArtifact.from_dict(artifact.to_dict())
@@ -58,6 +61,7 @@ def test_findings_round_trip_preserves_canonical_content_identity():
 
 
 def test_findings_reject_tampered_content():
+    """Changing a serialized finding's line from 12 to 13 fails loading with a content hash error."""
     document = single(finding()).to_dict()
     document["findings"][0]["line"] = 13
 
@@ -66,6 +70,7 @@ def test_findings_reject_tampered_content():
 
 
 def test_outcome_derives_completion_from_every_controlling_counter():
+    """An outcome with no incomplete items is complete, and one incomplete item makes it incomplete."""
     findings = single(finding())
     complete = OutcomeArtifact.create(
         target="diff",
@@ -85,6 +90,7 @@ def test_outcome_derives_completion_from_every_controlling_counter():
 
 
 def test_outcome_rejects_a_forged_complete_state():
+    """Replacing complete=True on an outcome that has incomplete items raises "completion contradicts"."""
     findings = single(finding())
     artifact = OutcomeArtifact.create(
         target="repository",
@@ -98,6 +104,7 @@ def test_outcome_rejects_a_forged_complete_state():
 
 
 def test_cli_result_rejects_an_outcome_for_other_findings():
+    """Pairing a one-finding artifact with an outcome built for empty findings raises "does not identify"."""
     findings = single(finding())
     empty = FindingsArtifact.create((), ())
     outcome = OutcomeArtifact.create(
@@ -116,7 +123,8 @@ def test_cli_result_rejects_an_outcome_for_other_findings():
         )
 
 
-def test_findings_artifact_maps_every_target_onto_the_same_fields_and_marks_only_verified_findings():
+def test_findings_artifact_maps_every_target_onto_the_same_fields():
+    """Diff and repository findings serialize to one v1 field set, with change_anchor None for the repo one."""
     diff = Finding(
         title="record write is unauthenticated",
         file="app.py",
@@ -171,6 +179,7 @@ def test_findings_artifact_maps_every_target_onto_the_same_fields_and_marks_only
 
 
 def test_findings_artifact_records_every_member_of_a_grouped_issue_with_its_issue_id():
+    """Two findings linked by location share one issue id and round-trip, and the summary counts two HIGH."""
     first = Finding(
         title="share link grants another user's document",
         file="serialisers.py",
@@ -200,6 +209,7 @@ def test_findings_artifact_records_every_member_of_a_grouped_issue_with_its_issu
 
 
 def test_findings_artifact_rejects_issues_that_do_not_partition_its_findings():
+    """A finding with no issue raises "partition", and adding a foreign member raises an issue id mismatch."""
     record = finding()
 
     with pytest.raises(ValueError, match="partition"):

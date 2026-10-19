@@ -27,7 +27,7 @@ class ChangeAnchor:
 class Finding:
     """One reported vulnerability before cross-unit accumulation and issue grouping.
 
-    Every target fills the same fields; only a Diff finding carries a change anchor. The cited
+    Every target fills the same fields, and only a Diff finding carries a change anchor. The cited
     spans are bound after location validation and never enter the identity.
     """
 

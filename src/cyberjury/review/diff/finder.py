@@ -35,7 +35,6 @@ def findings_from_reply(unit: DiffUnit, reply: RoleReply) -> list[Finding]:
 
 
 def _change_anchor_correction(anchor: dict[str, object], index: int, ranges: DiffLineRanges) -> str:
-    """Explain one invalid anchor using only exact changed line ranges."""
     line = anchor["line"]
     side = anchor["side"]
     available_paths = {*ranges.old, *ranges.new}

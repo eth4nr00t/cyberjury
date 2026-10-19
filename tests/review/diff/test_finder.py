@@ -22,6 +22,7 @@ def _run(runner, diff, *, context=""):
 
 
 def test_diff_finder_parses_findings():
+    """A CRITICAL sql_injection reply yields one finding with category normalized to sql-injection."""
     response = reply(
         [
             {
@@ -42,6 +43,7 @@ def test_diff_finder_parses_findings():
 
 
 def test_diff_candidate_rejects_a_model_supplied_mismatched_identity():
+    """A reply carrying candidate_id fails parsing with an "unknown fields: candidate_id" error."""
     finding = {
         "candidate_id": "candidate-wrong",
         "file": "app.py",
@@ -60,6 +62,7 @@ def test_diff_candidate_rejects_a_model_supplied_mismatched_identity():
 
 
 def test_diff_candidate_accepts_a_model_supplied_category():
+    """A free-form category such as "sqli" is kept verbatim on the parsed finding."""
     finding = {
         "file": "app.py",
         "line": 1,
@@ -72,6 +75,7 @@ def test_diff_candidate_accepts_a_model_supplied_category():
 
 
 def test_diff_review_reports_a_malformed_finding_as_failed_work():
+    """A finding with only severity leaves no findings and records a missing-fields unit failure."""
     provider = MockProvider(default=reply([{"severity": "HIGH"}]))
 
     result = review(_DIFF, provider=provider)
@@ -82,6 +86,7 @@ def test_diff_review_reports_a_malformed_finding_as_failed_work():
 
 
 def test_diff_review_reports_a_malformed_change_anchor_as_failed_work():
+    """A change_anchor with side "context" leaves no findings and fails on the allowed-value check."""
     provider = MockProvider(
         default=reply(
             [
@@ -105,6 +110,7 @@ def test_diff_review_reports_a_malformed_change_anchor_as_failed_work():
 
 
 def test_diff_review_corrects_one_anchor_that_is_not_an_exact_changed_line():
+    """An anchor on unchanged line 2 gets a correction listing new lines 1 and the retry is accepted."""
     finding = {
         "file": "app.py",
         "line": 1,
@@ -125,6 +131,7 @@ def test_diff_review_corrects_one_anchor_that_is_not_an_exact_changed_line():
 
 
 def test_diff_review_preserves_a_valid_sibling_during_anchor_correction():
+    """The valid line-1 finding is frozen in the correction prompt while its line-2 sibling is fixed."""
     valid = {
         "file": "app.py",
         "line": 1,
@@ -153,6 +160,7 @@ def test_diff_review_preserves_a_valid_sibling_during_anchor_correction():
 
 
 def test_diff_review_keeps_an_invalid_anchor_candidate_when_correction_fails():
+    """A non-JSON correction reply moves the bad-anchor finding to incomplete and the outcome fails."""
     finding = {
         "file": "app.py",
         "line": 1,
@@ -171,6 +179,7 @@ def test_diff_review_keeps_an_invalid_anchor_candidate_when_correction_fails():
 
 
 def test_diff_review_allows_anchor_correction_to_remove_an_unreportable_candidate():
+    """An empty correction reply drops the line-2 anchored finding, leaving no findings."""
     finding = {
         "file": "app.py",
         "line": 1,
@@ -185,10 +194,12 @@ def test_diff_review_allows_anchor_correction_to_remove_an_unreportable_candidat
 
 
 def test_diff_finder_empty_on_no_findings():
+    """A reply with an empty findings list produces an empty result for the SQL concatenation diff."""
     assert _run(finder(MockProvider(default=reply([]))), _DIFF) == []
 
 
 def test_diff_finder_rejects_invalid_finding_semantics():
+    """Severity "spicy" raises a "severity has a value outside the allowed set" error."""
     response = reply(
         [
             {
@@ -205,6 +216,7 @@ def test_diff_finder_rejects_invalid_finding_semantics():
 
 
 def test_diff_finder_sends_the_contract_as_a_cacheable_system_prompt():
+    """The kernel and rubric go in the system prompt, while the cached prefix carries the diff text."""
     provider = MockProvider(default=reply([]))
     _run(finder(provider), _DIFF)
     call = provider.calls[0]
@@ -218,6 +230,7 @@ def test_diff_finder_sends_the_contract_as_a_cacheable_system_prompt():
 
 
 def test_diff_system_is_identical_across_units():
+    """Two units with different diffs and context share one system prompt free of unit context."""
     provider = MockProvider(default=reply([]))
     runner = finder(provider)
     _run(runner, _DIFF, context="first unit")
@@ -228,6 +241,7 @@ def test_diff_system_is_identical_across_units():
 
 
 def test_diff_repository_evidence_does_not_change_the_profile_brief():
+    """Published evidence ids enter the cache prefix while their source text stays out of the prompt."""
     provider = MockProvider(default=reply([]))
     runner = finder(provider)
     evidence = EvidenceItem.create(
@@ -252,6 +266,7 @@ def test_diff_repository_evidence_does_not_change_the_profile_brief():
 
 
 def test_diff_navigation_keeps_profile_coverage_and_runs_a_final_evidence_sweep(tmp_path):
+    """A symbol search is followed by a call that shares the cache prefix and carries the found source."""
     source = "class ModelWithOwner:\n    owner_scope = True\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
     navigator = navigator_from_callgraph(
@@ -298,6 +313,7 @@ def test_diff_navigation_keeps_profile_coverage_and_runs_a_final_evidence_sweep(
 
 
 def test_diff_repeated_navigation_query_fails_the_unit(tmp_path):
+    """Returning the same search_symbols "Record" query on every reply fails with "repeats an earlier query"."""
     source = "class Record:\n    owner_scope = True\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
     navigator = navigator_from_callgraph(
@@ -339,6 +355,7 @@ def test_diff_repeated_navigation_query_fails_the_unit(tmp_path):
     ],
 )
 def test_diff_finder_rejects_schema_valid_findings_with_invalid_semantics(change, message):
+    """Blank evidence, line 0, absolute paths, empty refs, or a line-0 anchor raise the matching error."""
     finding = {
         "file": "app.py",
         "line": 1,
@@ -352,6 +369,7 @@ def test_diff_finder_rejects_schema_valid_findings_with_invalid_semantics(change
 
 
 def test_semantic_violation_in_one_finding_keeps_the_valid_findings_of_thereply():
+    """A blank title on findings[1] keeps findings[0], fails the cycle, and names the field."""
     valid = {
         "file": "app.py",
         "line": 1,

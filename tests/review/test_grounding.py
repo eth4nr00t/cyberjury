@@ -23,6 +23,7 @@ def _plan(source_chars: int) -> UnitPlanReceipt:
 
 
 def test_grounding_receipt_binds_the_unit_plan_and_exact_evidence_content(tmp_path):
+    """The receipt records the unit plan sha256, grounding/v1 schema, seed/context sizes, evidence hashes."""
     source = "def route():\n    return 1\n"
     (tmp_path / "app.py").write_text(source)
     snapshot = SourceSnapshot.capture(tmp_path, ("app.py",))
@@ -59,6 +60,7 @@ def test_grounding_receipt_binds_the_unit_plan_and_exact_evidence_content(tmp_pa
 
 
 def test_grounding_receipt_binds_source_the_agent_delivered_before_the_first_call(tmp_path):
+    """A service.py callee delivered as source evidence is recorded with its id and character count."""
     source = "def route():\n    return load()\n"
     callee = "def load():\n    return 1\n"
     (tmp_path / "app.py").write_text(source)

@@ -24,20 +24,24 @@ _FILE_B = "diff --git a/b.py b/b.py\n@@ -0,0 +1 @@\n+y = 2\n"
 
 
 def test_split_diff_by_file():
+    """A two-file patch splits into one chunk per diff --git header, preserving each chunk verbatim."""
     chunks = split_diff_by_file(_FILE_A + _FILE_B)
     assert chunks == [_FILE_A, _FILE_B]
 
 
 def test_split_diff_empty_and_unbounded():
+    """An empty string yields no chunks, and text without a diff --git header is returned as one chunk."""
     assert split_diff_by_file("") == []
     assert split_diff_by_file("just text\n") == ["just text\n"]
 
 
 def test_pack_diff_chunks_empty_is_no_batches():
+    """An empty diff packs into an empty batch list."""
     assert pack_diff_chunks("") == []
 
 
 def test_pack_diff_chunks_greedily_combines_files():
+    """Two files share one batch when the bound fits both, and split into two when it fits only one."""
     batches = pack_diff_chunks(_FILE_A + _FILE_B, max_chars=len(_FILE_A) + len(_FILE_B))
     assert batches == [_FILE_A + _FILE_B]
     batches = pack_diff_chunks(_FILE_A + _FILE_B, max_chars=len(_FILE_A))
@@ -45,6 +49,7 @@ def test_pack_diff_chunks_greedily_combines_files():
 
 
 def test_pack_diff_chunks_keeps_an_indivisible_oversized_line_observable():
+    """A 200-character added line that exceeds the bound gets its own over-limit batch, kept intact."""
     big = "diff --git a/big.py b/big.py\n@@ -0,0 +1 @@\n+" + "z" * 200 + "\n"
     batches = pack_diff_chunks(_FILE_A + big, max_chars=len(_FILE_A) + 5)
     assert batches[0] == _FILE_A
@@ -54,6 +59,7 @@ def test_pack_diff_chunks_keeps_an_indivisible_oversized_line_observable():
 
 
 def test_pack_diff_chunks_splits_one_large_hunk_without_dropping_changed_lines():
+    """Twelve added lines under max_chars=180 span several batches within the bound, in original order."""
     added = [f"value_{index:02d} = {'x' * 20}" for index in range(12)]
     diff = f"diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -0,0 +1,{len(added)} @@\n" + "".join(
         f"+{line}\n" for line in added
@@ -73,6 +79,7 @@ def test_pack_diff_chunks_splits_one_large_hunk_without_dropping_changed_lines()
 
 
 def test_diff_unit_plan_record_exposes_patch_ownership():
+    """A diff unit for a.py records kind diff, owned path a.py, and a patch sha256."""
     unit = DiffUnit(
         index=1,
         total=1,
@@ -107,12 +114,14 @@ _LOCK = "diff --git a/package-lock.json b/package-lock.json\n@@ -0,0 +1 @@\n+{}\
 
 
 def test_strip_unreviewable_files_drops_docs_and_lockfiles_keeps_source():
+    """README.md and package-lock.json are skipped while the app.py source chunk is kept."""
     kept, skipped = strip_unreviewable_files(_SRC + _DOC + _LOCK, _DETECTION)
     assert kept == _SRC
     assert {item.path for item in skipped} == {"README.md", "package-lock.json"}
 
 
 def test_strip_unreviewable_files_uses_the_profile_patch_boundary():
+    """The profile skips .xlf and .scss changes but keeps .html templates and .sql files."""
     translation = "diff --git a/messages.xlf b/messages.xlf\n@@ -0,0 +1 @@\n+<trans-unit/>\n"
     style = "diff --git a/theme.scss b/theme.scss\n@@ -0,0 +1 @@\n+.secret { color: red; }\n"
     template = "diff --git a/view.html b/view.html\n@@ -0,0 +1 @@\n+{{ unsafe }}\n"
@@ -126,6 +135,7 @@ def test_strip_unreviewable_files_uses_the_profile_patch_boundary():
 
 
 def test_strip_unreviewable_files_skips_binary_without_excluding_unknown_source():
+    """A binary logo.unknown change is skipped as binary while an unlisted .rs source file is kept."""
     binary = "diff --git a/logo.unknown b/logo.unknown\nBinary files a/logo.unknown and b/logo.unknown differ\n"
     source = "diff --git a/handler.rs b/handler.rs\n@@ -0,0 +1 @@\n+fn handle() {}\n"
 
@@ -136,6 +146,7 @@ def test_strip_unreviewable_files_skips_binary_without_excluding_unknown_source(
 
 
 def test_strip_unreviewable_files_keeps_a_chunk_whose_path_cannot_be_read():
+    """A hunk with no file header is kept and nothing is reported as skipped."""
     headerless = "@@ -0,0 +1 @@\n+x = 1\n"
     kept, skipped = strip_unreviewable_files(headerless, _DETECTION)
     assert kept == headerless
@@ -143,6 +154,7 @@ def test_strip_unreviewable_files_keeps_a_chunk_whose_path_cannot_be_read():
 
 
 def test_chunk_path_reads_the_deletion_and_git_header_fallbacks():
+    """Paths come from a/ for /dev/null deletions and from plain, quoted, and octal-escaped git headers."""
     deletion = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-# Title\n"
     assert chunk_path(deletion) == "README.md"
     header_only = "diff --git a/app/x.py b/app/x.py\nBinary files differ\n"
@@ -154,6 +166,7 @@ def test_chunk_path_reads_the_deletion_and_git_header_fallbacks():
 
 
 def test_pack_diff_chunks_preserves_source_order_within_bound():
+    """The files first.ts, caller.ts, and filler.ts fill the first batch in order, and helper.ts starts the next."""
 
     def chunk(path: str, line: str) -> str:
         return f"diff --git a/{path} b/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n+{line}\n"
@@ -180,6 +193,7 @@ def test_pack_diff_chunks_preserves_source_order_within_bound():
     ],
 )
 def test_diff_paths_and_ranges_preserve_git_paths_with_spaces(header):
+    """Plain and quoted headers for app route.py both yield that path with changed range (7, 8)."""
     diff = header + "@@ -0,0 +7,2 @@\n+def route():\n+    return sink()\n"
 
     assert diff_paths(diff) == ("app route.py",)
@@ -187,6 +201,7 @@ def test_diff_paths_and_ranges_preserve_git_paths_with_spaces(header):
 
 
 def test_diff_line_ranges_separate_current_old_and_new_sides():
+    """A one-line replacement in hunk -10,3 +10,3 yields current 10-12, old line 11, and new line 11."""
     diff = (
         "diff --git a/app.py b/app.py\n"
         "--- a/app.py\n"
@@ -206,6 +221,7 @@ def test_diff_line_ranges_separate_current_old_and_new_sides():
 
 
 def test_diff_line_ranges_keep_renamed_side_paths_distinct():
+    """A rename from old.py to new.py records old-side ranges on old.py and new and current on new.py."""
     diff = "diff --git a/old.py b/new.py\n--- a/old.py\n+++ b/new.py\n@@ -4 +4 @@\n-allow()\n+deny()\n"
 
     ranges = diff_line_ranges(diff, _DETECTION)
@@ -216,6 +232,7 @@ def test_diff_line_ranges_keep_renamed_side_paths_distinct():
 
 
 def test_diff_line_ranges_keep_reportable_non_source_files():
+    """A policy.yaml change keeps line 1 in current, old, new, and changed_line_ranges."""
     diff = (
         "diff --git a/policy.yaml b/policy.yaml\n"
         "--- a/policy.yaml\n"

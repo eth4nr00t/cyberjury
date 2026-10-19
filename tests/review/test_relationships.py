@@ -49,6 +49,7 @@ def _bundle():
 
 
 def test_relationship_evidence_has_stable_ids_and_explicit_source_hashes():
+    """Rebuilding the route-to-load bundle gives equal ids, v1 schema data, and 64-hex content hashes."""
     bundle = _bundle()
 
     assert bundle == _bundle()
@@ -63,6 +64,7 @@ def test_relationship_evidence_has_stable_ids_and_explicit_source_hashes():
 
 
 def test_relationship_evidence_rejects_conflicting_content_at_one_coordinate():
+    """Two app.py references at offsets 0-1 with contents "a" and "b" raise "conflicting source content"."""
     first = SourceReference.create(path="app.py", start=0, end=1, content="a")
     second = SourceReference.create(path="app.py", start=0, end=1, content="b")
 
@@ -71,6 +73,7 @@ def test_relationship_evidence_rejects_conflicting_content_at_one_coordinate():
 
 
 def test_relationship_evidence_rejects_a_callsite_outside_its_caller():
+    """A route() callsite whose source is the load() body in service.py raises "outside its caller source"."""
     bundle = _bundle()
     caller = next(item for item in bundle.definitions if item.name == "route")
     target = next(item for item in bundle.definitions if item.name == "load")

@@ -17,11 +17,10 @@ def provider_seat_record(seat: ProviderSeat) -> ProviderSeatRecord:
     """Describe one effective provider transport without credentials."""
     endpoint = endpoint_identity(seat.api_base)
     return ProviderSeatRecord(
-        seat_id=seat_identity(seat.provider, seat.model, endpoint, seat.wire_api),
+        seat_id=seat_identity(seat.provider, seat.model, endpoint),
         provider=seat.provider,
         model=seat.model,
         endpoint_identity=endpoint,
-        wire_api=seat.wire_api,
     )
 
 
@@ -46,7 +45,7 @@ def review_seats(
     meter: UsageMeter,
     dry_run_provider: Provider | None = None,
 ) -> ReviewSeats:
-    """Resolve the seats one review calls; a dry run provider replaces the finder and disables model judgments."""
+    """Resolve the seats one review calls. A dry run provider replaces the finder and disables model judgments."""
     if dry_run_provider is not None:
         return ReviewSeats(
             finder=MeteringProvider(dry_run_provider, meter),
@@ -54,7 +53,7 @@ def review_seats(
             finder_label=provider_seat_id(DRY_RUN_SEAT),
         )
     finder = configuration.seat
-    provider = provider_for_seat(configuration, finder, meter=meter)
+    provider = provider_for_seat(configuration, meter=meter)
     seat_id = provider_seat_id(finder)
     return ReviewSeats(
         finder=provider,
