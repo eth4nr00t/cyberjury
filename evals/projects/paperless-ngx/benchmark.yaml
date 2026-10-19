@@ -183,7 +183,14 @@ cases:
         locations:
           - {file: src/paperless/admin.py, symbol: PaperlessUserAdmin}
           - {file: src/paperless/admin.py, symbol: PaperlessUserForm.clean}
-          - {file: src/paperless/serialisers.py, line: 85}
+          - {file: src/paperless/serialisers.py, line: 95}
+      - id: django-admin-idor
+        root_cause: DocumentAdmin.get_queryset returns Document.global_objects.all() (src/documents/admin.py:100) and the other GuardedModelAdmin classes keep the unfiltered default queryset and Django's model-level has_view/change/delete_permission, so the /admin/ backend (src/paperless/urls.py:235) authorizes staff users by global model permission alone and ignores owner and object-level permissions on documents, notes, share links and custom field values
+        locations:
+          - {file: src/documents/admin.py, symbol: DocumentAdmin.get_queryset}
+          - {file: src/documents/admin.py, symbol: NotesAdmin}
+          - {file: src/documents/admin.py, symbol: ShareLinksAdmin}
+          - {file: src/paperless/urls.py, line: 235}
       - id: suggestions-cache-information-disclosure
         root_cause: get_suggestion_cache_key keys cached suggestions by document id only, so one user's permission-filtered suggestions are replayed to other users requesting that document
         locations:
