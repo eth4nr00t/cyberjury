@@ -10,6 +10,10 @@ cases:
         root_cause: send_webhook validates only the first resolved IP of the URL host, then httpx re-resolves it at request time, so the private-address block is not pinned to the connection actually made
         locations:
           - {file: src/documents/signals/handlers.py, symbol: send_webhook}
+      - id: webhook-address-filter-ssrf
+        root_cause: _is_public_ip treats an address as internal only when ipaddress reports it private, loopback, link-local, multicast or unspecified (src/documents/signals/handlers.py:680), so RFC 6598 shared address space 100.64.0.0/10 destinations count as public and pass send_webhook's internal-request block (src/documents/signals/handlers.py:727)
+        locations:
+          - {file: src/documents/signals/handlers.py, symbol: _is_public_ip}
       - id: matching-regex-denial-of-service
         root_cause: matches() runs user-defined MATCH_REGEX patterns with re.search over the full document content with no timeout or complexity bound on the regex evaluation
         locations:
@@ -104,6 +108,10 @@ cases:
         root_cause: MailAccountViewSet.test loads MailAccount.objects.get(pk=request id) and reuses its stored password and OAuth token without an owner or object-permission check on that account
         locations:
           - {file: src/paperless_mail/views.py, line: 95}
+      - id: mail-linkify-denial-of-service
+        root_cause: MailDocumentParser.mail_to_html runs bleach linkify with parse_email=True in its clean_html helper (src/paperless_mail/parsers.py:304) over unbounded mail fields including the full body text (src/paperless_mail/parsers.py:336), and the email pattern of the pinned bleach 6.3.0 retries a linear dot-atom scan at every start offset, so processing time grows quadratically with message length
+        locations:
+          - {file: src/paperless_mail/parsers.py, symbol: MailDocumentParser.mail_to_html}
       - id: bulk-download-zip-name-denial-of-service
         root_cause: BulkArchiveStrategy picks unique zip entry names by rescanning zipf.namelist() in a counter loop for every document, with no cap on the number of requested documents
         locations:
@@ -112,12 +120,12 @@ cases:
         root_cause: DelayedMoreLikeThisQuery builds full-text more_like_id results from any document id's content without checking that the requester can view that document
         locations:
           - {file: src/documents/index.py, line: 463}
-      - id: document-upload-idor
-        root_cause: PostDocumentSerializer's storage_path, correspondent and document_type override fields use unscoped querysets, so uploads apply objects the uploader cannot view (names leak via title placeholders)
+      - id: document-upload-information-disclosure
+        root_cause: ConsumerPlugin._parse_title_placeholders resolves the {{correspondent}} and {{document_type}} title placeholders by loading the caller-supplied ids (src/documents/consumer.py:589) that PostDocumentSerializer accepts from unscoped querysets (src/documents/serialisers.py:1737, src/documents/serialisers.py:1745) without checking the uploader's view permission, so names of objects shown as Private elsewhere are written into the uploader's document title
         locations:
-          - {file: src/documents/serialisers.py, line: 1753}
-          - {file: src/documents/serialisers.py, line: 1737}
           - {file: src/documents/consumer.py, symbol: ConsumerPlugin._parse_title_placeholders}
+          - {file: src/documents/serialisers.py, line: 1737}
+          - {file: src/documents/serialisers.py, line: 1745}
       - id: consumption-task-missing-owner
         root_cause: TasksViewSet shows every owner=None task to all users and TasksViewSerializer returns its result text, while system-created consumption tasks are stored without an owner
         locations:
