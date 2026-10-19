@@ -112,6 +112,12 @@ cases:
         root_cause: MailDocumentParser.mail_to_html runs bleach linkify with parse_email=True in its clean_html helper (src/paperless_mail/parsers.py:304) over unbounded mail fields including the full body text (src/paperless_mail/parsers.py:336), and the email pattern of the pinned bleach 6.3.0 retries a linear dot-atom scan at every start offset, so processing time grows quadratically with message length
         locations:
           - {file: src/paperless_mail/parsers.py, symbol: MailDocumentParser.mail_to_html}
+      - id: mail-title-template-denial-of-service
+        root_cause: ConsumerPlugin._store passes every metadata title override, including the mail subject that MailAccountHandler._get_title returns under the default FROM_SUBJECT rule setting or the attachment filename under FROM_FILENAME, to _parse_title_placeholders (src/documents/consumer.py:649), which compiles it as Jinja source in a SandboxedEnvironment without intercepted binary operators, output size bounds or nested loop limits (src/documents/templating/workflows.py:85), so mail-derived title text is rendered as a template instead of stored literally and string multiplication or nested loops in it exhaust consumer worker memory or CPU
+        locations:
+          - {file: src/documents/consumer.py, line: 649}
+          - {file: src/paperless_mail/mail.py, symbol: MailAccountHandler._get_title}
+          - {file: src/documents/templating/workflows.py, line: 85}
       - id: bulk-download-zip-name-denial-of-service
         root_cause: BulkArchiveStrategy picks unique zip entry names by rescanning zipf.namelist() in a counter loop for every document, with no cap on the number of requested documents
         locations:
@@ -126,6 +132,13 @@ cases:
           - {file: src/documents/consumer.py, symbol: ConsumerPlugin._parse_title_placeholders}
           - {file: src/documents/serialisers.py, line: 1737}
           - {file: src/documents/serialisers.py, line: 1745}
+      - id: double-sided-collation-missing-permission
+        root_cause: CollatePlugin.able_to_run enables collation whenever CONSUMER_COLLATE_DOUBLE_SIDED_SUBDIR_NAME equals any part of the input path, including the file's own name, without limiting it to consume-folder files inside that subdirectory (src/documents/double_sided.py:36), so API uploads and mail attachments named after the subdirectory are collated against the single staging file shared by all users (src/documents/double_sided.py:74), deleting a pending odd-page scan (src/documents/double_sided.py:131) or replacing it as staging (src/documents/double_sided.py:134)
+        locations:
+          - {file: src/documents/double_sided.py, symbol: CollatePlugin.able_to_run}
+          - {file: src/documents/double_sided.py, line: 74}
+          - {file: src/documents/double_sided.py, line: 131}
+          - {file: src/documents/double_sided.py, line: 134}
       - id: consumption-task-missing-owner
         root_cause: TasksViewSet shows every owner=None task to all users and TasksViewSerializer returns its result text, while system-created consumption tasks are stored without an owner
         locations:
