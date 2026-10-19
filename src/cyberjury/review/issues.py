@@ -4,7 +4,7 @@ Grouping never removes a finding; every member is still reported and counted. Fi
 that report the same category at the same primary location, one file and one line, form one
 issue without a model. Findings of different groups become a candidate pair when each cites
 source covering the other's primary location, or when one does and both cite overlapping lines
-of one source file. Each candidate pair receives one closed-schema judgment on the finder seat,
+of one source file. Each candidate pair receives one closed-schema judgment on the review model,
 and only a `same_fix` answer links the two issues.
 """
 

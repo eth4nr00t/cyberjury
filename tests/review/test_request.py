@@ -36,9 +36,7 @@ def _request() -> ReviewAttemptRequest:
         providers=ProviderPlanRecord(
             retries=2,
             timeout_seconds=120,
-            seats=(seat,),
-            base_seat_id=seat.seat_id,
-            finder_seat_id=seat.seat_id,
+            seat=seat,
         ),
     )
 

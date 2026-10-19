@@ -40,7 +40,6 @@ from cyberjury.review.run import ReviewRun, run_review
 from cyberjury.review.seats import (
     DRY_RUN_SEAT,
     ReviewSeats,
-    provider_seat_id,
     provider_seat_record,
     review_seats,
 )
@@ -94,7 +93,7 @@ def _dry_run_response(_system: str, _messages: list[Message]) -> str:
 
 
 def _provider_configuration(args: argparse.Namespace) -> ProviderConfiguration:
-    """Resolve the environment seats with the base seat and client policy flags applied."""
+    """Resolve the environment seat with the seat and client policy flags applied."""
     return provider_configuration_from_env(
         provider=args.provider,
         model=args.model,
@@ -105,15 +104,15 @@ def _provider_configuration(args: argparse.Namespace) -> ProviderConfiguration:
 
 
 def _add_model_args(target) -> None:
-    """Base seat and client policy flags; unset values come from the CYBERJURY_* environment."""
-    target.add_argument("--provider", choices=PROVIDERS, default=None, help="base seat provider")
-    target.add_argument("--model", type=_nonempty_string, default=None, help="base seat model")
+    """Seat and client policy flags; unset values come from the CYBERJURY_* environment."""
+    target.add_argument("--provider", choices=PROVIDERS, default=None, help="model provider")
+    target.add_argument("--model", type=_nonempty_string, default=None, help="model name")
     target.add_argument(
         "--wire-api",
         default=None,
         dest="wire_api",
         choices=("chat", "responses"),
-        help="OpenAI base seat wire API, default responses, chat for endpoints that only serve Chat Completions",
+        help="OpenAI wire API, default responses, chat for endpoints that only serve Chat Completions",
     )
     target.add_argument(
         "--retries", type=nonnegative_int, default=None, help="provider retry attempts on transient failure"
@@ -143,9 +142,7 @@ def _add_concurrency_arg(target, work: str) -> None:
     )
 
 
-_MODEL_GROUP_HELP = (
-    "API keys, endpoints, and the finder seat come from CYBERJURY_* environment variables, see .env.example"
-)
+_MODEL_GROUP_HELP = "API keys and endpoints come from CYBERJURY_* environment variables, see .env.example"
 
 
 def _add_diff_args(parser: argparse.ArgumentParser) -> None:
@@ -308,22 +305,11 @@ def _provider_plan(
     if action == "scaffold":
         return None
     if args.dry_run:
-        seat = provider_seat_record(DRY_RUN_SEAT)
-        return ProviderPlanRecord(
-            retries=None,
-            timeout_seconds=None,
-            seats=(seat,),
-            base_seat_id=seat.seat_id,
-            finder_seat_id=seat.seat_id,
-        )
-    specs = (configuration.base, configuration.finder)
-    seats = {provider_seat_id(spec): provider_seat_record(spec) for spec in specs}
+        return ProviderPlanRecord(retries=None, timeout_seconds=None, seat=provider_seat_record(DRY_RUN_SEAT))
     return ProviderPlanRecord(
         retries=configuration.retries,
         timeout_seconds=configuration.timeout,
-        seats=tuple(sorted(seats.values(), key=lambda seat: seat.seat_id)),
-        base_seat_id=provider_seat_id(configuration.base),
-        finder_seat_id=provider_seat_id(configuration.finder),
+        seat=provider_seat_record(configuration.seat),
     )
 
 

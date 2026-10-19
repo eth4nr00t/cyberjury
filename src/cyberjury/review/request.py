@@ -97,21 +97,18 @@ class ProviderSeatRecord:
 
 @dataclass(frozen=True, kw_only=True)
 class ProviderPlanRecord:
-    """Observable effective seats and role routing."""
+    """Observable effective model seat and client policy."""
 
     retries: int | None
     timeout_seconds: float | None
-    seats: tuple[ProviderSeatRecord, ...]
-    base_seat_id: str | None
-    finder_seat_id: str | None
+    seat: ProviderSeatRecord
 
     def to_dict(self) -> dict[str, object]:
         """Return the strict provider plan wire form."""
         return {
             "retries": self.retries,
             "timeout_seconds": self.timeout_seconds,
-            "seats": [seat.to_dict() for seat in self.seats],
-            "roles": {"base": self.base_seat_id, "finder": self.finder_seat_id},
+            "seat": self.seat.to_dict(),
         }
 
 
@@ -138,8 +135,7 @@ class ReviewAttemptRequest:
             raise ValueError("only run requests have reusable judgment configuration")
         providers = self.providers.to_dict()
         semantic = {
-            "provider_seats": providers["seats"],
-            "provider_roles": providers["roles"],
+            "provider_seat": providers["seat"],
             "dry_run": self.dry_run,
             "engine_version": self.engine_version,
         }

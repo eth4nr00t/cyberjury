@@ -5,30 +5,12 @@ import pytest
 from cyberjury.providers import configuration as configuration_module
 from cyberjury.providers.configuration import (
     EnvironmentDefaults,
-    ProviderSeat,
-    ProviderSeatOverride,
     env_defaults,
     provider_configuration_from_env,
-    resolve_provider_seat,
 )
-from cyberjury.providers.factory import ROLES
 
 
-def test_role_resolution_drops_cross_vendor_connection_fields():
-    base = ProviderSeat(
-        provider="anthropic",
-        model="claude-base",
-        api_key="anthropic-key",
-        api_base="https://anthropic.invalid",
-        wire_api="messages",
-    )
-
-    seat = resolve_provider_seat(base, ProviderSeatOverride(provider="openai"))
-
-    assert seat == ProviderSeat(provider="openai", model="gpt-5.6")
-
-
-def test_environment_configuration_applies_base_overrides_to_inherited_roles(monkeypatch):
+def test_environment_configuration_applies_command_overrides(monkeypatch):
     monkeypatch.setattr(
         configuration_module,
         "env_defaults",
@@ -40,21 +22,18 @@ def test_environment_configuration_applies_base_overrides_to_inherited_roles(mon
             wire_api="responses",
             retries=2,
             timeout=30.0,
-            roles={
-                "finder": ProviderSeatOverride(),
-            },
         ),
     )
 
     configuration = provider_configuration_from_env(model="override")
 
-    assert configuration.base.model == "override"
-    assert configuration.finder.model == "override"
+    assert configuration.seat.model == "override"
+    assert configuration.seat.api_key == "key"
     assert configuration.retries == 2
     assert configuration.timeout == 30.0
-    assert provider_configuration_from_env().base.model == "gpt-5.6"
+    assert provider_configuration_from_env().seat.model == "gpt-5.6"
     overridden = provider_configuration_from_env(provider="anthropic", wire_api="chat", retries=0, timeout=5.0)
-    assert (overridden.base.provider, overridden.base.model, overridden.base.wire_api) == (
+    assert (overridden.seat.provider, overridden.seat.model, overridden.seat.wire_api) == (
         "anthropic",
         "claude-opus-5",
         "chat",
@@ -62,15 +41,22 @@ def test_environment_configuration_applies_base_overrides_to_inherited_roles(mon
     assert (overridden.retries, overridden.timeout) == (0, 5.0)
 
 
-def test_environment_reads_the_finder_role_variables(monkeypatch):
+def test_environment_reads_every_seat_variable(monkeypatch):
     monkeypatch.setenv("CYBERJURY_PROVIDER", "openai")
-    monkeypatch.setenv("CYBERJURY_MODEL", "base-model")
-    monkeypatch.setenv("CYBERJURY_FINDER_MODEL", "finder-model")
+    monkeypatch.setenv("CYBERJURY_MODEL", "seat-model")
+    monkeypatch.setenv("CYBERJURY_API_KEY", "seat-key")
+    monkeypatch.setenv("CYBERJURY_API_BASE", "https://gateway.example.test")
+    monkeypatch.setenv("CYBERJURY_WIRE_API", "chat")
 
-    configuration = provider_configuration_from_env()
+    seat = provider_configuration_from_env().seat
 
-    assert configuration.base.model == "base-model"
-    assert configuration.finder.model == "finder-model"
+    assert (seat.provider, seat.model, seat.api_key, seat.api_base, seat.wire_api) == (
+        "openai",
+        "seat-model",
+        "seat-key",
+        "https://gateway.example.test",
+        "chat",
+    )
 
 
 def test_env_defaults_prefer_openai_when_a_key_is_reachable(monkeypatch):
@@ -85,44 +71,19 @@ def test_env_defaults_fall_back_to_anthropic_without_an_openai_key():
     assert env_defaults().provider == "anthropic"
 
 
-def test_env_defaults_read_each_role_backend_field(monkeypatch):
-    """Every role field can come from its matching CYBERJURY role variable."""
-    for role in ROLES:
-        prefix = f"CYBERJURY_{role.upper()}"
-        monkeypatch.setenv(f"{prefix}_PROVIDER", f"{role}-provider")
-        monkeypatch.setenv(f"{prefix}_MODEL", f"{role}-model")
-        monkeypatch.setenv(f"{prefix}_API_KEY", f"{role}-key")
-        monkeypatch.setenv(f"{prefix}_API_BASE", f"https://{role}.example.test")
-        monkeypatch.setenv(f"{prefix}_WIRE_API", "responses")
+def test_env_defaults_reject_an_unknown_wire_api(monkeypatch):
+    monkeypatch.setenv("CYBERJURY_WIRE_API", "Responses")
 
-    defaults = env_defaults()
-
-    for role in ROLES:
-        assert defaults.roles[role] == ProviderSeatOverride(
-            provider=f"{role}-provider",
-            model=f"{role}-model",
-            api_key=f"{role}-key",
-            api_base=f"https://{role}.example.test",
-            wire_api="responses",
-        )
-
-
-@pytest.mark.parametrize("name", ["CYBERJURY_WIRE_API", "CYBERJURY_FINDER_WIRE_API"])
-def test_env_defaults_reject_an_unknown_wire_api(monkeypatch, name):
-    monkeypatch.setenv(name, "Responses")
-
-    with pytest.raises(ValueError, match=rf"{name} must be one of responses, chat, got 'Responses'"):
+    with pytest.raises(ValueError, match=r"CYBERJURY_WIRE_API must be one of responses, chat, got 'Responses'"):
         env_defaults()
 
 
 def test_env_defaults_accept_chat_and_treat_an_empty_wire_api_as_unset(monkeypatch):
     monkeypatch.setenv("CYBERJURY_WIRE_API", "chat")
-    monkeypatch.setenv("CYBERJURY_FINDER_WIRE_API", "")
+    assert env_defaults().wire_api == "chat"
 
-    defaults = env_defaults()
-
-    assert defaults.wire_api == "chat"
-    assert defaults.roles["finder"].wire_api is None
+    monkeypatch.setenv("CYBERJURY_WIRE_API", "")
+    assert env_defaults().wire_api is None
 
 
 @pytest.mark.parametrize(

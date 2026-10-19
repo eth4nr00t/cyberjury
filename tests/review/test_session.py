@@ -27,19 +27,12 @@ from cyberjury.sources.snapshot import SourceSnapshot
 
 
 def _request(action: str = "run") -> ReviewAttemptRequest:
-    seat_id = seat_identity("mock", "mock", "default", None)
-    seats = (
-        (
-            ProviderSeatRecord(
-                seat_id=seat_id,
-                provider="mock",
-                model="mock",
-                endpoint_identity="default",
-                wire_api=None,
-            ),
-        )
-        if action == "run"
-        else ()
+    seat = ProviderSeatRecord(
+        seat_id=seat_identity("mock", "mock", "default", None),
+        provider="mock",
+        model="mock",
+        endpoint_identity="default",
+        wire_api=None,
     )
     return ReviewAttemptRequest(
         action=action,
@@ -47,17 +40,7 @@ def _request(action: str = "run") -> ReviewAttemptRequest:
         concurrency=ConcurrencyRecord(review=1) if action == "run" else None,
         dry_run=True if action == "run" else None,
         fresh=False if action in {"run", "scaffold"} else None,
-        providers=(
-            ProviderPlanRecord(
-                retries=None,
-                timeout_seconds=None,
-                seats=seats,
-                base_seat_id=seat_id,
-                finder_seat_id=seat_id,
-            )
-            if action == "run"
-            else None
-        ),
+        providers=(ProviderPlanRecord(retries=None, timeout_seconds=None, seat=seat) if action == "run" else None),
     )
 
 

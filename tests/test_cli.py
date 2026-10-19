@@ -670,7 +670,7 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     model_calls = json.loads((attempt_dir / "model-calls.json").read_text())
 
     assert "schedule" not in request
-    assert request["providers"]["roles"]["finder"] is not None
+    assert request["providers"]["seat"]["seat_id"].startswith("seat-")
     assert request["concurrency"]["review"] == captured["concurrency"] == 5
     assert request["concurrency"] == {"review": 5}
     assert "verification" not in request
@@ -801,7 +801,7 @@ def test_stage_one_request_is_shared_across_targets(
     )
     request = captured["request"]
     assert captured["intent"].target.kind == scope
-    assert request.providers.finder_seat_id is not None
+    assert request.providers.seat.seat_id.startswith("seat-")
     target_artifact = json.loads((captured["workspace"] / "target.json").read_text())
     snapshot_artifact = json.loads((captured["workspace"] / "snapshot.json").read_text())
     contract_artifact = json.loads((captured["workspace"] / "contract.json").read_text())

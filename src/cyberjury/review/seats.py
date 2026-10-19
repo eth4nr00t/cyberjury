@@ -53,7 +53,7 @@ def review_seats(
             finder_model=DRY_RUN_SEAT.model,
             finder_label=provider_seat_id(DRY_RUN_SEAT),
         )
-    finder = configuration.finder
+    finder = configuration.seat
     provider = provider_for_seat(configuration, finder, meter=meter)
     seat_id = provider_seat_id(finder)
     return ReviewSeats(

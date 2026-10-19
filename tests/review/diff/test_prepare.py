@@ -25,7 +25,7 @@ def _patch(path: str, before: str, after: str) -> str:
 
 def _configuration() -> ProviderConfiguration:
     finder = ProviderSeat(provider="openai", model="finder", api_key="key")
-    return ProviderConfiguration(base=finder, finder=finder, retries=0, timeout=10)
+    return ProviderConfiguration(seat=finder, retries=0, timeout=10)
 
 
 def test_dry_run_review_binds_receipts_skips_noise_and_issue_judgment(tmp_path):

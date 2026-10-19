@@ -11,8 +11,6 @@ from cyberjury.providers.retry import RetryProvider
 
 PROVIDERS = ("openai", "anthropic")
 
-ROLES = ("finder",)
-
 DEFAULT_RETRIES = 2
 
 

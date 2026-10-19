@@ -46,7 +46,7 @@ attempt workspace.
 `findings.json` also groups findings into `issues`: findings that one code change fixes. Grouping
 never removes a finding, and each finding names its `issue_id`. Findings of one category at the same
 file and line form one issue. Other findings form one issue only when their cited source traces the
-other's location and the finder seat answers that one code change fixes both.
+other's location and the model answers that one code change fixes both.
 
 ## Install
 
@@ -62,8 +62,8 @@ The `cyberjury install-slash-command` command installs `/cyberjury-review` for C
 ## Configure
 
 The CLI loads `.env` from the working directory. An exported shell value wins over the file.
-Set the provider defaults you want, then add role overrides only when you need different seats.
-See [.env.example](.env.example) for the full template, including provider keys.
+Set the provider and model you want. See [.env.example](.env.example) for the full template,
+including provider keys.
 
 ```bash
 export CYBERJURY_PROVIDER=openai
@@ -72,14 +72,13 @@ export CYBERJURY_RETRIES=2
 export CYBERJURY_TIMEOUT=240
 ```
 
-Finder seat overrides use `CYBERJURY_FINDER_*`. API keys, API bases, and the finder seat are read
-only from the environment, so no key appears on a command line. The `--provider`, `--model`, `--wire-api`, `--retries`, and
-`--timeout` flags override the base seat for one command. OpenAI calls use the Responses API unless
+API keys and API bases are read only from the environment, so no key appears on a command line. The
+`--provider`, `--model`, `--wire-api`, `--retries`, and `--timeout` flags override the environment
+for one command. OpenAI calls use the Responses API unless
 `CYBERJURY_WIRE_API=chat` or `--wire-api chat` selects Chat Completions.
 
 ## Model Guidance
 
 OpenAI is the default when `OPENAI_API_KEY` or `CYBERJURY_API_KEY` is set. Otherwise Anthropic
-is the default, and the default model follows the selected provider. Put the strongest model on
-the finder seat. The finder finds and also answers the issue grouping question. See
-[.env.example](.env.example) for the finder seat overrides.
+is the default, and the default model follows the selected provider. One model finds the issues
+and also answers the issue grouping question, so use the strongest model you can.

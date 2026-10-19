@@ -18,7 +18,7 @@ def test_seat_identity_ignores_credentials():
 def test_review_seats_label_the_configured_finder_and_judge_issue_links_on_it(monkeypatch):
     monkeypatch.setattr(configuration_module, "make_provider", lambda *args, **kwargs: MockProvider(default="{}"))
     finder = ProviderSeat(provider="openai", model="finder", api_key="k")
-    configuration = ProviderConfiguration(base=finder, finder=finder, retries=0, timeout=10)
+    configuration = ProviderConfiguration(seat=finder, retries=0, timeout=10)
 
     seats = review_seats(configuration, meter=UsageMeter())
     dry = review_seats(configuration, meter=UsageMeter(), dry_run_provider=MockProvider(default="{}"))

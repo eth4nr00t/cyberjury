@@ -6,7 +6,6 @@ import re
 from pathlib import Path
 
 from cyberjury.envfile import load_env_file, parse_env
-from cyberjury.providers.factory import ROLES
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -14,23 +13,13 @@ _ENV_NAME = re.compile(r"\b(?:CYBERJURY|OPENAI|ANTHROPIC)_[A-Z_]*[A-Z]\b")
 
 
 def _environment_names_read_by_the_cli() -> set[str]:
-    """Collect every environment name spelled in the product source, expanding the per-role template."""
+    """Collect every environment name spelled in the product source."""
     names: set[str] = set()
-    role_fields: set[str] = set()
     for path in (_ROOT / "src" / "cyberjury").rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 names.update(_ENV_NAME.findall(node.value))
-            elif (
-                isinstance(node, ast.JoinedStr)
-                and len(node.values) == 2
-                and isinstance(node.values[0], ast.FormattedValue)
-                and isinstance(node.values[0].value, ast.Name)
-                and node.values[0].value.id == "prefix"
-                and isinstance(node.values[1], ast.Constant)
-            ):
-                role_fields.add(node.values[1].value)
-    return names | {f"CYBERJURY_{role.upper()}{field}" for role in ROLES for field in role_fields}
+    return names
 
 
 def test_parse_skips_blanks_and_comments_and_strips_quotes_and_export():
@@ -56,7 +45,7 @@ def test_env_example_documents_cli_runtime_environment():
     names = _environment_names_read_by_the_cli()
     text = (_ROOT / ".env.example").read_text(encoding="utf-8")
 
-    assert {"CYBERJURY_HOME", "CYBERJURY_FINDER_WIRE_API", "OPENAI_API_KEY"} <= names
+    assert {"CYBERJURY_HOME", "CYBERJURY_WIRE_API", "OPENAI_API_KEY"} <= names
     assert sorted(name for name in names if f"{name}=" not in text) == []
 
 
