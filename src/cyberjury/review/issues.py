@@ -1,10 +1,10 @@
 """Group retained findings into issues: findings that one code change fixes.
 
-Grouping never removes a finding; every member keeps its own verification and counts. Findings
+Grouping never removes a finding; every member is still reported and counted. Findings
 that report the same category at the same primary location, one file and one line, form one
 issue without a model. Findings of different groups become a candidate pair when each cites
 source covering the other's primary location, or when one does and both cite overlapping lines
-of one source file. Each candidate pair receives one closed-schema judgment on the skeptic seat,
+of one source file. Each candidate pair receives one closed-schema judgment on the finder seat,
 and only a `same_fix` answer links the two issues.
 """
 

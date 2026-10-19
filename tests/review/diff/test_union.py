@@ -56,5 +56,4 @@ def test_review_preserves_a_valid_anchor_after_an_invalid_duplicate():
     assert [
         (item.line, item.change_anchor.line if item.change_anchor else None) for item in result.outcome.findings
     ] == [(10, 11)]
-    assert result.verification.refuted == []
     assert result.outcome.complete is False

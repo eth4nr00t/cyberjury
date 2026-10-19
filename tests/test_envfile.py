@@ -56,7 +56,7 @@ def test_env_example_documents_cli_runtime_environment():
     names = _environment_names_read_by_the_cli()
     text = (_ROOT / ".env.example").read_text(encoding="utf-8")
 
-    assert {"CYBERJURY_HOME", "CYBERJURY_SKEPTIC_WIRE_API", "OPENAI_API_KEY"} <= names
+    assert {"CYBERJURY_HOME", "CYBERJURY_FINDER_WIRE_API", "OPENAI_API_KEY"} <= names
     assert sorted(name for name in names if f"{name}=" not in text) == []
 
 

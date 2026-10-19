@@ -34,10 +34,6 @@ def scripted_model(monkeypatch):
         def respond(system, _messages):
             if error is not None:
                 raise error
-            if "skeptical security reviewer" in system:
-                return json.dumps(
-                    {"real": True, "reason": "no shown fact refutes it", "control_file": "", "control_line": 0}
-                )
             return _finder_reply([dict(item) for item in findings])
 
         provider = MockProvider(responder=respond)

@@ -22,7 +22,6 @@ from cyberjury.review.request import ReviewIntent, TargetInput
 from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
 from cyberjury.review.run import ReviewRun
 from cyberjury.review.unit_plans import UnitPlanReceipt
-from cyberjury.review.verification import VerificationReceipt, VerifyResult
 from tests.support import git
 
 
@@ -79,7 +78,7 @@ def test_slash_command_does_not_pin_a_shared_workspace():
     assert "/var/tmp" not in climod.SLASH_COMMAND_FILE.read_text()
 
 
-def _fake_run(prepared, kwargs, *, failures=(), grounding=None, errors=0, failure_reason="", verification=None):
+def _fake_run(prepared, kwargs, *, failures=(), grounding=None, errors=0, failure_reason=""):
     """Return one review result bound to the prepared snapshot without model work."""
     outcome = ReviewOutcome(
         findings=(),
@@ -91,7 +90,6 @@ def _fake_run(prepared, kwargs, *, failures=(), grounding=None, errors=0, failur
     findings = FindingsArtifact.create((), ())
     return ReviewRun(
         outcome=outcome,
-        verification=verification or VerifyResult(),
         findings=findings,
         outcome_artifact=OutcomeArtifact.create(
             target=kwargs["target"].kind,
@@ -116,15 +114,6 @@ def _complete_stage_one_only(run) -> int:
     grounding = GroundingReceipt.create(unit_plan=unit_plan, contexts=())
     run.attempt.bind_grounding(grounding)
     if run.attempt.request.providers is not None:
-        verification = run.attempt.request.verification
-        assert verification is not None
-        run.attempt.bind_verification(
-            VerificationReceipt.create(
-                request_sha256=run.attempt.request.request_sha256,
-                enabled=verification.enabled,
-                candidate_ids=(),
-            )
-        )
         findings = FindingsArtifact.create((), ())
         outcome = OutcomeArtifact.create(
             target=run.attempt.intent.target.kind,
@@ -154,18 +143,6 @@ def test_diff_openai_without_key_errors_loud(monkeypatch, diff_target):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with pytest.raises(SystemExit, match="no reachable API key"):
         main(["review", "diff", *diff_target.args, "--provider", "openai"])
-
-
-def test_note_verify_route_states_the_active_route(capsys):
-    from cyberjury.cli import _note_verify_route
-
-    _note_verify_route(2)
-    out = capsys.readouterr().err
-    assert "skeptic plus 2 confirmers" in out
-    _note_verify_route(1)
-    assert "skeptic plus 1 confirmer," in capsys.readouterr().err
-    _note_verify_route(0)
-    assert "keep-all" in capsys.readouterr().err
 
 
 def test_review_diff_dry_run_uses_repository_grounding(capsys, diff_target):
@@ -304,7 +281,7 @@ def _capture_diff_review(monkeypatch):
     return seen
 
 
-def test_review_diff_grounds_units_and_verifies(monkeypatch, diff_target):
+def test_review_diff_grounds_units_and_judges_issue_links_on_the_finder(monkeypatch, diff_target):
     seen = _capture_diff_review(monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(default="{}"))
@@ -315,10 +292,9 @@ def test_review_diff_grounds_units_and_verifies(monkeypatch, diff_target):
     assert "# file: a.py lines 1-1" in unit.grounding.prompt.source
     assert Path(seen["root"]).name == diff_target.repository.name
     assert not Path(seen["root"]).exists()
-    assert seen["seats"].verifier is not None
-    assert seen["seats"].confirmers == ()
+    assert seen["seats"].issue_judge is not None
     assert seen["seats"].finder_label.startswith("seat-")
-    assert seen["verification_concurrency"] == 8
+    assert seen["concurrency"] == 8
 
 
 def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
@@ -344,22 +320,6 @@ def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
     assert plan["expected_owned_paths"] == ["app.py"]
     assert grounding["unit_plan_receipt_sha256"] == plan["receipt_sha256"]
     assert [context["unit_id"] for context in grounding["contexts"]] == [unit["id"] for unit in plan["units"]]
-
-
-def test_review_diff_uses_only_a_confirmer_distinct_from_the_finder(monkeypatch, diff_target):
-    """A diff finder cannot also approve deleting its own finding."""
-    seen = _capture_diff_review(monkeypatch)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    for role in ("finder", "skeptic", "confirmer"):
-        monkeypatch.setenv(f"CYBERJURY_{role.upper()}_MODEL", role)
-    monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(default="{}"))
-
-    assert main(["review", "diff", *diff_target.args, "--concurrency", "4"]) == 0
-    labels = [label for label, _checker in seen["seats"].confirmers]
-    assert len(labels) == 1
-    assert labels[0].startswith("seat-")
-    assert seen["seats"].finder_label not in labels
-    assert seen["verification_concurrency"] == 4
 
 
 def test_review_diff_empty_git_range_is_clean(monkeypatch, capsys, diff_target):
@@ -546,36 +506,7 @@ def test_repository_run_with_model_errors_exits_nonzero(tmp_path, monkeypatch):
     assert rc == 1
 
 
-def test_run_wires_skeptic_and_independent_confirmer(monkeypatch, tmp_path):
-    from cyberjury.review.verification import ModelRefutationChecker, ModelVerifier
-
-    captured = _capture_run(monkeypatch, tmp_path)
-    for name, value in {
-        "SKEPTIC_PROVIDER": "openai",
-        "SKEPTIC_MODEL": "gpt-x",
-        "SKEPTIC_API_KEY": "k",
-        "CONFIRMER_PROVIDER": "anthropic",
-        "CONFIRMER_MODEL": "claude-x",
-        "CONFIRMER_API_KEY": "k2",
-    }.items():
-        monkeypatch.setenv(f"CYBERJURY_{name}", value)
-    main(["review", "repository", str(tmp_path), "--run"])
-    assert isinstance(captured["seats"].verifier, ModelVerifier)
-    assert dict(captured["seats"].verifier.checkpoint_fingerprint().settings)["model"] == "gpt-x"
-    ((label, checker),) = captured["seats"].confirmers
-    assert isinstance(checker, ModelRefutationChecker)
-    assert dict(checker.checkpoint_fingerprint().settings)["model"] == "claude-x"
-    assert checker.checkpoint_fingerprint().seat_id == label
-
-
-def test_run_default_has_no_confirmer_and_notes_keep_all(monkeypatch, tmp_path, capsys):
-    captured = _capture_run(monkeypatch, tmp_path)
-    main(["review", "repository", str(tmp_path), "--run"])
-    assert captured["seats"].confirmers == ()
-    assert "keep-all" in capsys.readouterr().err
-
-
-def test_run_builds_finder_and_verifier_providers(monkeypatch, tmp_path):
+def test_run_builds_one_finder_provider(monkeypatch, tmp_path):
     providers = []
 
     def fake_make_provider(name, **kwargs):
@@ -589,7 +520,7 @@ def test_run_builds_finder_and_verifier_providers(monkeypatch, tmp_path):
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     assert main(["review", "repository", str(tmp_path), "--run"]) == 0
-    assert len(providers) == 2
+    assert len(providers) == 1
 
 
 @pytest.mark.parametrize(
@@ -603,7 +534,6 @@ def test_run_concurrency_uses_the_api_default(monkeypatch, tmp_path, args, expec
     captured = _capture_run(monkeypatch, tmp_path)
     main(["review", "repository", str(tmp_path), "--run", *args])
     assert captured["concurrency"] == expected
-    assert captured["verification_concurrency"] == expected
 
 
 def _patch_run(monkeypatch, tmp_path, **result):
@@ -625,22 +555,13 @@ def test_run_with_failed_calls_exits_nonzero_and_warns(monkeypatch, tmp_path, ca
     assert "error: review unit 1/2 failed for app.py: RuntimeError: provider rate limited" in err
 
 
-def test_run_verify_errors_exit_nonzero_and_ask_to_rerun(monkeypatch, tmp_path, capsys):
-    _patch_run(monkeypatch, tmp_path, errors=1, failure_reason="verification failed: RuntimeError: rate limited")
+def test_run_failure_reason_exits_nonzero_and_asks_to_rerun(monkeypatch, tmp_path, capsys):
+    _patch_run(monkeypatch, tmp_path, errors=1, failure_reason="structured facts unavailable: facts:app.py")
     rc = main(["review", "repository", str(tmp_path), "--run"])
     err = capsys.readouterr().err
     assert rc == 1
-    assert "error: verification failed: RuntimeError: rate limited" in err
+    assert "error: structured facts unavailable: facts:app.py" in err
     assert "Re-run to retry open work" in err
-
-
-def test_run_has_no_confirmer_when_the_confirmer_is_the_finder(monkeypatch, tmp_path):
-    captured = _capture_run(monkeypatch, tmp_path)
-    monkeypatch.setenv("CYBERJURY_SKEPTIC_PROVIDER", "openai")
-    monkeypatch.setenv("CYBERJURY_SKEPTIC_MODEL", "gpt-x")
-    monkeypatch.setenv("CYBERJURY_SKEPTIC_API_KEY", "k")
-    main(["review", "repository", str(tmp_path), "--run"])
-    assert not captured["seats"].confirmers
 
 
 def test_abbreviated_live_flag_is_rejected(tmp_path):
@@ -747,16 +668,14 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     attempt_dir = next((review_dir / "attempts").iterdir())
     request = json.loads((attempt_dir / "request.json").read_text())
     model_calls = json.loads((attempt_dir / "model-calls.json").read_text())
-    verification = json.loads((attempt_dir / "verification.json").read_text())
 
     assert "schedule" not in request
     assert request["providers"]["roles"]["finder"] is not None
     assert request["concurrency"]["review"] == captured["concurrency"] == 5
-    assert request["concurrency"]["verification"] == captured["verification_concurrency"] == 5
+    assert request["concurrency"] == {"review": 5}
+    assert "verification" not in request
+    assert not (attempt_dir / "verification.json").exists()
     assert model_calls["schema"] == "cyberjury.model-calls/v1"
-    assert verification["enabled"] is True
-    assert verification["candidate_ids"] == []
-    assert verification["decisions"] == []
     assert model_calls["calls"] == []
     assert "secret-canary" not in "".join(path.read_text() for path in review_dir.rglob("*.json*"))
 

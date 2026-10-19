@@ -1,7 +1,7 @@
 """Review session tests cover logical identity, attempts, and error redaction."""
 
 import json
-from dataclasses import dataclass, replace
+from dataclasses import replace
 
 import pytest
 
@@ -10,7 +10,6 @@ from cyberjury.review.contract import ContractReceipt
 from cyberjury.review.engine import ReviewOutcome
 from cyberjury.review.facts import Facts, FactsReceipt
 from cyberjury.review.grounding import GroundingReceipt
-from cyberjury.review.issues import issue_id
 from cyberjury.review.request import (
     ConcurrencyRecord,
     ProviderPlanRecord,
@@ -18,20 +17,13 @@ from cyberjury.review.request import (
     ReviewAttemptRequest,
     ReviewIntent,
     TargetInput,
-    VerificationPolicyRecord,
     seat_identity,
 )
-from cyberjury.review.result import FindingRecord, FindingsArtifact, IssueRecord, OutcomeArtifact
+from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
 from cyberjury.review.session import ReviewSession, safe_error
 from cyberjury.review.target import ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
-from cyberjury.review.verification import VerificationReceipt, VerificationRecord
 from cyberjury.sources.snapshot import SourceSnapshot
-
-
-@dataclass(frozen=True)
-class _Candidate:
-    candidate_id: str
 
 
 def _request(action: str = "run") -> ReviewAttemptRequest:
@@ -52,7 +44,7 @@ def _request(action: str = "run") -> ReviewAttemptRequest:
     return ReviewAttemptRequest(
         action=action,
         engine_version="test",
-        concurrency=ConcurrencyRecord(review=1, verification=None) if action == "run" else None,
+        concurrency=ConcurrencyRecord(review=1) if action == "run" else None,
         dry_run=True if action == "run" else None,
         fresh=False if action in {"run", "scaffold"} else None,
         providers=(
@@ -66,28 +58,10 @@ def _request(action: str = "run") -> ReviewAttemptRequest:
             if action == "run"
             else None
         ),
-        verification=(
-            VerificationPolicyRecord(
-                enabled=False,
-                skeptic_seat_id=None,
-                confirmer_seat_ids=(),
-            )
-            if action == "run"
-            else None
-        ),
     )
 
 
 def _record_run_artifacts(attempt) -> None:
-    verification = attempt.request.verification
-    assert verification is not None
-    attempt.bind_verification(
-        VerificationReceipt.create(
-            request_sha256=attempt.request.request_sha256,
-            enabled=verification.enabled,
-            candidate_ids=(),
-        )
-    )
     findings = FindingsArtifact.create((), ())
     outcome = OutcomeArtifact.create(
         target=attempt.intent.target.kind,
@@ -181,77 +155,6 @@ def test_repository_judgment_change_requires_a_fresh_session(tmp_path):
     fresh_attempt.complete(exit_code=0)
 
 
-def test_result_cannot_restore_a_refuted_verification_candidate(tmp_path):
-    intent = ReviewIntent(target=TargetInput(kind="repository", repository=str(tmp_path)))
-    base = _request()
-    assert base.providers is not None
-    request = replace(
-        base,
-        dry_run=False,
-        concurrency=ConcurrencyRecord(review=1, verification=1),
-        verification=VerificationPolicyRecord(
-            enabled=True,
-            skeptic_seat_id=base.providers.base_seat_id,
-            confirmer_seat_ids=(),
-        ),
-    )
-    candidate = FindingRecord(
-        id="candidate-" + "a" * 20,
-        title="unprotected record write",
-        category="missing-authorization",
-        severity="HIGH",
-        file="app.py",
-        line=1,
-        entrypoint="POST /records",
-        evidence="",
-        attack_path="",
-        status="confirmed",
-        evidence_refs=(),
-        supporting_reviewers=(),
-        issue_id=issue_id(("candidate-" + "a" * 20,)),
-    )
-    issue = IssueRecord(
-        id=candidate.issue_id,
-        representative=candidate.id,
-        members=(candidate.id,),
-        linked_by=(),
-    )
-    findings = FindingsArtifact.create((candidate,), (issue,))
-
-    def bind(state, *, refuted):
-        attempt = ReviewSession.create(state, intent).start_attempt(request)
-        _bind_source(attempt, tmp_path)
-        receipt = VerificationReceipt.create(
-            request_sha256=request.request_sha256,
-            enabled=True,
-            candidate_ids=(candidate.id,),
-            records=(
-                VerificationRecord(
-                    candidate=_Candidate(candidate_id=candidate.id),
-                    outcome="refuted" if refuted else "retained",
-                    votes=(),
-                    reason="guard holds" if refuted else "no independent confirmer",
-                ),
-            ),
-        )
-        attempt.bind_verification(receipt)
-        outcome = OutcomeArtifact.create(
-            target="repository",
-            source_revision=_snapshot_id(attempt),
-            findings=findings,
-            outcome=ReviewOutcome(findings=(candidate,)),
-        )
-        return attempt, outcome
-
-    rejected, rejected_outcome = bind(tmp_path.parent / f"{tmp_path.name}-rejected", refuted=True)
-    with pytest.raises(ValueError, match="restores a refuted candidate"):
-        rejected.bind_result(findings, rejected_outcome)
-
-    retained, retained_outcome = bind(tmp_path.parent / f"{tmp_path.name}-retained", refuted=False)
-    retained.bind_result(findings, retained_outcome)
-    assert FindingsArtifact.from_dict(retained.workspace.read_json("findings.json")) == findings
-
-
 def test_repository_concurrency_change_can_resume_same_judgment(tmp_path):
     intent = ReviewIntent(target=TargetInput(kind="repository", repository=str(tmp_path)))
     session = ReviewSession.select_active(tmp_path, intent, reuse=True)
@@ -260,7 +163,7 @@ def test_repository_concurrency_change_can_resume_same_judgment(tmp_path):
     _record_run_artifacts(first)
     first.complete(exit_code=0)
     bound = session.workspace.read_json("judgment-configuration.json")
-    changed = replace(_request(), concurrency=ConcurrencyRecord(review=4, verification=None))
+    changed = replace(_request(), concurrency=ConcurrencyRecord(review=4))
 
     second = session.start_attempt(changed)
     _bind_source(second, tmp_path)
@@ -305,15 +208,6 @@ def test_terminal_state_must_match_the_review_outcome(tmp_path):
     state = tmp_path.parent / f"{tmp_path.name}-state"
     attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
     _bind_source(attempt, tmp_path)
-    verification = attempt.request.verification
-    assert verification is not None
-    attempt.bind_verification(
-        VerificationReceipt.create(
-            request_sha256=attempt.request.request_sha256,
-            enabled=verification.enabled,
-            candidate_ids=(),
-        )
-    )
     findings = FindingsArtifact.create((), ())
     outcome = OutcomeArtifact.create(
         target="repository",

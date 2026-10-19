@@ -15,7 +15,7 @@ from cyberjury.review.repository.prepare import prepare_repository_review
 from cyberjury.review.run import ReviewRun, run_review
 from cyberjury.review.seats import ReviewSeats
 from cyberjury.sources.snapshot import capture_source_snapshot
-from tests.review.support import StubChecker, shared_grounding
+from tests.review.support import shared_grounding
 
 EMPTY_REPLY = '{"findings": [], "evidence_requests": [], "source_queries": []}'
 
@@ -102,16 +102,12 @@ def run_repository_review(
     workspace,
     *,
     provider=None,
-    verifier=None,
     concurrency=1,
     finder_label="mock",
-    confirmers=None,
     issue_judge=None,
     **values,
 ) -> ReviewRun:
-    """Prepare and run one resumable repository review, rejecting refutations independently when verified."""
-    if verifier is not None and confirmers is None:
-        confirmers = (("independent", StubChecker(seat="independent")),)
+    """Prepare and run one resumable repository review."""
     prepared = prepare_repository_review(capture_source_snapshot(target))
     return run_review(
         prepared,
@@ -120,12 +116,9 @@ def run_repository_review(
             finder=provider or MockProvider(default=EMPTY_REPLY),
             finder_model="mock",
             finder_label=finder_label,
-            verifier=verifier,
-            confirmers=tuple(confirmers or ()),
             issue_judge=issue_judge,
         ),
         concurrency=concurrency,
-        verification_concurrency=concurrency,
         work=Path(workspace) / prepared.shared.root.name,
         **values,
     )

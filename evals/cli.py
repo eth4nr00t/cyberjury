@@ -206,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
         "--concurrency",
         type=int,
         default=DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
-        help="diff unit reviews or verification calls to run in parallel",
+        help="diff unit reviews or issue link calls to run in parallel",
     )
     d.add_argument("--attempts-dir", required=True, help="runs directory for <project>/<case>/attempt-NN.json")
     d.add_argument(

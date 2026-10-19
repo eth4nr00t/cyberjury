@@ -34,14 +34,12 @@ from cyberjury.review.request import (
     ReviewAttemptRequest,
     ReviewIntent,
     TargetInput,
-    VerificationPolicyRecord,
 )
 from cyberjury.review.result import ReviewResultArtifact, SkippedFile
 from cyberjury.review.run import ReviewRun, run_review
 from cyberjury.review.seats import (
     DRY_RUN_SEAT,
     ReviewSeats,
-    confirmer_seats,
     provider_seat_id,
     provider_seat_record,
     review_seats,
@@ -55,7 +53,6 @@ from cyberjury.review.target import (
     resolve_diff_target,
     resolve_repository_target,
 )
-from cyberjury.review.verification import VerificationReceipt
 from cyberjury.sources.git import resolve_root
 from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
 from cyberjury.telemetry import progress, stage_timer
@@ -107,19 +104,6 @@ def _provider_configuration(args: argparse.Namespace) -> ProviderConfiguration:
     )
 
 
-def _note_verify_route(confirmers: int) -> None:
-    """State the verification route so the choice is visible rather than inferred."""
-    if confirmers == 0:
-        route = "keep-all, no independent confirmer is set so nothing is dropped, the recall-safe default"
-    else:
-        plural = "s" if confirmers != 1 else ""
-        route = (
-            f"skeptic plus {confirmers} confirmer{plural}, a drop needs the skeptic to refute and every "
-            "independent confirmer to uphold it"
-        )
-    print(f"Verify route: {route}.", file=sys.stderr)
-
-
 def _add_model_args(target) -> None:
     """Base seat and client policy flags; unset values come from the CYBERJURY_* environment."""
     target.add_argument("--provider", choices=PROVIDERS, default=None, help="base seat provider")
@@ -160,10 +144,7 @@ def _add_concurrency_arg(target, work: str) -> None:
 
 
 _MODEL_GROUP_HELP = (
-    "API keys, endpoints, and the finder, skeptic, and confirmer seats come from CYBERJURY_* "
-    "environment variables, see .env.example. The finder finds, the skeptic refutes, and an "
-    "independent confirmer must approve a deletion. With no distinct confirmer, no finding is "
-    "refuted, the recall-safe default"
+    "API keys, endpoints, and the finder seat come from CYBERJURY_* environment variables, see .env.example"
 )
 
 
@@ -175,7 +156,7 @@ def _add_diff_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="run the repository-grounded engine with a mock provider and no key",
     )
-    _add_concurrency_arg(parser, "diff unit reviews or verification calls")
+    _add_concurrency_arg(parser, "diff unit reviews or issue link calls")
     _add_workspace_arg(parser)
     _add_model_args(parser.add_argument_group("model backend", _MODEL_GROUP_HELP))
 
@@ -202,7 +183,7 @@ def _add_repository_args(repository: argparse.ArgumentParser) -> None:
         "--run",
         action="store_true",
         help="run model review over the repository, not just scaffold: "
-        "each open unit is reviewed once and verified, re-running resumes open work",
+        "each open unit is reviewed once, re-running resumes open work",
     )
     repository.add_argument(
         "--dry-run",
@@ -211,7 +192,7 @@ def _add_repository_args(repository: argparse.ArgumentParser) -> None:
     )
 
     tuning = repository.add_argument_group("run tuning", "applies to --run")
-    _add_concurrency_arg(tuning, "how many unit reviews or verification calls")
+    _add_concurrency_arg(tuning, "how many unit reviews or issue link calls")
     _add_model_args(repository.add_argument_group("model backend", f"applies to --run. {_MODEL_GROUP_HELP}"))
 
 
@@ -335,7 +316,7 @@ def _provider_plan(
             base_seat_id=seat.seat_id,
             finder_seat_id=seat.seat_id,
         )
-    specs = (configuration.base, configuration.finder, configuration.skeptic, configuration.confirmer)
+    specs = (configuration.base, configuration.finder)
     seats = {provider_seat_id(spec): provider_seat_record(spec) for spec in specs}
     return ProviderPlanRecord(
         retries=configuration.retries,
@@ -346,37 +327,16 @@ def _provider_plan(
     )
 
 
-def _verification_record(
-    args: argparse.Namespace,
-    action: str,
-    configuration: ProviderConfiguration,
-) -> VerificationPolicyRecord | None:
-    if action != "run":
-        return None
-    if args.dry_run:
-        return VerificationPolicyRecord(enabled=False, skeptic_seat_id=None, confirmer_seat_ids=())
-    return VerificationPolicyRecord(
-        enabled=True,
-        skeptic_seat_id=provider_seat_id(configuration.skeptic),
-        confirmer_seat_ids=tuple(provider_seat_id(seat) for seat in confirmer_seats(configuration)),
-    )
-
-
 def _attempt_request(args: argparse.Namespace, configuration: ProviderConfiguration) -> ReviewAttemptRequest:
     action = _review_action(args)
     concurrency = args.concurrency or DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
     return ReviewAttemptRequest(
         action=action,
         engine_version=__version__,
-        concurrency=(
-            ConcurrencyRecord(review=concurrency, verification=None if args.dry_run else concurrency)
-            if action == "run"
-            else None
-        ),
+        concurrency=ConcurrencyRecord(review=concurrency) if action == "run" else None,
         dry_run=args.dry_run if action == "run" else None,
         fresh=args.fresh if args.scope == "repository" else None,
         providers=_provider_plan(args, action, configuration),
-        verification=_verification_record(args, action, configuration),
     )
 
 
@@ -490,7 +450,7 @@ def _prepare(run: _AttemptContext) -> PreparedReview:
 
 
 def _run_review(run: _AttemptContext, prepared: PreparedReview, seats: ReviewSeats) -> int:
-    """Review and verify the prepared units, bind the result to the attempt, and report it."""
+    """Review the prepared units, bind the result to the attempt, and report it."""
     request = run.attempt.request
     diff = run.target.kind == "diff"
     with stage_timer("review"):
@@ -499,37 +459,16 @@ def _run_review(run: _AttemptContext, prepared: PreparedReview, seats: ReviewSea
             target=DIFF_TARGET if diff else REPOSITORY_TARGET,
             seats=seats,
             concurrency=request.concurrency.review,
-            verification_concurrency=request.concurrency.verification or request.concurrency.review,
             work=None if diff else run.session.workspace.path / "work" / Path(run.target.repository_root).name,
             on_unit=lambda done, total, secs: progress(f"unit {done}/{total} ({secs}s)"),
-            on_verify=lambda done, total, secs: progress(f"verified {done}/{total} ({secs}s)"),
         )
-    verification = result.verification
-    run.attempt.bind_verification(
-        VerificationReceipt.create(
-            request_sha256=request.request_sha256,
-            enabled=request.verification.enabled,
-            candidate_ids=verification.candidate_ids,
-            records=tuple(verification.records),
-        )
-    )
     run.attempt.bind_result(result.findings, result.outcome_artifact)
     return _report_review(run, result)
 
 
 def _report_review(run: _AttemptContext, result: ReviewRun) -> int:
-    """Report refutations, failures, and incomplete state, print the machine result, and return the exit code."""
+    """Report failures and incomplete state, print the machine result, and return the exit code."""
     outcome = result.outcome
-    for record in result.verification.records:
-        if record.outcome != "refuted":
-            continue
-        finding = record.candidate
-        print(f"NOTE: refuted finding at {finding.file}:{finding.line}: {record.reason}", file=sys.stderr)
-        for vote in record.votes:
-            print(
-                f"NOTE: verification {vote.role} {vote.actor_id} on {vote.seat_id}: {vote.verdict}, {vote.reason}",
-                file=sys.stderr,
-            )
     for error in result.issue_link_errors:
         print(f"NOTE: {error}; those findings stay in separate issues", file=sys.stderr)
     print(
@@ -548,7 +487,7 @@ def _report_review(run: _AttemptContext, result: ReviewRun) -> int:
         print(f"{ERROR_PREFIX}{outcome.failure_reason}", file=sys.stderr)
     if not outcome.complete:
         print(
-            f"{ERROR_PREFIX}the review is incomplete because grounding, judgment, or verification did not complete, "
+            f"{ERROR_PREFIX}the review is incomplete because grounding or judgment did not complete, "
             "so the result is not a clean pass. Re-run to retry open work",
             file=sys.stderr,
         )
@@ -586,8 +525,6 @@ def _execute_review(run: _AttemptContext) -> int:
     if request.action == "scaffold":
         result = _report_scaffold(run, prepared)
     else:
-        if request.verification.enabled:
-            _note_verify_route(len(confirmer_seats(run.providers)))
         seats = review_seats(
             run.providers,
             meter=run.meter,

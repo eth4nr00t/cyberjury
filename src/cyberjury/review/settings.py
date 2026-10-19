@@ -33,15 +33,6 @@ class RepositoryReviewSettings:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class VerificationSettings:
-    """Source and model output settings for shared verification work."""
-
-    max_source_chars_per_finding: int = 40_000
-    skeptic_max_output_tokens: int = 2_048
-    confirmer_max_output_tokens: int = 1_024
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
 class IssueSettings:
     """Source and model output settings for the issue link judgment."""
 
@@ -67,7 +58,6 @@ class ReviewSettings:
 
     diff: DiffReviewSettings = field(default_factory=DiffReviewSettings)
     repository: RepositoryReviewSettings = field(default_factory=RepositoryReviewSettings)
-    verification: VerificationSettings = field(default_factory=VerificationSettings)
     issues: IssueSettings = field(default_factory=IssueSettings)
     execution: ReviewExecutionSettings = field(default_factory=ReviewExecutionSettings)
 

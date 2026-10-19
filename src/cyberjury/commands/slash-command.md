@@ -67,7 +67,7 @@ cyberjury review repository <target> --run [repository run flags]
 
 If this exits nonzero, state that the repository review failed or is incomplete and include the
 error details. Do not call the review complete. Re-running `--run` on the same workspace resumes
-open units and retries failed verification.
+open units.
 
 Use `--scaffold` separately to inspect the unit plan before model review. Do not edit workspace
 files; findings come only from `--run`.

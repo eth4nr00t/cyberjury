@@ -31,7 +31,6 @@ def finding() -> FindingRecord:
         entrypoint="GET /objects/{id}",
         evidence="The handler loads the object by request id and returns it directly.",
         attack_path="An authenticated user supplies another user's object id.",
-        status="confirmed",
         evidence_refs=("evidence-1",),
         supporting_reviewers=("finder-primary",),
         issue_id=issue_id((CANDIDATE,)),
@@ -56,18 +55,6 @@ def test_findings_round_trip_preserves_canonical_content_identity():
 
     assert restored == artifact
     assert restored.content_sha256 == single(finding()).content_sha256
-
-
-def test_findings_accept_retained_candidate_without_an_independent_vote():
-    candidate = replace(finding(), status="candidate")
-    artifact = single(candidate)
-
-    assert FindingsArtifact.from_dict(artifact.to_dict()).findings[0].status == "candidate"
-
-
-def test_findings_reject_a_status_no_review_produces():
-    with pytest.raises(ValueError, match="finding status is invalid"):
-        replace(finding(), status="blocked")
 
 
 def test_findings_reject_tampered_content():
@@ -152,21 +139,17 @@ def test_findings_artifact_maps_every_target_onto_the_same_fields_and_marks_only
         attack_path="a member reads another record",
     )
 
-    artifact = findings_artifact(
-        [diff, repository], {diff.candidate_id}, (Issue(members=(diff,)), Issue(members=(repository,)))
-    )
+    artifact = findings_artifact([diff, repository], (Issue(members=(diff,)), Issue(members=(repository,))))
 
     by_file = {record.file: record for record in artifact.findings}
-    assert (by_file["app.py"].title, by_file["app.py"].evidence, by_file["app.py"].status) == (
+    assert (by_file["app.py"].title, by_file["app.py"].evidence) == (
         "record write is unauthenticated",
         "authentication was removed",
-        "confirmed",
     )
     assert by_file["app.py"].change_anchor == ChangeAnchorRecord(file="middleware.py", line=8, side="old")
-    assert (by_file["views.py"].title, by_file["views.py"].evidence, by_file["views.py"].status) == (
+    assert (by_file["views.py"].title, by_file["views.py"].evidence) == (
         "missing ownership check",
         "views.py:3 returns any record",
-        "candidate",
     )
     assert (by_file["views.py"].entrypoint, by_file["views.py"].change_anchor) == ("GET /records/<id>", None)
     assert artifact.to_dict()["schema"] == "cyberjury.findings/v1"
@@ -180,7 +163,6 @@ def test_findings_artifact_maps_every_target_onto_the_same_fields_and_marks_only
         "entrypoint",
         "evidence",
         "attack_path",
-        "status",
         "evidence_refs",
         "supporting_reviewers",
         "issue_id",
@@ -202,7 +184,7 @@ def test_findings_artifact_records_every_member_of_a_grouped_issue_with_its_issu
     second = replace(first, title="share link creation lacks a document check")
     issue = Issue(members=(first, second), linked_by=("location",))
 
-    artifact = findings_artifact([first, second], set(), (issue,))
+    artifact = findings_artifact([first, second], (issue,))
 
     assert [record.issue_id for record in artifact.findings] == [issue.id, issue.id]
     assert artifact.issues == (

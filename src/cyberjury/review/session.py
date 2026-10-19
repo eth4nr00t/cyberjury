@@ -16,7 +16,6 @@ from cyberjury.review.request import ReviewAttemptRequest, ReviewIntent
 from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
 from cyberjury.review.target import ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
-from cyberjury.review.verification import VerificationReceipt
 from cyberjury.sources.snapshot import SourceSnapshot
 from cyberjury.workspace import (
     AttemptWorkspace,
@@ -183,11 +182,6 @@ class ReviewAttempt:
         self.session_workspace.write_json_once("grounding.json", receipt.to_dict())
         self._bound["grounding"] = receipt
 
-    def bind_verification(self, receipt: VerificationReceipt) -> None:
-        """Persist every candidate deletion decision under the immutable request."""
-        self.workspace.write_json_once("verification.json", receipt.to_dict())
-        self._bound["verification"] = receipt
-
     def bind_result(self, findings: FindingsArtifact, outcome: OutcomeArtifact) -> None:
         """Persist one source bound final result."""
         snapshot = self._require("snapshot")
@@ -195,15 +189,6 @@ class ReviewAttempt:
             raise ValueError("review result does not match the attempt target snapshot")
         if outcome.findings_sha256 != findings.content_sha256:
             raise ValueError("review outcome does not identify its findings")
-        verification = self._require("verification")
-        if verification.enabled:
-            allowed = {
-                decision.candidate_id
-                for decision in verification.decisions
-                if decision.outcome in {"retained", "incomplete"}
-            }
-            if not {finding.id for finding in findings.findings}.issubset(allowed):
-                raise ValueError("review result restores a refuted candidate")
         self.workspace.write_json_once("findings.json", findings.to_dict())
         self.workspace.write_json_once("outcome.json", outcome.to_dict())
         self._bound["outcome"] = outcome

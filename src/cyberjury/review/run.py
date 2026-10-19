@@ -1,7 +1,7 @@
-"""Review prepared units, verify their union, group it into issues, and build the result artifacts.
+"""Review prepared units, group their union into issues, and build the result artifacts.
 
-With a work directory, each completed unit, verification decision, and issue link decision is
-saved as soon as it finishes, so a resume, even after a crash, repeats only open work.
+With a work directory, each completed unit and issue link decision is saved as soon as it
+finishes, so a resume, even after a crash, repeats only open work.
 """
 
 from __future__ import annotations
@@ -21,12 +21,10 @@ from cyberjury.review.prepare import SharedGrounding
 from cyberjury.review.result import FindingsArtifact, OutcomeArtifact, SkippedFile, findings_artifact
 from cyberjury.review.seats import ReviewSeats
 from cyberjury.review.union import finding_accumulator
-from cyberjury.review.verification import VerifyResult, verification_failure_reason, verify_findings
 
 type Progress = Callable[[int, int, float], None]
 
 _UNIT_SCHEMA = "cyberjury.unit-review/v1"
-_VERIFICATION_SCHEMA = "cyberjury.verification-decision/v1"
 _ISSUE_LINK_SCHEMA = "cyberjury.issue-link-decision/v1"
 
 
@@ -54,7 +52,6 @@ class ReviewRun:
     """One review result for the caller to bind and report."""
 
     outcome: ReviewOutcome[Finding]
-    verification: VerifyResult[Finding]
     findings: FindingsArtifact
     outcome_artifact: OutcomeArtifact
     issue_link_errors: tuple[str, ...] = ()
@@ -78,12 +75,10 @@ def run_review[U: GroundedUnit](
     target: ReviewTarget[U],
     seats: ReviewSeats,
     concurrency: int,
-    verification_concurrency: int,
     work: Path | None = None,
     on_unit: Progress | None = None,
-    on_verify: Progress | None = None,
 ) -> ReviewRun:
-    """Review every open unit once, verify the union when a verifier is set, group issues, and build the result.
+    """Review every open unit once, group the union into issues, and build the result.
 
     Issues group the retained findings without removing any; the issue link judgment runs only
     when the review has an issue judge. A failed link judgment leaves its findings in separate
@@ -123,51 +118,31 @@ def run_review[U: GroundedUnit](
         else ReviewOutcome(findings=())
     )
     findings = list(outcome.findings)
-    if seats.verifier is not None:
-        verification = verify_findings(
-            findings,
-            seats.verifier,
-            str(shared.root),
-            confirmers=list(seats.confirmers),
-            concurrency=verification_concurrency,
-            on_verify=on_verify,
-            checkpoint=CheckpointStore(work / "verification", _VERIFICATION_SCHEMA) if work is not None else None,
-        )
-    else:
-        verification = VerifyResult(retained=findings, candidate_ids=tuple(item.candidate_id for item in findings))
     issue_links = (
         link_issues(
-            verification.retained,
+            findings,
             seats.issue_judge,
             str(shared.root),
             checkpoint=CheckpointStore(work / "issue-links", _ISSUE_LINK_SCHEMA) if work is not None else None,
-            concurrency=verification_concurrency,
+            concurrency=concurrency,
         )
         if seats.issue_judge is not None
         else IssueLinks()
     )
-    issues = group_issues(verification.retained, issue_links.links)
+    issues = group_issues(findings, issue_links.links)
     outcome = extend_review_outcome(
         outcome,
-        findings=verification.retained,
-        incomplete=verification.incomplete,
-        errors=verification.errors,
-        failure_reason=verification_failure_reason(verification.error_details),
+        findings=findings,
         grounding=(
             GroundingCoverage(limitations=tuple(item.identity for item in shared.facts.limitations))
             if target.covers_all_files
             else None
         ),
     )
-    machine_findings = findings_artifact(
-        outcome.findings,
-        {finding.candidate_id for finding in verification.verified},
-        issues,
-    )
+    machine_findings = findings_artifact(outcome.findings, issues)
     return ReviewRun(
         issue_link_errors=issue_links.errors,
         outcome=outcome,
-        verification=verification,
         findings=machine_findings,
         outcome_artifact=OutcomeArtifact.create(
             target=target.kind,

@@ -74,13 +74,11 @@ def review(
     context: GroundingContext | str = "repository source",
     max_chars: int = DEFAULT_REVIEW_SETTINGS.diff.target_patch_chars_per_unit,
     finder_label: str = "m",
-    verifier=None,
-    confirmers=(),
     issue_judge=None,
     root: Path = Path("."),
     **options,
 ) -> ReviewRun:
-    """Review a test diff, or prepared units, with one finder seat and no verifier by default."""
+    """Review a test diff, or prepared units, with one finder seat and no issue judge by default."""
     if isinstance(diff_or_units, str):
         grounding = context if isinstance(context, GroundingContext) else GroundingContext(text=context)
         units = diff_units(diff_or_units, grounding, max_chars=max_chars)
@@ -90,9 +88,7 @@ def review(
         finder=provider,
         finder_model="m",
         finder_label=finder_label,
-        verifier=verifier,
-        confirmers=tuple(confirmers),
         issue_judge=issue_judge,
     )
-    values = {"concurrency": 1, "verification_concurrency": 1, **options}
+    values = {"concurrency": 1, **options}
     return run_review(prepared_units(units, root), target=DIFF_TARGET, seats=seats, **values)

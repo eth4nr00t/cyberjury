@@ -127,8 +127,7 @@ class OpenAIProvider(Provider):
         """The default Responses API path.
 
         The budget covers reasoning plus output, so it is generous: a budget too small yields
-        empty output, which reads as an unusable reply upstream and keeps the finding, never a
-        silent wrong refutation.
+        empty output, which reads as an unusable reply upstream, never as a clean result.
         """
         output_format = (
             {

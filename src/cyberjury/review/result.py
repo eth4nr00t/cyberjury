@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -113,7 +113,6 @@ class FindingRecord:
     entrypoint: str
     evidence: str
     attack_path: str
-    status: Literal["candidate", "confirmed"]
     evidence_refs: tuple[str, ...]
     supporting_reviewers: tuple[str, ...]
     issue_id: str
@@ -137,8 +136,6 @@ class FindingRecord:
             raise ValueError("finding line must be positive")
         if self.change_anchor is not None and not isinstance(self.change_anchor, ChangeAnchorRecord):
             raise ValueError("finding change anchor is invalid")
-        if self.status not in {"candidate", "confirmed"}:
-            raise ValueError("finding status is invalid")
         for name in ("evidence_refs", "supporting_reviewers"):
             values = getattr(self, name)
             if (
@@ -162,7 +159,6 @@ class FindingRecord:
             "entrypoint": self.entrypoint,
             "evidence": self.evidence,
             "attack_path": self.attack_path,
-            "status": self.status,
             "evidence_refs": list(self.evidence_refs),
             "supporting_reviewers": list(self.supporting_reviewers),
             "issue_id": self.issue_id,
@@ -182,7 +178,6 @@ class FindingRecord:
             "entrypoint",
             "evidence",
             "attack_path",
-            "status",
             "evidence_refs",
             "supporting_reviewers",
             "issue_id",
@@ -365,11 +360,7 @@ class FindingsArtifact:
         )
 
 
-def findings_artifact(
-    findings: Iterable[Finding],
-    verified_ids: Collection[str],
-    issues: Sequence[Issue],
-) -> FindingsArtifact:
+def findings_artifact(findings: Iterable[Finding], issues: Sequence[Issue]) -> FindingsArtifact:
     """Map review findings and their issues into the shared machine output contract."""
     issue_of = {member.candidate_id: issue.id for issue in issues for member in issue.members}
     return FindingsArtifact.create(
@@ -384,7 +375,6 @@ def findings_artifact(
                 entrypoint=finding.entrypoint,
                 evidence=finding.evidence,
                 attack_path=finding.attack_path,
-                status="confirmed" if finding.candidate_id in verified_ids else "candidate",
                 evidence_refs=tuple(dict.fromkeys(finding.evidence_refs)),
                 supporting_reviewers=tuple(sorted(set(finding.found_by))),
                 issue_id=issue_of[finding.candidate_id],

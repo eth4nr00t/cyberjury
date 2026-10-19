@@ -5,8 +5,8 @@ AI-assisted security review for code diffs and repositories.
 The tool has two review paths:
 
 - **Diff Review** audits a git range against its repository in one command.
-- **Repository Review** fans out across a repository, reviews focused units, deduplicates
-  candidates, and verifies findings.
+- **Repository Review** fans out across a repository, reviews focused units, and deduplicates
+  candidates.
 
 Diff Review is fast and reports findings at post change lines shown in the patch. Every finding keeps
 an exact old or new change anchor, so added behavior and removed controls use one scope contract. Each
@@ -37,11 +37,8 @@ Re-running repository `--run` resumes open work. Use `--fresh` to start a new re
 ## Output and Exit Codes
 
 Review commands print a JSON result and return a process style exit code. `0` means the requested
-action completed. Exit code `1` means the run was degraded or incomplete.
-In machine findings, `candidate` means a finding was retained without an independent verification
-vote. `confirmed` requires a completed independent verification vote. A complete review can contain
-retained candidates, so completion does not assert that every reported issue was independently
-verified.
+action completed. Exit code `1` means the run was degraded or incomplete. Every finding the finder
+reports is kept; the review does not run a second model to delete findings.
 
 Diff reviews and repository `--run` commands write `findings.json` and `outcome.json` in the review
 attempt workspace.
@@ -49,7 +46,7 @@ attempt workspace.
 `findings.json` also groups findings into `issues`: findings that one code change fixes. Grouping
 never removes a finding, and each finding names its `issue_id`. Findings of one category at the same
 file and line form one issue. Other findings form one issue only when their cited source traces the
-other's location and the skeptic seat answers that one code change fixes both.
+other's location and the finder seat answers that one code change fixes both.
 
 ## Install
 
@@ -75,9 +72,8 @@ export CYBERJURY_RETRIES=2
 export CYBERJURY_TIMEOUT=240
 ```
 
-Role specific overrides use `CYBERJURY_FINDER_*`, `CYBERJURY_SKEPTIC_*`, and
-`CYBERJURY_CONFIRMER_*`. API keys, API bases, and role seats are read only from the environment, so
-no key appears on a command line. The `--provider`, `--model`, `--wire-api`, `--retries`, and
+Finder seat overrides use `CYBERJURY_FINDER_*`. API keys, API bases, and the finder seat are read
+only from the environment, so no key appears on a command line. The `--provider`, `--model`, `--wire-api`, `--retries`, and
 `--timeout` flags override the base seat for one command. OpenAI calls use the Responses API unless
 `CYBERJURY_WIRE_API=chat` or `--wire-api chat` selects Chat Completions.
 
@@ -85,6 +81,5 @@ no key appears on a command line. The `--provider`, `--model`, `--wire-api`, `--
 
 OpenAI is the default when `OPENAI_API_KEY` or `CYBERJURY_API_KEY` is set. Otherwise Anthropic
 is the default, and the default model follows the selected provider. Put the strongest model on
-the finder seat. The finder finds, the skeptic refutes and answers the issue grouping question, and
-an independent confirmer must approve a deletion. Without a confirmer that differs from both the
-finder and the skeptic, no finding is deleted. See [.env.example](.env.example) for the full role override matrix.
+the finder seat. The finder finds and also answers the issue grouping question. See
+[.env.example](.env.example) for the finder seat overrides.

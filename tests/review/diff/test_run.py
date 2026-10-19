@@ -287,7 +287,6 @@ def test_diff_review_keeps_an_out_of_range_location_explicitly_incomplete():
     assert [(f.evidence, f.line) for f in result.outcome.findings] == [("unguarded sink", 31)]
     assert result.outcome.findings[0].file == "app.py"
     assert [(f.evidence, f.line) for f in result.outcome.incomplete] == [("unguarded route", 45)]
-    assert result.verification.refuted == []
     assert result.outcome.complete is False
     assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="app.py", line=31, side="new")
 

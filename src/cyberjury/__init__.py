@@ -3,8 +3,8 @@
 Code owns source acquisition, bounded review units, evidence navigation and receipts,
 scheduling, response validation, and reporting. Model calls own the security reasoning
 for each unit. Diff Review makes one Finder judgment per diff unit. Repository Review fans
-the same judgment out across bounded source units, and verification drops a finding only
-when independent seats agree.
+the same judgment out across bounded source units. Every reported finding is kept, and
+findings that one code change fixes are grouped into issues.
 """
 
 from importlib.metadata import PackageNotFoundError, version

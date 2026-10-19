@@ -16,13 +16,6 @@ from cyberjury.review.relationships import (
     SourceReference,
 )
 from cyberjury.review.selection import select_files
-from cyberjury.review.verification import (
-    RefutationCheck,
-    RefutationChecker,
-    Verdict,
-    VerificationActorFingerprint,
-    Verifier,
-)
 from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
 
 
@@ -132,30 +125,6 @@ def prepared_units(units, root: Path, *, facts: Facts | None = None) -> _Grounde
     )
 
 
-class StubVerifier(Verifier):
-    """Refute the candidates `refute` selects at their own line, or raise `error`, counting calls."""
-
-    def __init__(self, refute=lambda candidate: False, *, error: Exception | None = None) -> None:
-        """Bind the refutation predicate and the optional failure."""
-        self.refute = refute
-        self.error = error
-        self.calls = 0
-
-    def verify(self, candidate, root):
-        """Refute, retain, or fail one candidate."""
-        self.calls += 1
-        if self.error is not None:
-            raise self.error
-        if self.refute(candidate):
-            return Verdict(
-                real=False,
-                reason="controlling fact holds",
-                control_file=candidate.file,
-                control_line=candidate.line,
-            )
-        return Verdict(real=True, reason="candidate remains exploitable")
-
-
 class StubIssueJudge:
     """Answer every issue link question from a pair predicate, or raise `error`, recording each pair."""
 
@@ -173,21 +142,3 @@ class StubIssueJudge:
         if self.error is not None:
             raise self.error
         return LinkDecision(same_fix=self.same_fix(pair), reason="one change decides both findings")
-
-
-class StubChecker(RefutationChecker):
-    """Uphold the refutations of candidates `holds` selects, on one named seat."""
-
-    def __init__(self, holds=lambda candidate: False, *, seat: str = "checker") -> None:
-        """Bind the uphold predicate and the seat identity."""
-        self.predicate = holds
-        self.seat = seat
-
-    def checkpoint_fingerprint(self):
-        """Identify the checker seat."""
-        return VerificationActorFingerprint(actor="test checker", settings=(("model", self.seat),))
-
-    def holds(self, candidate, refutation, root):
-        """Uphold or reject one refutation."""
-        held = self.predicate(candidate)
-        return RefutationCheck(holds=held, reason="control covers path" if held else "control misses path")

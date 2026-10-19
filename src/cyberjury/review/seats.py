@@ -1,4 +1,4 @@
-"""Resolve provider seat identities and the verification route shared by every review entry."""
+"""Resolve provider seat identities and the seats every review entry calls."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from cyberjury.providers.configuration import ProviderConfiguration, ProviderSea
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.review.issues import IssueJudge, ModelIssueJudge
 from cyberjury.review.request import ProviderSeatRecord, endpoint_identity, seat_identity
-from cyberjury.review.verification import Confirmer, ModelRefutationChecker, ModelVerifier
 
 DRY_RUN_SEAT = ProviderSeat(provider="mock", model="mock")
 
@@ -31,60 +30,13 @@ def provider_seat_id(seat: ProviderSeat) -> str:
     return provider_seat_record(seat).seat_id
 
 
-def confirmer_seats(configuration: ProviderConfiguration) -> list[ProviderSeat]:
-    """The independent confirmer seats a drop needs.
-
-    A refuted finding is dropped only when every applicable confirmer upholds the
-    refutation. The skeptic never confirms its own refutation, and the finder never
-    confirms a deletion of its own finding, so the confirmer seat counts only when it
-    differs from both. With no distinct confirmer the list is empty and nothing is
-    dropped, the recall-safe default.
-    """
-    if provider_seat_id(configuration.confirmer) in {
-        provider_seat_id(configuration.skeptic),
-        provider_seat_id(configuration.finder),
-    }:
-        return []
-    return [configuration.confirmer]
-
-
-def verification_route(
-    configuration: ProviderConfiguration,
-    *,
-    meter: UsageMeter | None,
-) -> tuple[ModelVerifier, list[Confirmer], ModelIssueJudge]:
-    """Build the skeptic, every independent confirmer, and the issue link judge on the skeptic seat.
-
-    Without a confirmer no refutation can drop a finding, so the skeptic is never asked to
-    refute, but its seat still answers issue link questions and needs a reachable key.
-    """
-    confirmers: list[Confirmer] = [
-        (
-            provider_seat_id(seat),
-            ModelRefutationChecker(
-                provider=provider_for_seat(configuration, seat, meter=meter),
-                model=seat.model,
-                seat_id=provider_seat_id(seat),
-            ),
-        )
-        for seat in confirmer_seats(configuration)
-    ]
-    skeptic = configuration.skeptic
-    provider = provider_for_seat(configuration, skeptic, meter=meter)
-    verifier = ModelVerifier(provider=provider, model=skeptic.model, seat_id=provider_seat_id(skeptic))
-    issue_judge = ModelIssueJudge(provider=provider, model=skeptic.model, seat_id=provider_seat_id(skeptic))
-    return verifier, confirmers, issue_judge
-
-
 @dataclass(frozen=True, kw_only=True)
 class ReviewSeats:
-    """The finder, verification route, and issue link judge of one review, identified as they are recorded."""
+    """The finder and the issue link judge of one review, identified as they are recorded."""
 
     finder: Provider
     finder_model: str
     finder_label: str
-    verifier: ModelVerifier | None
-    confirmers: tuple[Confirmer, ...]
     issue_judge: IssueJudge | None = None
 
 
@@ -100,16 +52,13 @@ def review_seats(
             finder=MeteringProvider(dry_run_provider, meter),
             finder_model=DRY_RUN_SEAT.model,
             finder_label=provider_seat_id(DRY_RUN_SEAT),
-            verifier=None,
-            confirmers=(),
         )
     finder = configuration.finder
-    verifier, confirmers, issue_judge = verification_route(configuration, meter=meter)
+    provider = provider_for_seat(configuration, finder, meter=meter)
+    seat_id = provider_seat_id(finder)
     return ReviewSeats(
-        finder=provider_for_seat(configuration, finder, meter=meter),
+        finder=provider,
         finder_model=finder.model,
-        finder_label=provider_seat_id(finder),
-        verifier=verifier,
-        confirmers=tuple(confirmers),
-        issue_judge=issue_judge,
+        finder_label=seat_id,
+        issue_judge=ModelIssueJudge(provider=provider, model=finder.model, seat_id=seat_id),
     )

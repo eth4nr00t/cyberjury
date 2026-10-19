@@ -9,7 +9,6 @@ from cyberjury.review.request import (
     ReviewAttemptRequest,
     ReviewIntent,
     TargetInput,
-    VerificationPolicyRecord,
     endpoint_identity,
     seat_identity,
 )
@@ -31,7 +30,7 @@ def _request() -> ReviewAttemptRequest:
     return ReviewAttemptRequest(
         action="run",
         engine_version="test",
-        concurrency=ConcurrencyRecord(review=8, verification=8),
+        concurrency=ConcurrencyRecord(review=8),
         dry_run=False,
         fresh=False,
         providers=ProviderPlanRecord(
@@ -40,11 +39,6 @@ def _request() -> ReviewAttemptRequest:
             seats=(seat,),
             base_seat_id=seat.seat_id,
             finder_seat_id=seat.seat_id,
-        ),
-        verification=VerificationPolicyRecord(
-            enabled=True,
-            skeptic_seat_id=seat.seat_id,
-            confirmer_seat_ids=(),
         ),
     )
 

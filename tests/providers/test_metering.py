@@ -188,11 +188,11 @@ def test_scheduler_scope_supplies_unit_to_nested_model_calls():
     assert record["trigger"] == "initial_judgment"
 
 
-def test_verification_model_call_binds_the_candidate_instead_of_a_scheduler_unit():
+def test_a_candidate_model_call_binds_the_candidate_instead_of_a_scheduler_unit():
     meter = UsageMeter()
     provider = MeteringProvider(_Fake(Usage()), meter)
 
-    with model_call_context(role="skeptic", trigger="verification", candidate_id="candidate-a"):
+    with model_call_context(role="issue linker", trigger="issue_link", candidate_id="candidate-a"):
         _call(provider)
         record_model_parse()
 

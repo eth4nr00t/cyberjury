@@ -25,25 +25,24 @@ def _patch(path: str, before: str, after: str) -> str:
 
 def _configuration() -> ProviderConfiguration:
     finder = ProviderSeat(provider="openai", model="finder", api_key="key")
-    return ProviderConfiguration(base=finder, finder=finder, skeptic=finder, confirmer=finder, retries=0, timeout=10)
+    return ProviderConfiguration(base=finder, finder=finder, retries=0, timeout=10)
 
 
-def test_dry_run_review_binds_receipts_skips_noise_and_verification(tmp_path):
+def test_dry_run_review_binds_receipts_skips_noise_and_issue_judgment(tmp_path):
     (tmp_path / "app.py").write_text("def run(name):\n    return name\n", encoding="utf-8")
     (tmp_path / "README.md").write_text("After\n", encoding="utf-8")
     diff = _patch("app.py", "def run():", "def run(name):") + _patch("README.md", "Before", "After")
     seats = review_seats(_configuration(), meter=UsageMeter(), dry_run_provider=MockProvider(default=_EMPTY_REPLY))
 
     prepared = prepare_diff_review(diff, capture_source_snapshot(tmp_path))
-    result = run_review(prepared, target=DIFF_TARGET, seats=seats, concurrency=2, verification_concurrency=2)
+    result = run_review(prepared, target=DIFF_TARGET, seats=seats, concurrency=2)
 
     assert [item.to_dict() for item in prepared.skipped_files] == [{"path": "README.md", "reason": "noise"}]
     assert prepared.shared.root == tmp_path.resolve()
     assert prepared.unit_plan.expected_owned_paths == ("app.py",)
     assert prepared.grounding.unit_plan_receipt_sha256 == prepared.unit_plan.receipt_sha256
     assert seats.finder_label == provider_seat_id(DRY_RUN_SEAT)
-    assert seats.verifier is None
-    assert result.verification.records == []
+    assert seats.issue_judge is None
     assert result.outcome.complete is True
 
 

@@ -50,14 +50,13 @@ class ReviewIntent:
 
 @dataclass(frozen=True, kw_only=True)
 class ConcurrencyRecord:
-    """Explicit concurrency for judgment and verification calls."""
+    """Explicit concurrency for unit judgment and issue link calls."""
 
     review: int | None
-    verification: int | None
 
     def to_dict(self) -> dict[str, int | None]:
         """Return the strict concurrency wire form."""
-        return {"review": self.review, "verification": self.verification}
+        return {"review": self.review}
 
 
 def endpoint_identity(api_base: str | None) -> str:
@@ -117,23 +116,6 @@ class ProviderPlanRecord:
 
 
 @dataclass(frozen=True, kw_only=True)
-class VerificationPolicyRecord:
-    """Observable skeptic and confirmer route."""
-
-    enabled: bool
-    skeptic_seat_id: str | None
-    confirmer_seat_ids: tuple[str, ...]
-
-    def to_dict(self) -> dict[str, object]:
-        """Return the strict verification route wire form."""
-        return {
-            "enabled": self.enabled,
-            "skeptic_seat_id": self.skeptic_seat_id,
-            "confirmer_seat_ids": list(self.confirmer_seat_ids),
-        }
-
-
-@dataclass(frozen=True, kw_only=True)
 class ReviewAttemptRequest:
     """One immutable review execution request."""
 
@@ -143,7 +125,6 @@ class ReviewAttemptRequest:
     dry_run: bool | None
     fresh: bool | None
     providers: ProviderPlanRecord | None
-    verification: VerificationPolicyRecord | None
 
     @property
     def request_sha256(self) -> str:
@@ -153,13 +134,12 @@ class ReviewAttemptRequest:
     @property
     def judgment_configuration_sha256(self) -> str:
         """Identify policy that controls reusable repository judgment results."""
-        if self.action != "run" or self.providers is None or self.verification is None:
+        if self.action != "run" or self.providers is None:
             raise ValueError("only run requests have reusable judgment configuration")
         providers = self.providers.to_dict()
         semantic = {
             "provider_seats": providers["seats"],
             "provider_roles": providers["roles"],
-            "verification": self.verification.to_dict(),
             "dry_run": self.dry_run,
             "engine_version": self.engine_version,
         }
@@ -174,7 +154,6 @@ class ReviewAttemptRequest:
             "dry_run": self.dry_run,
             "fresh": self.fresh,
             "providers": self.providers.to_dict() if self.providers is not None else None,
-            "verification": self.verification.to_dict() if self.verification is not None else None,
         }
         return semantic
 

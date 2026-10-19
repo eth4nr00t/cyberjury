@@ -1105,7 +1105,7 @@ def test_review_outcome_rejects_every_incomplete_state():
 
 
 def test_postprocessing_preserves_the_shared_completion_state():
-    """Target filtering and verification cannot drop prior completion state."""
+    """Target filtering and issue grouping cannot drop prior completion state."""
     finding = _Finding("one", "a:1")
     base = ReviewOutcome(findings=(finding,), errors=1, failure_reason="unit failed")
 

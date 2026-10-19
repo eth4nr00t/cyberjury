@@ -42,8 +42,6 @@ def test_environment_configuration_applies_base_overrides_to_inherited_roles(mon
             timeout=30.0,
             roles={
                 "finder": ProviderSeatOverride(),
-                "skeptic": ProviderSeatOverride(model="skeptic"),
-                "confirmer": ProviderSeatOverride(),
             },
         ),
     )
@@ -52,8 +50,6 @@ def test_environment_configuration_applies_base_overrides_to_inherited_roles(mon
 
     assert configuration.base.model == "override"
     assert configuration.finder.model == "override"
-    assert configuration.skeptic.model == "skeptic"
-    assert configuration.confirmer.model == "override"
     assert configuration.retries == 2
     assert configuration.timeout == 30.0
     assert provider_configuration_from_env().base.model == "gpt-5.6"
@@ -66,16 +62,15 @@ def test_environment_configuration_applies_base_overrides_to_inherited_roles(mon
     assert (overridden.retries, overridden.timeout) == (0, 5.0)
 
 
-def test_environment_reads_skeptic_and_confirmer_role_variables(monkeypatch):
+def test_environment_reads_the_finder_role_variables(monkeypatch):
     monkeypatch.setenv("CYBERJURY_PROVIDER", "openai")
     monkeypatch.setenv("CYBERJURY_MODEL", "base-model")
-    monkeypatch.setenv("CYBERJURY_SKEPTIC_MODEL", "skeptic-model")
-    monkeypatch.setenv("CYBERJURY_CONFIRMER_MODEL", "confirmer-model")
+    monkeypatch.setenv("CYBERJURY_FINDER_MODEL", "finder-model")
 
     configuration = provider_configuration_from_env()
 
-    assert configuration.skeptic.model == "skeptic-model"
-    assert configuration.confirmer.model == "confirmer-model"
+    assert configuration.base.model == "base-model"
+    assert configuration.finder.model == "finder-model"
 
 
 def test_env_defaults_prefer_openai_when_a_key_is_reachable(monkeypatch):
@@ -112,7 +107,7 @@ def test_env_defaults_read_each_role_backend_field(monkeypatch):
         )
 
 
-@pytest.mark.parametrize("name", ["CYBERJURY_WIRE_API", "CYBERJURY_SKEPTIC_WIRE_API"])
+@pytest.mark.parametrize("name", ["CYBERJURY_WIRE_API", "CYBERJURY_FINDER_WIRE_API"])
 def test_env_defaults_reject_an_unknown_wire_api(monkeypatch, name):
     monkeypatch.setenv(name, "Responses")
 

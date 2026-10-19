@@ -57,16 +57,10 @@ class EnvironmentDefaults:
 
 @dataclass(frozen=True, kw_only=True)
 class ProviderConfiguration:
-    """Resolved base, finder, and verification seats with shared client policy.
-
-    The skeptic seat tries to refute a candidate. The confirmer seat is the independent
-    confirmer that a deletion needs when it differs from both the skeptic and the finder.
-    """
+    """Resolved base and finder seats with shared client policy."""
 
     base: ProviderSeat
     finder: ProviderSeat
-    skeptic: ProviderSeat
-    confirmer: ProviderSeat
     retries: int
     timeout: float
 
@@ -164,8 +158,6 @@ def provider_configuration_from_env(
     return ProviderConfiguration(
         base=base,
         finder=roles["finder"],
-        skeptic=roles["skeptic"],
-        confirmer=roles["confirmer"],
         retries=defaults.retries if retries is None else retries,
         timeout=timeout or defaults.timeout,
     )

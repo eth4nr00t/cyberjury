@@ -1,4 +1,4 @@
-"""Repository Review through the shared run covers unit failures, verification, and resume."""
+"""Repository Review through the shared run covers unit failures, issue grouping, and resume."""
 
 import json
 from pathlib import Path
@@ -21,17 +21,16 @@ from tests.review.repository.support import (
     source_unit,
     unit_provider,
 )
-from tests.review.support import StubIssueJudge, StubVerifier, prepared_units
+from tests.review.support import StubIssueJudge, prepared_units
 
 
 def _run(units, provider, *, concurrency=1):
-    """Review grounded units without a verifier or a work directory."""
+    """Review grounded units without an issue judge or a work directory."""
     return run_review(
         prepared_units(units, Path(units[0].root)),
         target=REPOSITORY_TARGET,
-        seats=ReviewSeats(finder=provider, finder_model="mock", finder_label="mock", verifier=None, confirmers=()),
+        seats=ReviewSeats(finder=provider, finder_model="mock", finder_label="mock"),
         concurrency=concurrency,
-        verification_concurrency=concurrency,
     ).outcome
 
 
@@ -221,19 +220,15 @@ def test_run_fails_loud_on_zero_units(tmp_path):
         run_repository_review(repository, tmp_path / "ws")
 
 
-def test_resume_skips_reviewed_units_and_verified_findings(custody_repository, tmp_path):
+def test_resume_skips_reviewed_units(custody_repository, tmp_path):
     ws = tmp_path / "ws"
-    first_verifier = StubVerifier()
-    first = run_repository_review(custody_repository, ws, provider=_wallet_provider(), verifier=first_verifier)
+    first = run_repository_review(custody_repository, ws, provider=_wallet_provider())
     assert first.findings.findings
-    assert first_verifier.calls == 1
 
     resumed = _wallet_provider()
-    resumed_verifier = StubVerifier()
-    second = run_repository_review(custody_repository, ws, provider=resumed, verifier=resumed_verifier)
+    second = run_repository_review(custody_repository, ws, provider=resumed)
 
     assert resumed.calls == []
-    assert resumed_verifier.calls == 0
     assert second.findings == first.findings
 
 
@@ -281,20 +276,7 @@ class _Interrupted(BaseException):
     """A crash or operator interrupt that the scheduler must not absorb."""
 
 
-class _InterruptingVerifier(StubVerifier):
-    """Retain candidates, interrupting the run before the call numbered `interrupt_at`."""
-
-    def __init__(self, interrupt_at=None):
-        super().__init__()
-        self.interrupt_at = interrupt_at
-
-    def verify(self, candidate, root):
-        if self.calls == self.interrupt_at:
-            raise _Interrupted
-        return super().verify(candidate, root)
-
-
-def test_an_interrupted_run_resumes_only_open_units_and_open_verifications(tmp_path):
+def test_an_interrupted_run_resumes_only_open_units(tmp_path):
     repository = _two_entrypoint_repository(tmp_path / "twop")
     ws = tmp_path / "ws"
 
@@ -302,21 +284,11 @@ def test_an_interrupted_run_resumes_only_open_units_and_open_verifications(tmp_p
         run_repository_review(repository, ws, provider=_raising_provider("beta/routes.py", error=_Interrupted()))
 
     resumed = _raising_provider("")
-    interrupting = _InterruptingVerifier(interrupt_at=1)
-    with pytest.raises(_Interrupted):
-        run_repository_review(repository, ws, provider=resumed, verifier=interrupting)
+    result = run_repository_review(repository, ws, provider=resumed)
 
     assert _reviewed_units(resumed) == ["beta/routes.py"]
-    assert interrupting.calls == 1
-
-    final_provider = _raising_provider("")
-    final_verifier = _InterruptingVerifier()
-    result = run_repository_review(repository, ws, provider=final_provider, verifier=final_verifier)
-
-    assert final_provider.calls == []
-    assert final_verifier.calls == 1
     assert result.outcome.complete is True
-    assert len(result.verification.verified) == 2
+    assert sorted(f.file for f in result.findings.findings) == ["alpha/routes.py", "beta/routes.py"]
 
 
 @pytest.mark.parametrize(
@@ -340,18 +312,6 @@ def test_a_corrupt_unit_checkpoint_on_resume_raises_loud(custody_repository, tmp
     assert resumed.calls == []
 
 
-def test_repository_outcome_preserves_verification_failure_reason(custody_repository, tmp_path):
-    result = run_repository_review(
-        custody_repository,
-        tmp_path / "ws",
-        provider=_wallet_provider(),
-        verifier=StubVerifier(error=RuntimeError("rate limited")),
-    )
-
-    assert result.outcome.failure_reason == "verification failed: RuntimeError: rate limited"
-    assert result.outcome_artifact.failure_reason == "verification failed: RuntimeError: rate limited"
-
-
 def test_repository_run_counts_an_unreceipted_finder_candidate_as_incomplete(tmp_path):
     repo = tmp_path / "svc"
     repo.mkdir()
@@ -363,21 +323,6 @@ def test_repository_run_counts_an_unreceipted_finder_candidate_as_incomplete(tmp
     assert not result.outcome.complete
     assert result.outcome_artifact.incomplete == 1
     assert [record["clean"] for record in _unit_records(tmp_path / "ws" / "svc")] == [False]
-
-
-def test_repository_resume_retries_verification_without_reexecuting_reviewed_units(custody_repository, tmp_path):
-    workspace = tmp_path / "ws"
-    failing = StubVerifier(error=RuntimeError("temporary verification failure"))
-    first_provider = _wallet_provider()
-    first = run_repository_review(custody_repository, workspace, provider=first_provider, verifier=failing)
-    assert first.outcome.complete is False
-    assert first_provider.calls
-
-    second_provider = _wallet_provider()
-    second = run_repository_review(custody_repository, workspace, provider=second_provider, verifier=StubVerifier())
-
-    assert second_provider.calls == []
-    assert second.outcome.complete is True
 
 
 _RECORDS = (

@@ -40,7 +40,6 @@ def _review_attempt(directory, reviewed_root, *, target=None):
         entrypoint="POST /objects",
         evidence="views.py:2 saves with no owner",
         attack_path="Any caller creates objects for another owner",
-        status="candidate",
         evidence_refs=(),
         supporting_reviewers=(),
         issue_id=issue_id((A,)),
