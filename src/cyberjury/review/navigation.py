@@ -287,7 +287,7 @@ class SourceNavigationSession:
     def execute(self, requested: object, *, target_chars: int) -> SourceNavigationResult:
         """Execute a strict batch and fail rather than reinterpret malformed queries."""
         queries = parse_source_queries(requested)
-        query_keys = tuple(json.dumps(query, sort_keys=True, separators=(",", ":")) for query in queries)
+        query_keys = tuple(_query_key(query) for query in queries)
         if len(query_keys) != len(set(query_keys)):
             repeated = next(query for query, key in zip(queries, query_keys, strict=True) if query_keys.count(key) > 1)
             raise RepeatedSourceQueryError(repeated)
@@ -308,42 +308,34 @@ class SourceNavigationSession:
         for index, (query, query_key) in enumerate(zip(queries, query_keys, strict=True), start=1):
             self._executed_query_keys.add(query_key)
             kind = query["kind"]
-            if kind == "search_symbols":
-                targets, page, more, exact_match = self._search_symbols(query["query"], query["page"])
-                held = self._held_targets(targets, held_receipts)
+            if kind in {"search_symbols", "search_text"}:
+                if kind == "search_symbols":
+                    targets, page, more, exact_match = self._search_symbols(query["query"], query["page"])
+                    label = "Unique exact symbol match"
+                else:
+                    targets, page, more = self._search_text(query["query"], query["page"])
+                    exact_match, label = True, "Unique exact text match"
                 blocks.append(
-                    _render_search(index, kind, query["query"], targets, page, more, held, exact_match=exact_match)
-                )
-                exact = (
-                    None
-                    if not exact_match
-                    else self._unique_exact_read(
+                    _render_search(
+                        index,
+                        kind,
+                        query["query"],
                         targets,
-                        page=page,
-                        more=more,
-                        blocks=blocks,
-                        target_chars=target_chars,
-                        label="Unique exact symbol match",
+                        page,
+                        more,
+                        self._held_targets(targets, held_receipts),
+                        exact_match=exact_match,
                     )
                 )
-                if exact is not None:
-                    blocks.append(f"Unique exact symbol match:\n{exact.text}")
-                    coverage = merge_grounding_coverage((coverage, exact.coverage))
-                    source_evidence.extend(exact.source_evidence)
-            elif kind == "search_text":
-                targets, page, more = self._search_text(query["query"], query["page"])
-                held = self._held_targets(targets, held_receipts)
-                blocks.append(_render_search(index, kind, query["query"], targets, page, more, held))
-                exact = self._unique_exact_read(
-                    targets,
-                    page=page,
-                    more=more,
-                    blocks=blocks,
-                    target_chars=target_chars,
-                    label="Unique exact text match",
+                exact = (
+                    self._unique_exact_read(
+                        targets, page=page, more=more, blocks=blocks, target_chars=target_chars, label=label
+                    )
+                    if exact_match
+                    else None
                 )
                 if exact is not None:
-                    blocks.append(f"Unique exact text match:\n{exact.text}")
+                    blocks.append(f"{label}:\n{exact.text}")
                     coverage = merge_grounding_coverage((coverage, exact.coverage))
                     source_evidence.extend(exact.source_evidence)
             elif kind == "search_call_candidates":
@@ -479,8 +471,7 @@ class SourceNavigationSession:
 
     def query_was_executed(self, query: dict[str, object]) -> bool:
         """Check whether one normalized query has already run in this session."""
-        key = json.dumps(query, sort_keys=True, separators=(",", ":"))
-        return key in self._executed_query_keys
+        return _query_key(query) in self._executed_query_keys
 
     def _search_symbols(
         self,
@@ -893,6 +884,10 @@ def _page[T](targets: tuple[T, ...], page: int) -> tuple[tuple[T, ...], int, boo
     start = page * _MAX_RESULTS_PER_PAGE
     selected = targets[start : start + _MAX_RESULTS_PER_PAGE]
     return selected, page, start + len(selected) < len(targets)
+
+
+def _query_key(query: Mapping[str, object]) -> str:
+    return json.dumps(query, sort_keys=True, separators=(",", ":"))
 
 
 def _render_search(

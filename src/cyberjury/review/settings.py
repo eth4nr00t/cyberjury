@@ -2,7 +2,7 @@
 
 Fields prefixed with ``max`` are strict bounds. Fields prefixed with ``target`` are
 packing goals that selected evidence may exceed. Defaults remain at their baseline values
-until a two arm backtest supports changing them.
+until a backtest supports changing them.
 """
 
 from __future__ import annotations

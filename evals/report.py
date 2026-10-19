@@ -19,7 +19,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from cyberjury.providers.metering import validate_model_calls_document
-from evals.adjudication import VERDICTS, adjudicate, find_attempts, read_json
+from evals.adjudication import VERDICTS, adjudicate
+from evals.attempts import find_attempts, read_json
 from evals.benchmarks.cases import BenchmarkCase
 
 PRECISION_DEFINITION = (

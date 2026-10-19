@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from cyberjury.finding import Finding
 from cyberjury.review.engine import FindingAccumulator
+from cyberjury.review.finding import Finding
 from cyberjury.review.provenance import found_by_tuple
 
 MERGE_RULE = (

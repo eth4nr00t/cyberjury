@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,11 +23,11 @@ from cyberjury.providers.factory import PROVIDERS, nonnegative_int, positive_flo
 from cyberjury.providers.metering import UsageMeter
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.contract import ContractReceipt
-from cyberjury.review.diff.checkout import prepare_diff_review
 from cyberjury.review.diff.finder import DIFF_TARGET
+from cyberjury.review.diff.prepare import prepare_diff_review
 from cyberjury.review.prepare import PreparedReview
 from cyberjury.review.repository.finder import REPOSITORY_TARGET
-from cyberjury.review.repository.scaffold import prepare_repository_review
+from cyberjury.review.repository.prepare import prepare_repository_review
 from cyberjury.review.request import (
     ConcurrencyRecord,
     ProviderPlanRecord,
@@ -106,14 +107,14 @@ def _provider_configuration(args: argparse.Namespace) -> ProviderConfiguration:
     )
 
 
-def _note_verify_route(n: int) -> None:
+def _note_verify_route(confirmers: int) -> None:
     """State the verification route so the choice is visible rather than inferred."""
-    if n == 0:
+    if confirmers == 0:
         route = "keep-all, no independent confirmer is set so nothing is dropped, the recall-safe default"
     else:
-        plural = "s" if n != 1 else ""
+        plural = "s" if confirmers != 1 else ""
         route = (
-            f"skeptic plus {n} confirmer{plural}, a drop needs the skeptic to refute and every "
+            f"skeptic plus {confirmers} confirmer{plural}, a drop needs the skeptic to refute and every "
             "independent confirmer to uphold it"
         )
     print(f"Verify route: {route}.", file=sys.stderr)
@@ -166,17 +167,17 @@ _MODEL_GROUP_HELP = (
 )
 
 
-def _add_audit_args(p) -> None:
-    p.add_argument("--repository", required=True, help="repository containing the reviewed git range")
-    p.add_argument("--git-range", required=True, help="git range to diff, e.g. origin/main...HEAD")
-    p.add_argument(
+def _add_diff_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--repository", required=True, help="repository containing the reviewed git range")
+    parser.add_argument("--git-range", required=True, help="git range to diff, e.g. origin/main...HEAD")
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="run the repository-grounded engine with a mock provider and no key",
     )
-    _add_concurrency_arg(p, "diff batch reviews or verification calls")
-    _add_workspace_arg(p)
-    _add_model_args(p.add_argument_group("model backend", _MODEL_GROUP_HELP))
+    _add_concurrency_arg(parser, "diff unit reviews or verification calls")
+    _add_workspace_arg(parser)
+    _add_model_args(parser.add_argument_group("model backend", _MODEL_GROUP_HELP))
 
 
 def _add_repository_args(repository: argparse.ArgumentParser) -> None:
@@ -228,8 +229,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"cyberjury {__version__}")
     sub = parser.add_subparsers(dest="command")
     review = sub.add_parser("review", help="review code for security findings", allow_abbrev=False)
-    review_subcommands = review.add_subparsers(dest="scope")
-    _add_audit_args(
+    review_subcommands = review.add_subparsers(dest="scope", metavar="{diff,repository}", required=True)
+    _add_diff_args(
         review_subcommands.add_parser("diff", help="review a git range against its repository", allow_abbrev=False)
     )
     repository = review_subcommands.add_parser(
@@ -245,6 +246,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_install_args(inst)
     return parser
+
+
+ERROR_PREFIX = "error: "
+_COMMAND_FAILED = " failed: "
+_COMMAND_FAILURE = re.compile(rf"^(?:cyberjury|review|install-slash-command){_COMMAND_FAILED}")
+
+
+def failure_text(line: str) -> str | None:
+    """Return the failure message of one line this CLI printed to stderr, or None for any other line."""
+    if line.startswith(ERROR_PREFIX):
+        return line.removeprefix(ERROR_PREFIX)
+    match = _COMMAND_FAILURE.match(line)
+    return line[match.end() :] if match else None
 
 
 def _report_loaded_env() -> None:
@@ -267,12 +281,12 @@ def main(argv: list[str] | None = None) -> int:
         return _dispatch(args, parser)
     except Exception as exc:
         label = (getattr(args, "command", None) if args is not None else None) or "cyberjury"
-        print(f"{label} failed: {exc}", file=sys.stderr)
+        print(f"{label}{_COMMAND_FAILED}{exc}", file=sys.stderr)
         return 1
 
 
 @dataclass(kw_only=True)
-class _ReviewRun:
+class _AttemptContext:
     """Resolved command state shared by every step of one review attempt."""
 
     args: argparse.Namespace
@@ -366,7 +380,7 @@ def _attempt_request(args: argparse.Namespace, configuration: ProviderConfigurat
     )
 
 
-def _initialize_review_attempt(args: argparse.Namespace, *, source_stack: contextlib.ExitStack) -> _ReviewRun:
+def _initialize_review_attempt(args: argparse.Namespace, *, source_stack: contextlib.ExitStack) -> _AttemptContext:
     """Resolve all behavior-affecting command configuration once and bind it to an attempt."""
     configuration = _provider_configuration(args)
     intent = _review_intent(args)
@@ -405,7 +419,7 @@ def _initialize_review_attempt(args: argparse.Namespace, *, source_stack: contex
         raise
     print(f"Review: {session.workspace.path}", file=sys.stderr)
     print(f"Attempt: {attempt.workspace.attempt_id}", file=sys.stderr)
-    return _ReviewRun(
+    return _AttemptContext(
         args=args,
         session=session,
         attempt=attempt,
@@ -434,7 +448,7 @@ def _acquire_source(
     return snapshot, SourceSnapshot(root=root, entries=snapshot.entries, snapshot_id=snapshot.snapshot_id)
 
 
-def _record_model_calls(run: _ReviewRun) -> None:
+def _record_model_calls(run: _AttemptContext) -> None:
     """Persist the model call artifact once for a model backed action."""
     if run.attempt.request.action != "run" or run.model_calls_recorded:
         return
@@ -460,7 +474,7 @@ def _report_skipped_files(skipped: tuple[SkippedFile, ...]) -> None:
         progress(f"skipped {files(len(unreviewable))} without reviewable content: {listed(unreviewable)}")
 
 
-def _prepare(run: _ReviewRun) -> PreparedReview:
+def _prepare(run: _AttemptContext) -> PreparedReview:
     """Plan and ground the target units and bind their receipts before any model work."""
     with stage_timer("prepare"):
         prepared = (
@@ -475,7 +489,7 @@ def _prepare(run: _ReviewRun) -> PreparedReview:
     return prepared
 
 
-def _run_review(run: _ReviewRun, prepared: PreparedReview, seats: ReviewSeats) -> int:
+def _run_review(run: _AttemptContext, prepared: PreparedReview, seats: ReviewSeats) -> int:
     """Review and verify the prepared units, bind the result to the attempt, and report it."""
     request = run.attempt.request
     diff = run.target.kind == "diff"
@@ -503,7 +517,7 @@ def _run_review(run: _ReviewRun, prepared: PreparedReview, seats: ReviewSeats) -
     return _report_review(run, result)
 
 
-def _report_review(run: _ReviewRun, result: ReviewRun) -> int:
+def _report_review(run: _AttemptContext, result: ReviewRun) -> int:
     """Report refutations, failures, and incomplete state, print the machine result, and return the exit code."""
     outcome = result.outcome
     for record in result.verification.records:
@@ -527,19 +541,19 @@ def _report_review(run: _ReviewRun, result: ReviewRun) -> int:
         paths = ", ".join(failure.paths[:3])
         more = f", and {len(failure.paths) - 3} more" if len(failure.paths) > 3 else ""
         print(
-            f"error: review unit {failure.index}/{failure.total} failed for {paths}{more}: {failure.reason}",
+            f"{ERROR_PREFIX}review unit {failure.index}/{failure.total} failed for {paths}{more}: {failure.reason}",
             file=sys.stderr,
         )
     if outcome.failure_reason:
-        print(f"error: {outcome.failure_reason}", file=sys.stderr)
+        print(f"{ERROR_PREFIX}{outcome.failure_reason}", file=sys.stderr)
     if not outcome.complete:
         print(
-            "error: the review is incomplete because grounding, judgment, or verification did not complete, "
+            f"{ERROR_PREFIX}the review is incomplete because grounding, judgment, or verification did not complete, "
             "so the result is not a clean pass. Re-run to retry open work",
             file=sys.stderr,
         )
     print(f"Findings written to {run.attempt.workspace.path}/findings.json", file=sys.stderr)
-    if run.meter.model_requests:
+    if run.meter.snapshot()["model_requests"]:
         print(run.meter.summary(), file=sys.stderr)
     machine_result = ReviewResultArtifact(
         review_id=run.attempt.workspace.session_id,
@@ -551,7 +565,7 @@ def _report_review(run: _ReviewRun, result: ReviewRun) -> int:
     return 0 if outcome.complete else 1
 
 
-def _report_scaffold(run: _ReviewRun, prepared: PreparedReview) -> int:
+def _report_scaffold(run: _AttemptContext, prepared: PreparedReview) -> int:
     target = run.target.repository_root
     print(
         f"Assigned {len(prepared.unit_plan.expected_owned_paths)} production source files to "
@@ -565,7 +579,7 @@ def _report_scaffold(run: _ReviewRun, prepared: PreparedReview) -> int:
     return 0
 
 
-def _execute_review(run: _ReviewRun) -> int:
+def _execute_review(run: _AttemptContext) -> int:
     """Prepare the target once, then run model review unless the action only scaffolds."""
     prepared = _prepare(run)
     request = run.attempt.request
@@ -627,11 +641,6 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         return _cmd_install_slash_command(args)
     if args.command != "review":
         parser.print_help()
-        return 1
-    if args.scope is None:
-        print("usage: cyberjury review {diff,repository} ...", file=sys.stderr)
-        print("  diff   review a git range against its repository", file=sys.stderr)
-        print("  repository   scaffold or run a repository review", file=sys.stderr)
         return 1
     _check_repository_flags(args, parser)
     with contextlib.ExitStack() as source_stack:

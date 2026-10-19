@@ -1,4 +1,4 @@
-"""Materialize the cases of benchmark definitions as review cases.
+"""Load the cases of benchmark definitions as review cases.
 
 A case of a project's `benchmark.yaml` is named `<project id>:<case id>` and carries its nested
 checks. Public projects live under `evals/projects/<project-id>`. This module is engine-free so
@@ -8,7 +8,6 @@ listing and adjudication do not import the review runner.
 from __future__ import annotations
 
 import json
-import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
@@ -18,7 +17,6 @@ from evals.benchmarks.contract import Check, case_checks
 from evals.benchmarks.validate import benchmark_path, validate_benchmark
 
 PROJECTS_DIR = Path(__file__).resolve().parent.parent / "projects"
-EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -84,72 +82,11 @@ def case_target(repository: Mapping, case: Mapping) -> dict[str, str]:
     return target
 
 
-def target_repository(target: Mapping[str, str]) -> Path:
-    """Return the local repository path of a git target without touching it."""
-    if url := target.get("url"):
-        name = Path(url.rstrip("/").removesuffix(".git")).name or "repo"
-        digest = sha256(url.encode("utf-8")).hexdigest()[:12]
-        return Path.home() / ".cache" / "cyberjury" / "diff-targets" / f"{name}-{digest}"
-    return Path(target["local_path"])
-
-
-def git_target_root(target: Mapping[str, str]) -> Path:
-    """Resolve a git target to a local repository root, cloning or updating a URL target in the user cache."""
-    root = target_repository(target)
-    if url := target.get("url"):
-        _sync_clone(url, root)
-    return root
-
-
-def ensure_git_target_refs(target: Mapping[str, str], root: Path) -> None:
-    """Fetch exact commit targets that are not advertised by branch or tag refs."""
-    if not target.get("url"):
-        return
-    for ref in (target.get("base"), target.get("commit")):
-        if ref and ref != EMPTY_TREE:
-            _ensure_commit(root, ref)
-
-
-def _ensure_commit(root: Path, ref: str) -> None:
-    exists = subprocess.run(
-        ["git", "-C", str(root), "cat-file", "-e", f"{ref}^{{commit}}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if exists.returncode == 0:
-        return
-    subprocess.run(
-        ["git", "-C", str(root), "fetch", "origin", ref],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-
-
-def _sync_clone(url: str, root: Path) -> None:
-    if (root / ".git").is_dir():
-        subprocess.run(
-            ["git", "-C", str(root), "fetch", "--tags", "--force", "origin", "+refs/heads/*:refs/remotes/origin/*"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return
-    root.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["git", "clone", "--filter=blob:none", "--no-checkout", url, str(root)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-
-
 def validate_change_anchors(case: BenchmarkCase, diff: str) -> None:
     """Reject change anchors absent from the patch the review reads."""
     if not any(check.change_anchors for check in case.checks):
         return
-    from cyberjury.detection import load_detection
+    from cyberjury.review.detection import load_detection
     from cyberjury.review.diff.model import diff_line_ranges
 
     ranges = diff_line_ranges(diff, load_detection())

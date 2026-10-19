@@ -324,6 +324,10 @@ class StructuralRelationshipEvidence:
         }
 
 
+def _contains(outer: SourceReference, inner: SourceReference) -> bool:
+    return outer.path == inner.path and outer.start <= inner.start and inner.end <= outer.end
+
+
 @dataclass(frozen=True, kw_only=True)
 class RelationshipEvidenceBundle:
     """Collect deterministic evidence before any model establishes relationships."""
@@ -335,31 +339,29 @@ class RelationshipEvidenceBundle:
     structural_relationships: tuple[StructuralRelationshipEvidence, ...] = ()
     call_relationships: tuple[CallRelationshipEvidence, ...] = field(init=False)
 
-    @classmethod
-    def create(
-        cls,
-        *,
-        sources: tuple[SourceReference, ...] = (),
-        definitions: tuple[DefinitionEvidence, ...] = (),
-        callsites: tuple[CallsiteEvidence, ...] = (),
-        observations: tuple[AnalysisObservation, ...] = (),
-        structural_relationships: tuple[StructuralRelationshipEvidence, ...] = (),
-    ) -> RelationshipEvidenceBundle:
-        """Build a complete bundle with one explicit target state per callsite."""
-        return cls(
-            sources=sources,
-            definitions=definitions,
-            callsites=callsites,
-            observations=observations,
-            structural_relationships=structural_relationships,
-        )
-
     def __post_init__(self) -> None:
         """Require stable unique ids and references, then derive one target state per callsite."""
-        source_ids = [source.id for source in self.sources]
-        if len(source_ids) != len(set(source_ids)):
-            raise ValueError("relationship evidence contains duplicate source ids")
+        self._require_unique_ids()
+        self._require_consistent_source_content()
+        definitions = {definition.id: definition for definition in self.definitions}
+        sources = (
+            {source.id for source in self.sources}
+            | {definition.source.id for definition in self.definitions}
+            | {callsite.source.id for callsite in self.callsites}
+        )
+        self._require_contained_definitions(definitions)
+        self._require_contained_callsites(definitions)
+        self._require_known_observation_references(definitions, sources)
+        self._require_contained_structural_relationships(definitions, sources)
+        object.__setattr__(
+            self,
+            "call_relationships",
+            _call_relationships(self.definitions, self.callsites, self.observations),
+        )
+
+    def _require_unique_ids(self) -> None:
         for label, values in (
+            ("source", self.sources),
             ("definition", self.definitions),
             ("callsite", self.callsites),
             ("observation", self.observations),
@@ -368,26 +370,31 @@ class RelationshipEvidenceBundle:
             ids = [value.id for value in values]
             if len(ids) != len(set(ids)):
                 raise ValueError(f"relationship evidence contains duplicate {label} ids")
-        definitions = {definition.id for definition in self.definitions}
-        calls = {callsite.id for callsite in self.callsites}
-        definitions_by_id = {definition.id: definition for definition in self.definitions}
-        sources = (
-            {source.id for source in self.sources}
-            | {definition.source.id for definition in self.definitions}
-            | {callsite.source.id for callsite in self.callsites}
-        )
-        source_references = [
+
+    def _require_consistent_source_content(self) -> None:
+        references = [
             *self.sources,
             *(definition.source for definition in self.definitions),
             *(callsite.source for callsite in self.callsites),
             *(relationship.source for relationship in self.structural_relationships),
         ]
         coordinates: dict[tuple[str, int, int], str] = {}
-        for reference in source_references:
-            coordinate = (reference.path, reference.start, reference.end)
-            digest = coordinates.setdefault(coordinate, reference.content_sha256)
+        for reference in references:
+            digest = coordinates.setdefault((reference.path, reference.start, reference.end), reference.content_sha256)
             if digest != reference.content_sha256:
                 raise ValueError(f"relationship evidence has conflicting source content at {reference.path}")
+
+    def _require_contained_definitions(self, definitions: dict[str, DefinitionEvidence]) -> None:
+        for definition in self.definitions:
+            if not definition.owner_id:
+                continue
+            owner = definitions.get(definition.owner_id)
+            if owner is None:
+                raise ValueError(f"relationship definition {definition.id} has an unknown owner")
+            if not _contains(owner.source, definition.source) or owner.source == definition.source:
+                raise ValueError(f"relationship definition {definition.id} is outside its owner source")
+
+    def _require_contained_callsites(self, definitions: dict[str, DefinitionEvidence]) -> None:
         unknown_callers = {
             callsite.caller_definition_id
             for callsite in self.callsites
@@ -395,55 +402,36 @@ class RelationshipEvidenceBundle:
         }
         if unknown_callers:
             raise ValueError(f"relationship evidence contains unknown callers: {sorted(unknown_callers)}")
-        for definition in self.definitions:
-            if not definition.owner_id:
-                continue
-            owner = definitions_by_id.get(definition.owner_id)
-            if owner is None:
-                raise ValueError(f"relationship definition {definition.id} has an unknown owner")
-            if (
-                owner.source.path != definition.source.path
-                or owner.source.start > definition.source.start
-                or definition.source.end > owner.source.end
-                or owner.source == definition.source
-            ):
-                raise ValueError(f"relationship definition {definition.id} is outside its owner source")
         for callsite in self.callsites:
-            caller = definitions_by_id[callsite.caller_definition_id]
-            if (
-                caller.source.path != callsite.source.path
-                or caller.source.start > callsite.source.start
-                or callsite.source.end > caller.source.end
-            ):
+            if not _contains(definitions[callsite.caller_definition_id].source, callsite.source):
                 raise ValueError(f"relationship callsite {callsite.id} is outside its caller source")
-        subjects = definitions | calls
+
+    def _require_known_observation_references(
+        self, definitions: dict[str, DefinitionEvidence], sources: set[str]
+    ) -> None:
+        subjects = set(definitions) | {callsite.id for callsite in self.callsites}
         for observation in self.observations:
             if not set(observation.subject_ids) <= subjects:
                 raise ValueError(f"relationship observation {observation.id} contains unknown subjects")
-            if not set(observation.candidate_target_ids) <= definitions:
+            if not set(observation.candidate_target_ids) <= set(definitions):
                 raise ValueError(f"relationship observation {observation.id} contains unknown candidates")
             if not set(observation.provenance_source_ids) <= sources:
                 raise ValueError(f"relationship observation {observation.id} contains unknown source provenance")
+
+    def _require_contained_structural_relationships(
+        self, definitions: dict[str, DefinitionEvidence], sources: set[str]
+    ) -> None:
         for relationship in self.structural_relationships:
-            if relationship.source_definition_id and relationship.source_definition_id not in definitions:
-                raise ValueError(f"structural relationship {relationship.id} contains an unknown source definition")
             if relationship.source_definition_id:
-                source_definition = definitions_by_id[relationship.source_definition_id]
-                if (
-                    source_definition.source.path != relationship.source.path
-                    or relationship.source.start < source_definition.source.start
-                    or relationship.source.end > source_definition.source.end
-                ):
+                source_definition = definitions.get(relationship.source_definition_id)
+                if source_definition is None:
+                    raise ValueError(f"structural relationship {relationship.id} contains an unknown source definition")
+                if not _contains(source_definition.source, relationship.source):
                     raise ValueError(f"structural relationship {relationship.id} is outside its source definition")
-            if not set(relationship.candidate_target_definition_ids) <= definitions:
+            if not set(relationship.candidate_target_definition_ids) <= set(definitions):
                 raise ValueError(f"structural relationship {relationship.id} contains unknown candidates")
             if relationship.source.id not in sources:
                 raise ValueError(f"structural relationship {relationship.id} contains unknown source evidence")
-        object.__setattr__(
-            self,
-            "call_relationships",
-            _call_relationships(self.definitions, self.callsites, self.observations),
-        )
 
     def canonical(self) -> RelationshipEvidenceBundle:
         """Return the same evidence in the stable record order of its receipt."""

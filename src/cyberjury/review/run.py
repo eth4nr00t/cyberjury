@@ -9,15 +9,16 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
-from cyberjury.finding import Finding
 from cyberjury.review.checkpoint import CheckpointStore
 from cyberjury.review.context import GroundingCoverage
 from cyberjury.review.engine import ReviewCycle, ReviewOutcome, extend_review_outcome, run_review_units
 from cyberjury.review.finder import GroundedUnit, ReviewTarget, UnitFinder
+from cyberjury.review.finding import Finding
 from cyberjury.review.issues import IssueLinks, group_issues, link_issues
-from cyberjury.review.prepare import PreparedReview
-from cyberjury.review.result import FindingsArtifact, OutcomeArtifact, findings_artifact
+from cyberjury.review.prepare import SharedGrounding
+from cyberjury.review.result import FindingsArtifact, OutcomeArtifact, SkippedFile, findings_artifact
 from cyberjury.review.seats import ReviewSeats
 from cyberjury.review.union import finding_accumulator
 from cyberjury.review.verification import VerifyResult, verification_failure_reason, verify_findings
@@ -27,6 +28,25 @@ type Progress = Callable[[int, int, float], None]
 _UNIT_SCHEMA = "cyberjury.unit-review/v1"
 _VERIFICATION_SCHEMA = "cyberjury.verification-decision/v1"
 _ISSUE_LINK_SCHEMA = "cyberjury.issue-link-decision/v1"
+
+
+class ReviewWork[U](Protocol):
+    """The grounded units a run reviews, their shared grounding, and the files kept out of review."""
+
+    @property
+    def shared(self) -> SharedGrounding:
+        """Return the grounding every unit shares."""
+        ...
+
+    @property
+    def units(self) -> tuple[U, ...]:
+        """Return the grounded units in plan order."""
+        ...
+
+    @property
+    def skipped_files(self) -> tuple[SkippedFile, ...]:
+        """Return the target files not sent to model review."""
+        ...
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -53,7 +73,7 @@ def _unit_cycle(value: object) -> ReviewCycle[Finding]:
 
 
 def run_review[U: GroundedUnit](
-    prepared: PreparedReview[U],
+    prepared: ReviewWork[U],
     *,
     target: ReviewTarget[U],
     seats: ReviewSeats,

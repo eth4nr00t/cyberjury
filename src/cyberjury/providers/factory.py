@@ -1,14 +1,12 @@
-"""Provider factory: build a provider from a name and the environment."""
+"""Provider factory: build a provider from a name, credentials, and client policy."""
 
 from __future__ import annotations
 
-import os
-from collections.abc import Callable
 from math import isfinite
 
 from cyberjury.providers.anthropic import AnthropicProvider
 from cyberjury.providers.base import REQUEST_TIMEOUT_SECONDS, Provider
-from cyberjury.providers.openai import WIRE_APIS, OpenAIProvider
+from cyberjury.providers.openai import OpenAIProvider
 from cyberjury.providers.retry import RetryProvider
 
 PROVIDERS = ("openai", "anthropic")
@@ -40,61 +38,9 @@ def positive_float(value: str) -> float:
     return parsed
 
 
-def _env_number[T](name: str, parse: Callable[[str], T], default: T) -> T:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return parse(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} {exc}") from None
-
-
-def _default_provider() -> str:
-    """Prefer OpenAI when a key is reachable, otherwise fall back to Anthropic API defaults."""
-    if os.environ.get("CYBERJURY_API_KEY") or os.environ.get("OPENAI_API_KEY"):
-        return "openai"
-    return "anthropic"
-
-
 def default_model_for_provider(provider: str) -> str:
     """Match the default model to the provider selected by the default provider order."""
     return "gpt-5.6" if provider == "openai" else "claude-opus-5"
-
-
-def _env_wire_api(name: str) -> str | None:
-    value = os.environ.get(name)
-    if not value:
-        return None
-    if value not in WIRE_APIS:
-        raise ValueError(f"{name} must be one of {', '.join(WIRE_APIS)}, got {value!r}")
-    return value
-
-
-def env_defaults() -> dict:
-    """The env-backed defaults, read on call rather than frozen at import.
-
-    This lets a CLI that loaded a .env first see them.
-    """
-    return {
-        "provider": os.environ.get("CYBERJURY_PROVIDER") or _default_provider(),
-        "model": os.environ.get("CYBERJURY_MODEL"),
-        "api_key": os.environ.get("CYBERJURY_API_KEY"),
-        "api_base": os.environ.get("CYBERJURY_API_BASE"),
-        "wire_api": _env_wire_api("CYBERJURY_WIRE_API"),
-        "retries": _env_number("CYBERJURY_RETRIES", nonnegative_int, DEFAULT_RETRIES),
-        "timeout": _env_number("CYBERJURY_TIMEOUT", positive_float, REQUEST_TIMEOUT_SECONDS),
-        "role_backends": {
-            role: {
-                "provider": os.environ.get(f"CYBERJURY_{role.upper()}_PROVIDER"),
-                "model": os.environ.get(f"CYBERJURY_{role.upper()}_MODEL"),
-                "api_key": os.environ.get(f"CYBERJURY_{role.upper()}_API_KEY"),
-                "api_base": os.environ.get(f"CYBERJURY_{role.upper()}_API_BASE"),
-                "wire_api": _env_wire_api(f"CYBERJURY_{role.upper()}_WIRE_API"),
-            }
-            for role in ROLES
-        },
-    }
 
 
 def make_provider(

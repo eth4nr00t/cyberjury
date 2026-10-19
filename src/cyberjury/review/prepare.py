@@ -11,16 +11,17 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
-from cyberjury.detection import Detection, load_detection
 from cyberjury.review.context import GroundingContext
-from cyberjury.review.facts import BackendUnavailable, Facts, FactsReceipt
+from cyberjury.review.detection import Detection, load_detection
+from cyberjury.review.facts import Facts, FactsReceipt
+from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.result import SkippedFile
+from cyberjury.review.selection import FileSelection, select_files
+from cyberjury.review.syntax.facts import extract_syntax_facts, syntax_backend_id
 from cyberjury.review.unit_plans import UnitPlanReceipt, UnitPlanRecord
-from cyberjury.selection import FileSelection, select_files
 from cyberjury.sources.snapshot import SourceSnapshot
-from cyberjury.syntax.facts import extract_syntax_facts, syntax_backend_id
 
 
 class PlannedUnit(Protocol):

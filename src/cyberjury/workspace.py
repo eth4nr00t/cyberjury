@@ -17,6 +17,7 @@ from typing import TextIO
 SESSION_SCHEMA = "cyberjury.session/v1"
 LOCATOR_SCHEMA = "cyberjury.session-locator/v1"
 ATTEMPT_SCHEMA = "cyberjury.attempt/v1"
+_NAME = re.compile(r"[a-z][a-z0-9-]*")
 _SESSION_ID = re.compile(r"^[a-z][a-z0-9-]*-[0-9a-f]{32}$")
 _ATTEMPT_ID = re.compile(r"^attempt-[0-9a-f]{32}$")
 _LOCATOR_KEY = re.compile(r"^[0-9a-f]{64}$")
@@ -51,7 +52,7 @@ def new_attempt_id() -> str:
 
 def new_session_id(kind: str) -> str:
     """Return one globally unique logical workflow identity."""
-    if not re.fullmatch(r"[a-z][a-z0-9-]*", kind):
+    if not _NAME.fullmatch(kind):
         raise ValueError("session kind is invalid")
     return f"{kind}-{uuid.uuid4().hex}"
 
@@ -146,7 +147,7 @@ def _state_directory(root: str | Path, *parts: str) -> Path:
         os.chmod(raw_root, 0o700)
     current = raw_root.resolve()
     for part in parts:
-        if not re.fullmatch(r"[a-z][a-z0-9-]*", part):
+        if not _NAME.fullmatch(part):
             raise ValueError("state directory component is invalid")
         current /= part
         _safe_directory(current)
@@ -248,9 +249,9 @@ class SessionWorkspace(_JsonDirectory):
         kind: str,
     ) -> SessionWorkspace:
         """Open one matching session or create its immutable identity file."""
-        if not re.fullmatch(r"[a-z][a-z0-9-]*", namespace):
+        if not _NAME.fullmatch(namespace):
             raise ValueError("workspace namespace is invalid")
-        if not re.fullmatch(r"[a-z][a-z0-9-]*", kind):
+        if not _NAME.fullmatch(kind):
             raise ValueError("session kind is invalid")
         if not _SESSION_ID.fullmatch(session_id):
             raise ValueError("session id is invalid")

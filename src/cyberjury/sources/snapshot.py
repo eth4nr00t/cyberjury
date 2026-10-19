@@ -11,23 +11,25 @@ import stat
 import tempfile
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import BinaryIO
 
 from cyberjury.canonical import canonical_sha256
+from cyberjury.sources.git import GitSourceError, worktree_files
+from cyberjury.sources.paths import (
+    MAX_SOURCE_FILES,
+    SourceSnapshotError,
+    portable_paths,
+    require_contained_symlinks,
+)
 
 SNAPSHOT_SCHEMA = "cyberjury.source-snapshot/v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_MAX_SOURCE_FILES = 200_000
 _MAX_SOURCE_FILE_BYTES = 100_000_000
 _MAX_SNAPSHOT_BYTES = 2_000_000_000
 _READ_CHUNK_BYTES = 1_048_576
 
 type ScopeProvider = Callable[[], tuple[str, ...]]
-
-
-class SourceSnapshotError(RuntimeError):
-    """Source scope cannot be captured or no longer matches its manifest."""
 
 
 def _snapshot_id(entries: tuple[SourceFileSnapshot, ...]) -> str:
@@ -56,8 +58,6 @@ def source_snapshot_files(root: str | Path) -> tuple[str, ...]:
     if not base.is_dir():
         raise SourceSnapshotError(f"snapshot root is not a directory: {base}")
     if (base / ".git").exists():
-        from cyberjury.sources.git import GitSourceError, worktree_files
-
         try:
             return portable_paths(worktree_files(base))
         except GitSourceError as exc:
@@ -89,47 +89,9 @@ def source_snapshot_files(root: str | Path) -> tuple[str, ...]:
             if not resolved.is_file():
                 raise SourceSnapshotError(f"source path is not a regular file: {relative.as_posix()}")
             files.append(relative.as_posix())
-            if len(files) > _MAX_SOURCE_FILES:
+            if len(files) > MAX_SOURCE_FILES:
                 raise SourceSnapshotError("source snapshot exceeds the file count limit")
     return portable_paths(files)
-
-
-def portable_paths(files: Iterable[str]) -> tuple[str, ...]:
-    """Return sorted unique canonical POSIX relative paths that stay inside their root."""
-    normalized: list[str] = []
-    for value in files:
-        if not isinstance(value, str) or not value or "\\" in value:
-            raise SourceSnapshotError("snapshot file paths must be nonempty POSIX relative paths")
-        path = PurePosixPath(value)
-        try:
-            value.encode("utf-8")
-        except UnicodeError as exc:
-            raise SourceSnapshotError(f"snapshot file path is not UTF-8: {value!r}") from exc
-        if path.is_absolute() or path.as_posix() != value or ".." in path.parts or "." in path.parts:
-            raise SourceSnapshotError(f"snapshot file path is unsafe or noncanonical: {value!r}")
-        normalized.append(value)
-        if len(normalized) > _MAX_SOURCE_FILES:
-            raise SourceSnapshotError("source snapshot exceeds the file count limit")
-    ordered = tuple(sorted(normalized))
-    if len(set(ordered)) != len(ordered):
-        raise SourceSnapshotError("snapshot file paths must be unique")
-    return ordered
-
-
-def safe_link_target(target: str) -> bool:
-    """Accept only a nonempty, relative POSIX symlink target."""
-    return bool(target) and "\x00" not in target and "\\" not in target and not Path(target).is_absolute()
-
-
-def require_contained_symlinks(root: Path, files: Iterable[str]) -> None:
-    """Fail when any materialized symlink is broken or resolves outside its root."""
-    for relative in files:
-        path = root / relative
-        if path.is_symlink():
-            try:
-                path.resolve(strict=True).relative_to(root)
-            except (OSError, ValueError) as exc:
-                raise SourceSnapshotError(f"materialized source symlink is unsafe: {relative}") from exc
 
 
 @dataclass(frozen=True, kw_only=True)

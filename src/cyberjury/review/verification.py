@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -21,7 +19,7 @@ from cyberjury.review.checkpoint import CheckpointStore
 from cyberjury.review.engine import parse_role_response
 from cyberjury.review.knowledge import load_review_brief
 from cyberjury.review.paths import normalized_location_path, resolve_source_path
-from cyberjury.review.prompts import UNTRUSTED_SOURCE_RULE, fenced_source, one_line_source
+from cyberjury.review.prompts import CLAIM_FIELDS, UNTRUSTED_SOURCE_RULE, fenced_source, finding_claim, one_line_source
 from cyberjury.review.schemas import closed_object
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -80,8 +78,7 @@ class VerificationActorFingerprint:
     @property
     def actor_id(self) -> str:
         """Identify one configured verification role for audit records."""
-        encoded = json.dumps(self.to_data(), sort_keys=True, separators=(",", ":"))
-        return f"actor-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:20]}"
+        return f"actor-{canonical_sha256(self.to_data())[:20]}"
 
     @property
     def seat_id(self) -> str:
@@ -351,24 +348,7 @@ _SYSTEM = (
     "empty when `real` is true.\n"
     "- `control_line`: the existing line of the controlling fact when `real` is false; 0 when `real` is true."
 )
-_FINDING_FIELDS = ("title", "category", "entrypoint", "location", "claimed evidence", "claimed attack path")
 _SKEPTIC_PROMPT_TEMPLATE = "{finding}\n\nCode at {file}:\n{code}"
-
-
-def _finding_block(candidate: VerificationFinding) -> str:
-    """Render the claim under review once, as single line untrusted values, omitting empty fields."""
-    values = (
-        candidate.title,
-        candidate.category,
-        candidate.entrypoint,
-        f"{candidate.file}:{candidate.line}",
-        candidate.evidence,
-        candidate.attack_path,
-    )
-    lines = [
-        f"- {label}: {one_line_source(value)}" for label, value in zip(_FINDING_FIELDS, values, strict=True) if value
-    ]
-    return "\n".join(("Finding under review:", *lines))
 
 
 _VERDICT_RESPONSE_SCHEMA = ResponseSchema(
@@ -473,7 +453,7 @@ class _ModelSeat:
                     canonical_sha256(
                         {
                             "system": self._system,
-                            "finding_fields": list(_FINDING_FIELDS),
+                            "finding_fields": list(CLAIM_FIELDS),
                             "prompt_template": self._prompt_template,
                             "response_schema": self._response_schema.schema,
                         }
@@ -529,7 +509,7 @@ class ModelVerifier(_ModelSeat, Verifier):
         if not code.strip():
             raise VerifyError("candidate source location is unavailable for verification")
         prompt = _SKEPTIC_PROMPT_TEMPLATE.format(
-            finding=_finding_block(candidate),
+            finding=finding_claim("Finding under review:", candidate),
             file=one_line_source(candidate.file),
             code=fenced_source(code),
         )
@@ -629,7 +609,7 @@ class ModelRefutationChecker(_ModelSeat, RefutationChecker):
             return RefutationCheck(holds=False, reason="the candidate or controlling source could not be read")
         code = "\n\n".join(dict.fromkeys((candidate_code, control_code)))
         prompt = _CHECK_PROMPT_TEMPLATE.format(
-            finding=_finding_block(candidate),
+            finding=finding_claim("Finding under review:", candidate),
             file=one_line_source(candidate.file),
             control_file=one_line_source(refutation.control_file),
             control_line=refutation.control_line,
@@ -793,7 +773,7 @@ def _checkpoint_key(candidate: VerificationFinding, policy_sha256: str) -> str:
     """Identify exactly what the skeptic and confirmers see, and the route the finding's provenance selects."""
     return canonical_sha256(
         {
-            "finding": _finding_block(candidate),
+            "finding": finding_claim("Finding under review:", candidate),
             "found_by": list(candidate.found_by),
             "policy_sha256": policy_sha256,
         }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Protocol
 
 from cyberjury.review.schemas import closed_object, string_array
 from cyberjury.severity import SEVERITIES
@@ -44,6 +45,35 @@ def inline_source(source: str) -> str:
     fence = "`" * (longest + 1)
     padding = " " if longest else ""
     return f"{fence}{padding}{value}{padding}{fence}"
+
+
+CLAIM_FIELDS = ("title", "category", "entrypoint", "location", "claimed evidence", "claimed attack path")
+
+
+class ClaimedFinding(Protocol):
+    """The finding fields a judgment prompt shows as the claim under review."""
+
+    title: str
+    category: str
+    entrypoint: str
+    file: str
+    line: int
+    evidence: str
+    attack_path: str
+
+
+def finding_claim(heading: str, finding: ClaimedFinding) -> str:
+    """Render one claim under a heading as single line untrusted values, omitting empty fields."""
+    values = (
+        finding.title,
+        finding.category,
+        finding.entrypoint,
+        f"{finding.file}:{finding.line}",
+        finding.evidence,
+        finding.attack_path,
+    )
+    lines = [f"- {label}: {one_line_source(value)}" for label, value in zip(CLAIM_FIELDS, values, strict=True) if value]
+    return "\n".join((heading, *lines))
 
 
 UNTRUSTED_SOURCE_RULE = (

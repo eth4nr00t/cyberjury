@@ -78,44 +78,21 @@ def record_model_parse(failure_reason: str = "") -> None:
 
 @dataclass
 class UsageMeter:
-    """Running token totals for one run.
+    """Per-call model records for one run, with token totals derived from them.
 
     Guarded by a lock since the fan-out records concurrently.
     """
 
-    model_requests: int = 0
-    uncached_input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
     calls: list[dict[str, object]] = field(default_factory=list)
     _lock: Lock = field(default_factory=Lock, repr=False)
 
-    def add(self, result: CompletionResult) -> None:
-        """Add one completion usage record to the shared meter."""
-        u = result.usage
-        with self._lock:
-            self.model_requests += 1
-            self.uncached_input_tokens += u.input_tokens
-            self.output_tokens += u.output_tokens
-            self.cache_read_tokens += u.cache_read_tokens
-            self.cache_write_tokens += u.cache_write_tokens
-
     def snapshot(self) -> dict[str, int]:
-        """The totals as plain data, so a run can persist them and not only print them.
+        """Return the token totals of every completed call as plain data.
 
         `total_input_tokens` is derived because comparing two runs on the uncached count alone
         reads a cache hit as a saving the request never made.
         """
-        with self._lock:
-            return {
-                "model_requests": self.model_requests,
-                "total_input_tokens": self.uncached_input_tokens + self.cache_read_tokens + self.cache_write_tokens,
-                "uncached_input_tokens": self.uncached_input_tokens,
-                "cache_read_tokens": self.cache_read_tokens,
-                "cache_write_tokens": self.cache_write_tokens,
-                "output_tokens": self.output_tokens,
-            }
+        return _usage_from_calls(self.call_snapshot())
 
     def summary(self) -> str:
         """Return aggregate token usage for the run."""
@@ -210,7 +187,6 @@ class MeteringProvider(Provider):
             )
             self._record(record, started, context)
             raise
-        self._meter.add(result)
         record.update(
             attempt=result.attempts,
             input_tokens=result.usage.input_tokens,

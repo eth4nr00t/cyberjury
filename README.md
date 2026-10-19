@@ -16,9 +16,9 @@ by itself clear the repository.
 
 The review contract is data. One language-independent security reasoning kernel, one severity
 rubric, and the file classification rules live in `src/cyberjury/review/contract/`. Language
-support is the Tree-sitter query data in `src/cyberjury/syntax/queries.yaml`; a language without
-queries is still reviewed from its raw source. Each review records a hash of these files in
-`contract.json`.
+support is the Tree-sitter query data in `src/cyberjury/review/syntax/queries.yaml`; a language
+without queries is still reviewed from its raw source. Each review records a hash of these files
+in `contract.json`.
 
 A Repository Review of a Git work tree covers the tracked files and the untracked files Git does not
 ignore. A plain directory is covered completely. Files that are not UTF-8 text, binary, or empty are

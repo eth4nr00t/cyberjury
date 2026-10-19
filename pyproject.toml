@@ -51,12 +51,12 @@ cyberjury = [
     "commands/*.md",
     "review/contract/*.md",
     "review/contract/detection.yaml",
-    "syntax/queries.yaml",
+    "review/syntax/queries.yaml",
 ]
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
-testpaths = ["tests"]
+testpaths = ["tests", "evals/tests"]
 pythonpath = ["src", "."]
 
 [tool.ruff]
@@ -71,3 +71,4 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D103"]
+"evals/tests/**" = ["D103"]

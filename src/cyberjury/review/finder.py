@@ -12,7 +12,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Literal, Protocol
 
-from cyberjury.finding import ChangeAnchor, Finding
 from cyberjury.providers.base import Message, Provider, ResponseSchema
 from cyberjury.review.context import (
     EvidencePromptContext,
@@ -31,6 +30,7 @@ from cyberjury.review.engine import (
     run_evidence_judgment,
     run_grounded_judgment,
 )
+from cyberjury.review.finding import ChangeAnchor, Finding
 from cyberjury.review.identity import canonical_category
 from cyberjury.review.knowledge import load_review_brief, load_severity_rubric
 from cyberjury.review.navigation import SourceNavigationSession, bind_source_operation, navigation_instructions

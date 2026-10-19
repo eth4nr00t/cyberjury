@@ -27,16 +27,17 @@ from cyberjury.review.diff.model import (
     changed_line_ranges,
     diff_paths,
     diff_unit_plan_record,
-    prepare_diff_units,
     reviewable_changed_paths,
 )
+from cyberjury.review.diff.planning import prepare_diff_units
 from cyberjury.review.diff.prompts import diff_seed
 from cyberjury.review.failures import BackendUnavailable
+from cyberjury.review.paths import read_repository_source
 from cyberjury.review.prepare import ReviewPlan, SharedGrounding
 from cyberjury.review.prompts import one_line_source
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.result import SkippedFile
-from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS, ReviewExecutionSettings
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
 _EXECUTION = DEFAULT_REVIEW_SETTINGS.execution
@@ -59,7 +60,12 @@ def plan_diff_units(diff: str, shared: SharedGrounding, skipped: tuple[SkippedFi
     )
 
 
-def ground_diff_unit(unit: DiffUnit, shared: SharedGrounding) -> GroundingContext:
+def ground_diff_unit(
+    unit: DiffUnit,
+    shared: SharedGrounding,
+    *,
+    execution: ReviewExecutionSettings = _EXECUTION,
+) -> GroundingContext:
     """Bind one planned diff unit to its exact initial evidence envelope."""
     diff, definition_plan = unit.diff, unit.definition_plan
     root = shared.root
@@ -81,7 +87,7 @@ def ground_diff_unit(unit: DiffUnit, shared: SharedGrounding) -> GroundingContex
             ),
             callsite_ids=_callsite_ids_in_ranges(root, relationships, ranges),
             catalog=evidence,
-            deliver_chars=_EXECUTION.max_initial_candidate_source_chars,
+            deliver_chars=execution.max_initial_candidate_source_chars,
         )
         if definition_plan.seeds
         else CandidateCallContext()
@@ -105,7 +111,7 @@ def ground_diff_unit(unit: DiffUnit, shared: SharedGrounding) -> GroundingContex
             definition_plan,
             paths,
             shared.facts.by_file,
-            max_chars_per_file=_EXECUTION.max_syntax_hint_chars_per_file,
+            max_chars_per_file=execution.max_syntax_hint_chars_per_file,
         ),
         navigator=shared.navigator,
         source_snapshot=shared.snapshot,
@@ -132,7 +138,11 @@ def changed_file_sources(
     region and its leading lines; a file without them gets its leading lines. Every window is exact
     source under its own id, so a finding can be located in it.
     """
-    sources = [(rel, source) for rel in paths if (source := _current_source(root, rel)) is not None]
+    sources = [
+        (rel, source)
+        for rel in paths
+        if (source := read_repository_source(root, rel, label="diff context")) is not None
+    ]
     if not sources or budget < 1:
         return "", ()
     share = max(1, (budget - 2 * (len(sources) - 1)) // len(sources))
@@ -156,19 +166,6 @@ def changed_file_sources(
             if evidence.source_span.end_line < last:
                 break
     return "\n".join(notices), tuple(delivered)
-
-
-def _current_source(root: Path, rel: str) -> str | None:
-    path = (root / rel).resolve()
-    try:
-        path.relative_to(root)
-        if not path.is_file():
-            return None
-        return path.read_text(encoding="utf-8")
-    except ValueError as exc:
-        raise BackendUnavailable(f"diff context source path escapes the repository: {rel}") from exc
-    except (OSError, UnicodeDecodeError) as exc:
-        raise BackendUnavailable(f"diff context could not read source {rel}: {exc}") from exc
 
 
 def _leading_lines(lines: list[str], max_chars: int) -> int:
@@ -262,9 +259,7 @@ def _callsite_ids_in_ranges(
 
 
 def _read_source(root: Path, rel: str) -> str:
-    path = (root / rel).resolve()
-    try:
-        path.relative_to(root)
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise BackendUnavailable(f"cannot read relationship source {rel}: {exc}") from exc
+    source = read_repository_source(root, rel, label="relationship")
+    if source is None:
+        raise BackendUnavailable(f"relationship source {rel} is missing")
+    return source

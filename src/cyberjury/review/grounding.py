@@ -54,7 +54,7 @@ class GroundingContextRecord:
 
 @dataclass(frozen=True, kw_only=True)
 class GroundingReceipt:
-    """Bind every Stage 06 unit to one initial evidence envelope."""
+    """Bind every planned unit to one initial evidence envelope."""
 
     unit_plan_receipt_sha256: str
     contexts: tuple[GroundingContextRecord, ...]
@@ -79,7 +79,7 @@ class GroundingReceipt:
         )
 
     def to_dict(self) -> dict[str, object]:
-        """Return the strict Stage 07 artifact."""
+        """Return the strict grounding.json artifact."""
         return {
             "schema": GROUNDING_SCHEMA,
             **_receipt_semantic(self.unit_plan_receipt_sha256, self.contexts),

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import dataclasses
 
-from cyberjury.finding import Finding
 from cyberjury.review.context import SourceEvidence, SourceSpan, source_location_receipt
 from cyberjury.review.diff.model import DiffLineRanges, DiffUnit, canonical_diff_path
 from cyberjury.review.diff.prompts import FINDER_RESPONSE_SCHEMA, diff_finder_system
 from cyberjury.review.engine import CorrectableRoleResponseError, RoleReply
 from cyberjury.review.finder import ReviewTarget, finding_from_item, finding_violations
+from cyberjury.review.finding import Finding
 
 
 def findings_from_reply(unit: DiffUnit, reply: RoleReply) -> list[Finding]:

@@ -1,0 +1,322 @@
+"""OpenAIProvider tests cover Chat Completions and Responses with faked clients."""
+
+import sys
+from types import SimpleNamespace
+
+import pytest
+
+from cyberjury.providers.base import Message, ResponseSchema, Usage
+from cyberjury.providers.openai import OpenAIProvider, _chat_usage, _responses_usage
+
+
+class _FakeClient:
+    def __init__(self, reply="ok", model="gpt-4o"):
+        self.create_kwargs = {}
+        self._reply = reply
+        self._model = model
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    def _create(self, **kwargs):
+        self.create_kwargs = kwargs
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=self._reply))], model=self._model
+        )
+
+
+def test_prepends_system_and_maps_messages():
+    client = _FakeClient(reply="hello", model="gpt-4o-mini")
+    result = OpenAIProvider(client=client, wire_api="chat").complete(
+        system="be careful",
+        messages=[Message(role="user", content="hi")],
+        model="gpt-4o",
+        max_tokens=64,
+    )
+    assert result.text == "hello"
+    assert client.create_kwargs["messages"] == [
+        {"role": "system", "content": "be careful"},
+        {"role": "user", "content": "hi"},
+    ]
+    assert client.create_kwargs["max_tokens"] == 64
+    assert client.create_kwargs["temperature"] == 0
+
+
+def test_omits_system_message_when_empty():
+    client = _FakeClient()
+    OpenAIProvider(client=client, wire_api="chat").complete(
+        system="", messages=[Message(role="user", content="x")], model="m", max_tokens=8
+    )
+    assert client.create_kwargs["messages"] == [{"role": "user", "content": "x"}]
+
+
+def test_sdk_exception_propagates():
+
+    class _Boom:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        def _create(self, **kwargs):
+            raise RuntimeError("rate limited")
+
+    with pytest.raises(RuntimeError, match="rate limited"):
+        OpenAIProvider(client=_Boom(), wire_api="chat").complete(
+            system="s", messages=[Message(role="user", content="x")], model="m", max_tokens=8
+        )
+
+
+def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch):
+    """One retry owner keeps configured attempts from multiplying."""
+    captured = {}
+
+    class _OpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=_OpenAI))
+
+    OpenAIProvider(api_key="k", api_base="https://gateway.example.test")._get_client()
+
+    assert captured["max_retries"] == 0
+
+
+def test_chat_usage_subtracts_the_cached_read_from_the_prompt_total():
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            prompt_tokens=2700, completion_tokens=40, prompt_tokens_details=SimpleNamespace(cached_tokens=2600)
+        )
+    )
+    assert _chat_usage(response) == Usage(input_tokens=100, output_tokens=40, cache_read_tokens=2600)
+
+
+def test_chat_usage_separates_cache_writes_from_uncached_input():
+    """Cache write premiums must remain visible instead of inflating ordinary input."""
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            prompt_tokens=2700,
+            completion_tokens=40,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=500, cache_write_tokens=2000),
+        )
+    )
+    assert _chat_usage(response) == Usage(
+        input_tokens=200,
+        output_tokens=40,
+        cache_read_tokens=500,
+        cache_write_tokens=2000,
+    )
+
+
+def test_responses_usage_reads_the_cached_tokens_detail():
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            input_tokens=2700, output_tokens=40, input_tokens_details=SimpleNamespace(cached_tokens=2600)
+        )
+    )
+    assert _responses_usage(response) == Usage(input_tokens=100, output_tokens=40, cache_read_tokens=2600)
+
+
+def test_responses_usage_separates_cache_writes_from_uncached_input():
+    """Responses metering must expose the same cache cost dimensions as Chat."""
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            input_tokens=2700,
+            output_tokens=40,
+            input_tokens_details=SimpleNamespace(cached_tokens=500, cache_write_tokens=2000),
+        )
+    )
+    assert _responses_usage(response) == Usage(
+        input_tokens=200,
+        output_tokens=40,
+        cache_read_tokens=500,
+        cache_write_tokens=2000,
+    )
+
+
+def test_usage_defaults_to_zero_when_unreported():
+    assert _chat_usage(SimpleNamespace(model="m")) == Usage()
+    assert _responses_usage(SimpleNamespace(model="m")) == Usage()
+
+
+def _sent(content: str, *, wire: str = "chat", **kw) -> dict:
+    client = _FakeResponsesClient() if wire == "responses" else _FakeClient()
+    OpenAIProvider(client=client, wire_api=wire).complete(
+        system="s", messages=[Message(role="user", content=content)], model="m", max_tokens=8, **kw
+    )
+    return client.kwargs if wire == "responses" else client.create_kwargs
+
+
+def test_a_cached_prefix_becomes_a_stable_routing_key_on_both_wires():
+    """The system prompt plus the cached message prefix becomes one routing key on both wires."""
+    key = _sent("STABLE tail", cache=True, cache_prefix="STABLE")["prompt_cache_key"]
+    assert key
+    assert _sent("STABLE a different tail", cache=True, cache_prefix="STABLE")["prompt_cache_key"] == key
+    assert _sent("STABLE tail", wire="responses", cache=True, cache_prefix="STABLE")["prompt_cache_key"] == key
+    assert _sent("OTHER tail", cache=True, cache_prefix="OTHER")["prompt_cache_key"] != key
+
+
+def test_the_routing_key_covers_the_system_prompt():
+    first = OpenAIProvider(client=(client := _FakeClient()), wire_api="chat")
+    first.complete(
+        system="other",
+        messages=[Message(role="user", content="STABLE")],
+        model="m",
+        max_tokens=8,
+        cache=True,
+        cache_prefix="STABLE",
+    )
+    assert (
+        client.create_kwargs["prompt_cache_key"]
+        != _sent("STABLE", cache=True, cache_prefix="STABLE")["prompt_cache_key"]
+    )
+
+
+def test_a_repeated_system_prompt_alone_gets_a_routing_key():
+    assert _sent("x", cache=True)["prompt_cache_key"] == _sent("y", cache=True)["prompt_cache_key"]
+
+
+def test_no_routing_key_without_cache():
+    assert "prompt_cache_key" not in _sent("x", cache_prefix="STABLE")
+
+
+@pytest.mark.parametrize("wire", ["chat", "responses"])
+def test_caching_uses_only_portable_routing_fields(wire):
+    """Caching stays portable across models and compatible endpoints."""
+    request = _sent(
+        "STABLE changing judgment",
+        wire=wire,
+        cache=True,
+        cache_prefix="STABLE",
+    )
+
+    request_field = "messages" if wire == "chat" else "input"
+    assert request[request_field][-1]["content"] == "STABLE changing judgment"
+    assert "prompt_cache_options" not in request
+    assert request["prompt_cache_key"]
+
+
+def test_empty_content_yields_empty_text():
+
+    class _Blank:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        def _create(self, **kwargs):
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=None))])
+
+    result = OpenAIProvider(client=_Blank(), wire_api="chat").complete(
+        system="s", messages=[Message(role="user", content="x")], model="m", max_tokens=8
+    )
+    assert result.text == ""
+
+
+def test_missing_sdk_raises_a_clear_error(monkeypatch):
+    monkeypatch.setitem(sys.modules, "openai", None)
+    with pytest.raises(RuntimeError, match="pip install"):
+        OpenAIProvider().complete(system="s", messages=[Message(role="user", content="x")], model="m", max_tokens=8)
+
+
+class _FakeResponsesClient:
+    def __init__(self, output_text="{}", status="completed"):
+        self.kwargs = {}
+        self._out = output_text
+        self._status = status
+        self.responses = SimpleNamespace(create=self._create)
+
+    def _create(self, **kwargs):
+        self.kwargs = kwargs
+        return SimpleNamespace(output_text=self._out, status=self._status)
+
+
+class _DualWireClient:
+    def __init__(self):
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._chat))
+        self.responses = SimpleNamespace(create=self._responses)
+
+    def _chat(self, **_kwargs):
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="chat"))])
+
+    def _responses(self, **_kwargs):
+        return SimpleNamespace(output_text="responses")
+
+
+@pytest.mark.parametrize(("wire_api", "expected"), [(None, "responses"), ("responses", "responses"), ("chat", "chat")])
+def test_responses_is_the_default_wire_and_chat_is_explicit(wire_api, expected):
+    client = _DualWireClient()
+    result = OpenAIProvider(client=client, wire_api=wire_api).complete(
+        system="s", messages=[Message(role="user", content="c")], model="gpt-6.1-sol", max_tokens=64
+    )
+    assert result.text == expected
+
+
+def test_responses_wire_api_maps_system_to_instructions_and_returns_output_text():
+    client = _FakeResponsesClient(output_text='{"holds": true}')
+    result = OpenAIProvider(client=client, wire_api="responses").complete(
+        system="be skeptical",
+        messages=[Message(role="user", content="audit this")],
+        model="gpt-5.6",
+        max_tokens=1024,
+    )
+    assert result.text == '{"holds": true}'
+    assert client.kwargs["instructions"] == "be skeptical"
+    assert client.kwargs["input"] == [{"role": "user", "content": "audit this"}]
+    assert client.kwargs["max_output_tokens"] >= 8000
+    assert "temperature" not in client.kwargs
+
+
+def test_responses_wire_api_maps_the_strict_output_schema():
+    client = _FakeResponsesClient(output_text='{"findings": []}')
+    schema = ResponseSchema(
+        name="review_reply",
+        schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"findings": {"type": "array", "items": {"type": "string"}}},
+            "required": ["findings"],
+        },
+    )
+
+    OpenAIProvider(client=client, wire_api="responses").complete(
+        system="review",
+        messages=[Message(role="user", content="source")],
+        model="gpt-5.6",
+        max_tokens=1024,
+        response_schema=schema,
+    )
+
+    assert client.kwargs["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "review_reply",
+            "strict": True,
+            "schema": schema.schema,
+        }
+    }
+
+
+def test_responses_wire_api_preserves_message_role_boundaries():
+    client = _FakeResponsesClient(output_text="ok")
+    OpenAIProvider(client=client, wire_api="responses").complete(
+        system="be skeptical",
+        messages=[Message(role="user", content="first"), Message(role="assistant", content="second")],
+        model="gpt-5.6",
+        max_tokens=1024,
+    )
+    assert client.kwargs["input"] == [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "second"},
+    ]
+
+
+def test_responses_empty_output_comes_back_as_an_empty_string_not_an_error():
+    result = OpenAIProvider(client=_FakeResponsesClient(output_text=""), wire_api="responses").complete(
+        system="s",
+        messages=[Message(role="user", content="c")],
+        model="gpt-5.6",
+        max_tokens=1024,
+    )
+    assert result.text == ""
+
+
+def test_an_incomplete_response_raises_instead_of_returning_partial_output():
+    provider = OpenAIProvider(client=_FakeResponsesClient(output_text='{"findings": [', status="incomplete"))
+
+    with pytest.raises(RuntimeError, match="response did not complete: incomplete"):
+        provider.complete(system="s", messages=[Message(role="user", content="c")], model="gpt-5.6", max_tokens=1024)

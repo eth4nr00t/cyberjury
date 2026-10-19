@@ -10,12 +10,12 @@ Workflow:
   python -m evals packets runs --out adjudication --groups 3
   adjudicators get only adjudication/, follow INSTRUCTIONS.md there, and write result-N.json
   python -m evals ledger adjudication
+  python -m evals report runs --calls reviews
 
 `packets` writes the private label mapping to adjudication.private/mapping.json, outside the
 directory adjudicators read, unless --mapping names another path outside it. `ledger` reads the
 same default or --mapping. Report precision is supported / (supported + not_actionable); duplicate
 and needs_review reports are counted separately.
-  python -m evals report runs --calls reviews
 """
 
 from __future__ import annotations
@@ -51,9 +51,8 @@ def _progress(line: str) -> None:
 
 
 def _cmd_diff(args) -> int:
-    from evals.adjudication import attempt_path
-    from evals.review.diff import run
-    from evals.review.diff.execution import case_workspace
+    from evals.attempts import attempt_path
+    from evals.diff import case_workspace, run
 
     cases = [case for case in _cases(args).values() if case.kind == "diff"]
     if args.case:
@@ -95,7 +94,7 @@ def _cmd_diff(args) -> int:
 
 
 def _cmd_repository(args) -> int:
-    from evals.adjudication import attempt_path, recorded_attempt
+    from evals.attempts import attempt_path, recorded_attempt
     from evals.benchmarks.cases import find_case
 
     case = find_case(args.case, args.benchmark)
@@ -231,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
     pk = sub.add_parser(
         "packets", parents=[benchmark], help="build blind adjudication packets from runs", allow_abbrev=False
     )
-    pk.add_argument("runs", nargs="+", help="runs directories, for example both arms of a paired backtest")
+    pk.add_argument("runs", nargs="+", help="runs directories whose attempts are packaged into one round")
     pk.add_argument("--out", required=True, help="directory adjudicators receive: packets and rubric only")
     pk.add_argument(
         "--mapping", default=None, help="new private mapping path outside --out, default <out>.private/mapping.json"

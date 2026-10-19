@@ -1,13 +1,22 @@
-"""Typed provider seat configuration shared by command and evaluation adapters."""
+"""Typed provider seat configuration shared by the review command and its seats."""
 
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from cyberjury.providers.base import Provider
-from cyberjury.providers.factory import ROLES, default_model_for_provider, env_defaults, make_provider
+from cyberjury.providers.base import REQUEST_TIMEOUT_SECONDS, Provider
+from cyberjury.providers.factory import (
+    DEFAULT_RETRIES,
+    ROLES,
+    default_model_for_provider,
+    make_provider,
+    nonnegative_int,
+    positive_float,
+)
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
+from cyberjury.providers.openai import WIRE_APIS
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -33,6 +42,20 @@ class ProviderSeatOverride:
 
 
 @dataclass(frozen=True, kw_only=True)
+class EnvironmentDefaults:
+    """The base seat, client policy, and role overrides read from the CYBERJURY_* environment."""
+
+    provider: str
+    model: str | None
+    api_key: str | None
+    api_base: str | None
+    wire_api: str | None
+    retries: int
+    timeout: float
+    roles: dict[str, ProviderSeatOverride]
+
+
+@dataclass(frozen=True, kw_only=True)
 class ProviderConfiguration:
     """Resolved base, finder, and verification seats with shared client policy.
 
@@ -50,6 +73,57 @@ class ProviderConfiguration:
 
 class ProviderCredentialsError(ValueError):
     """A configured provider seat cannot authenticate a request."""
+
+
+def _env_number[T](name: str, parse: Callable[[str], T], default: T) -> T:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return parse(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} {exc}") from None
+
+
+def _default_provider() -> str:
+    """Prefer OpenAI when a key is reachable, otherwise fall back to Anthropic API defaults."""
+    if os.environ.get("CYBERJURY_API_KEY") or os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    return "anthropic"
+
+
+def _env_wire_api(name: str) -> str | None:
+    value = os.environ.get(name)
+    if not value:
+        return None
+    if value not in WIRE_APIS:
+        raise ValueError(f"{name} must be one of {', '.join(WIRE_APIS)}, got {value!r}")
+    return value
+
+
+def _env_role(role: str) -> ProviderSeatOverride:
+    prefix = f"CYBERJURY_{role.upper()}"
+    return ProviderSeatOverride(
+        provider=os.environ.get(f"{prefix}_PROVIDER"),
+        model=os.environ.get(f"{prefix}_MODEL"),
+        api_key=os.environ.get(f"{prefix}_API_KEY"),
+        api_base=os.environ.get(f"{prefix}_API_BASE"),
+        wire_api=_env_wire_api(f"{prefix}_WIRE_API"),
+    )
+
+
+def env_defaults() -> EnvironmentDefaults:
+    """Read the environment defaults on call rather than at import, so a loaded .env applies."""
+    return EnvironmentDefaults(
+        provider=os.environ.get("CYBERJURY_PROVIDER") or _default_provider(),
+        model=os.environ.get("CYBERJURY_MODEL"),
+        api_key=os.environ.get("CYBERJURY_API_KEY"),
+        api_base=os.environ.get("CYBERJURY_API_BASE"),
+        wire_api=_env_wire_api("CYBERJURY_WIRE_API"),
+        retries=_env_number("CYBERJURY_RETRIES", nonnegative_int, DEFAULT_RETRIES),
+        timeout=_env_number("CYBERJURY_TIMEOUT", positive_float, REQUEST_TIMEOUT_SECONDS),
+        roles={role: _env_role(role) for role in ROLES},
+    )
 
 
 def resolve_provider_seat(base: ProviderSeat, override: ProviderSeatOverride) -> ProviderSeat:
@@ -78,24 +152,22 @@ def provider_configuration_from_env(
     Keys, endpoints, and role overrides come only from the environment.
     """
     defaults = env_defaults()
-    base_provider = provider or defaults["provider"]
+    base_provider = provider or defaults.provider
     base = ProviderSeat(
         provider=base_provider,
-        model=model or defaults["model"] or default_model_for_provider(base_provider),
-        api_key=defaults["api_key"],
-        api_base=defaults["api_base"],
-        wire_api=wire_api or defaults["wire_api"],
+        model=model or defaults.model or default_model_for_provider(base_provider),
+        api_key=defaults.api_key,
+        api_base=defaults.api_base,
+        wire_api=wire_api or defaults.wire_api,
     )
-    roles = {
-        role: resolve_provider_seat(base, ProviderSeatOverride(**defaults["role_backends"][role])) for role in ROLES
-    }
+    roles = {role: resolve_provider_seat(base, defaults.roles[role]) for role in ROLES}
     return ProviderConfiguration(
         base=base,
         finder=roles["finder"],
         skeptic=roles["skeptic"],
         confirmer=roles["confirmer"],
-        retries=defaults["retries"] if retries is None else retries,
-        timeout=timeout or defaults["timeout"],
+        retries=defaults.retries if retries is None else retries,
+        timeout=timeout or defaults.timeout,
     )
 
 

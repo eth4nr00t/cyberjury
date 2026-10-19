@@ -5,12 +5,11 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
-from pathlib import PurePosixPath
 from typing import Literal
 
-from cyberjury.canonical import canonical_sha256
-from cyberjury.finding import Finding
+from cyberjury.canonical import canonical_sha256, normalized_repository_path
 from cyberjury.review.engine import ReviewOutcome
+from cyberjury.review.finding import Finding
 from cyberjury.review.issues import Issue, issue_id
 from cyberjury.severity import SEVERITIES, index
 
@@ -39,15 +38,6 @@ def _digest(value: object, label: str) -> str:
     )
     if invalid:
         raise ValueError(f"{label} must be a SHA-256 digest")
-    return value
-
-
-def _source_path(value: object) -> str:
-    if not isinstance(value, str) or not value or "\\" in value:
-        raise ValueError("finding file must be a nonempty POSIX path")
-    path = PurePosixPath(value)
-    if path.is_absolute() or path.as_posix() != value or ".." in path.parts or "." in path.parts:
-        raise ValueError("finding file must be a safe relative POSIX path")
     return value
 
 
@@ -83,7 +73,7 @@ class SkippedFile:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ChangeLocation:
+class ChangeAnchorRecord:
     """One exact changed line that caused or exposed a diff finding."""
 
     file: str
@@ -92,7 +82,7 @@ class ChangeLocation:
 
     def __post_init__(self) -> None:
         """Reject locations that cannot name one immutable source line."""
-        _source_path(self.file)
+        normalized_repository_path(self.file, "finding file")
         if isinstance(self.line, bool) or not isinstance(self.line, int) or self.line < 1:
             raise ValueError("finding change line must be positive")
         if self.side not in {"old", "new"}:
@@ -103,10 +93,10 @@ class ChangeLocation:
         return {"file": self.file, "line": self.line, "side": self.side}
 
     @classmethod
-    def from_dict(cls, value: object) -> ChangeLocation:
-        """Parse one strict change location."""
+    def from_dict(cls, value: object) -> ChangeAnchorRecord:
+        """Parse one strict change anchor."""
         if not isinstance(value, dict) or set(value) != {"file", "line", "side"}:
-            raise ValueError("finding change location has an invalid shape")
+            raise ValueError("finding change anchor has an invalid shape")
         return cls(file=value["file"], line=value["line"], side=value["side"])
 
 
@@ -127,7 +117,7 @@ class FindingRecord:
     evidence_refs: tuple[str, ...]
     supporting_reviewers: tuple[str, ...]
     issue_id: str
-    change_anchor: ChangeLocation | None = None
+    change_anchor: ChangeAnchorRecord | None = None
 
     def __post_init__(self) -> None:
         """Reject findings that cannot be reported or identified."""
@@ -142,10 +132,10 @@ class FindingRecord:
             raise ValueError("finding title and category must be nonempty")
         if self.severity not in SEVERITIES:
             raise ValueError("finding severity is invalid")
-        _source_path(self.file)
+        normalized_repository_path(self.file, "finding file")
         if isinstance(self.line, bool) or not isinstance(self.line, int) or self.line < 1:
             raise ValueError("finding line must be positive")
-        if self.change_anchor is not None and not isinstance(self.change_anchor, ChangeLocation):
+        if self.change_anchor is not None and not isinstance(self.change_anchor, ChangeAnchorRecord):
             raise ValueError("finding change anchor is invalid")
         if self.status not in {"candidate", "confirmed"}:
             raise ValueError("finding status is invalid")
@@ -209,7 +199,7 @@ class FindingRecord:
                 for key, item in value.items()
                 if key != "change_anchor"
             },
-            change_anchor=ChangeLocation.from_dict(anchor) if anchor is not None else None,
+            change_anchor=ChangeAnchorRecord.from_dict(anchor) if anchor is not None else None,
         )
 
 
@@ -272,6 +262,18 @@ def _finding_order(item: FindingRecord) -> tuple[int, str, int, str]:
     return (index(item.severity), item.file, item.line, item.id)
 
 
+def _findings_semantic(
+    findings: tuple[FindingRecord, ...],
+    issues: tuple[IssueRecord, ...],
+    summary: tuple[tuple[str, int], ...],
+) -> dict[str, object]:
+    return {
+        "findings": [item.to_dict() for item in findings],
+        "issues": [item.to_dict() for item in issues],
+        "summary": dict(summary),
+    }
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class FindingsArtifact:
     """The ordered logical finding set and its issues, shared by Diff and Repository Review."""
@@ -325,25 +327,16 @@ class FindingsArtifact:
         position = {item.id: number for number, item in enumerate(ordered)}
         ordered_issues = tuple(sorted(issues, key=lambda issue: position.get(issue.representative, -1)))
         summary = tuple((severity, sum(item.severity == severity for item in ordered)) for severity in SEVERITIES)
-        semantic = {
-            "findings": [item.to_dict() for item in ordered],
-            "issues": [item.to_dict() for item in ordered_issues],
-            "summary": dict(summary),
-        }
         return cls(
             findings=ordered,
             issues=ordered_issues,
             summary=summary,
-            content_sha256=canonical_sha256(semantic),
+            content_sha256=canonical_sha256(_findings_semantic(ordered, ordered_issues, summary)),
         )
 
     def semantic_dict(self) -> dict[str, object]:
         """Return the content covered by the artifact hash."""
-        return {
-            "findings": [item.to_dict() for item in self.findings],
-            "issues": [item.to_dict() for item in self.issues],
-            "summary": dict(self.summary),
-        }
+        return _findings_semantic(self.findings, self.issues, self.summary)
 
     def to_dict(self) -> dict[str, object]:
         """Return the strict JSON representation."""
@@ -396,7 +389,7 @@ def findings_artifact(
                 supporting_reviewers=tuple(sorted(set(finding.found_by))),
                 issue_id=issue_of[finding.candidate_id],
                 change_anchor=(
-                    ChangeLocation(
+                    ChangeAnchorRecord(
                         file=finding.change_anchor.file,
                         line=finding.change_anchor.line,
                         side=finding.change_anchor.side,

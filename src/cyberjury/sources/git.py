@@ -12,7 +12,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury.sources.snapshot import (
+from cyberjury.sources.paths import (
     SourceSnapshotError,
     portable_paths,
     require_contained_symlinks,

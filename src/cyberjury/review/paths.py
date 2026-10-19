@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from cyberjury.review.failures import BackendUnavailable
+
 
 def safe_repository_path(root: str | Path, rel: str) -> Path | None:
     """Resolve a relative path only when it remains inside the repository root."""
@@ -15,6 +17,23 @@ def safe_repository_path(root: str | Path, rel: str) -> Path | None:
     except OSError:
         return None
     return resolved if resolved.is_relative_to(base) else None
+
+
+def read_repository_source(root: str | Path, rel: str, *, label: str) -> str | None:
+    """Read one UTF-8 repository file, or None when it is absent.
+
+    A path that escapes the root or a file that cannot be read raises `BackendUnavailable`, so a
+    review never mistakes an unreadable source for an empty one.
+    """
+    path = safe_repository_path(root, rel)
+    if path is None:
+        raise BackendUnavailable(f"{label} source path escapes the repository: {rel}")
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise BackendUnavailable(f"{label} could not read source {rel}: {exc}") from exc
 
 
 def contained_repository_path(root: str | Path, rel: str) -> Path:

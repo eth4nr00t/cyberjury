@@ -1,22 +1,10 @@
 """RetryProvider: wrap any Provider, retrying `complete` on transient failure.
 
-Real model calls fail intermittently, on timeouts, blank bodies, or rate limits. This
-decorator retries and re-raises the last error once attempts are exhausted. A rate limit
-is handled specially: it honors the server's Retry-After when present, else backs off
-exponentially with full jitter, since a large fan-out hammers the provider and a flat
-linear retry just collides again at the same moment. Any error that supplies a recovery
-delay receives the same respect. Other errors keep the simple linear backoff. A 200
-response with a blank body is a transient failure and is retried too, since an empty
-reply is unusable and must not pass downstream as a clean no findings result. A
-structured response with incomplete JSON is also retried. The last response still
-passes to the strict downstream schema validator, so retry does not convert malformed
-output into a successful review. A hard deadline bounds each call from outside the SDK: an SDK request
-timeout does not fire when a proxy holds the connection open and trickles bytes, so a
-single stalled call can hang a fan-out for hours. The call runs in a daemon thread
-the provider waits on for ``hard_timeout`` seconds, then abandons as a TimeoutError the
-retry path treats like any other failure. ``None`` leaves the inner call unbounded. The
-abandoned thread is a daemon, so a hung call never blocks process exit. ``sleep`` and
-``rand`` are injectable so tests stay deterministic and do not actually wait.
+Timeouts, rate limits, blank bodies, and incomplete structured JSON are retried; the last
+error is re-raised once attempts are exhausted. The last non-blank response still reaches the
+strict downstream schema validator, so retry never turns malformed output into a clean review.
+An optional hard deadline bounds each call from outside the SDK. ``sleep`` and ``rand`` are
+injectable so tests stay deterministic.
 """
 
 from __future__ import annotations
@@ -73,10 +61,9 @@ def _call_with_deadline(fn: Callable[[], CompletionResult], timeout: float) -> C
 
 
 def _is_rate_limit(exc: BaseException) -> bool:
-    """Whether the error is a provider rate limit.
+    """Return whether the error is a rate limit, matched on the SDK status code or message.
 
-    matched on the SDK status code or the message rather than a provider name, so a new
-    backend needs no code change.
+    Matching does not depend on a provider name, so a new backend needs no change.
     """
     if getattr(exc, "status_code", None) == 429:
         return True
@@ -87,9 +74,9 @@ def _is_rate_limit(exc: BaseException) -> bool:
 
 
 def _retry_after(exc: BaseException) -> float | None:
-    """The server's Retry-After in seconds when the exception carries one, the wait it asks for.
+    """Return the server's requested wait in seconds, or None when the error carries none.
 
-    else None. Read from an SDK error's response headers or a retry_after attribute.
+    The wait is read from the Retry-After response header, a retry_after attribute, or the error body.
     """
     resp = getattr(exc, "response", None)
     headers = getattr(resp, "headers", None)

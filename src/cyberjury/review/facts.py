@@ -6,11 +6,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from cyberjury.canonical import canonical_sha256
-from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 
 __all__ = [
-    "BackendUnavailable",
     "FactLimitation",
     "Facts",
     "FactsReceipt",

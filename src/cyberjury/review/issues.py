@@ -16,14 +16,14 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from cyberjury.canonical import canonical_sha256
-from cyberjury.finding import Finding
 from cyberjury.numbering import numbered_source, split_lines
 from cyberjury.providers.base import Message, Provider, ResponseSchema
 from cyberjury.providers.metering import model_call_context
 from cyberjury.review.checkpoint import CheckpointStore
 from cyberjury.review.engine import parse_role_response
+from cyberjury.review.finding import Finding
 from cyberjury.review.paths import normalized_location_path, resolve_source_path
-from cyberjury.review.prompts import UNTRUSTED_SOURCE_RULE, fenced_source, one_line_source
+from cyberjury.review.prompts import CLAIM_FIELDS, UNTRUSTED_SOURCE_RULE, fenced_source, finding_claim
 from cyberjury.review.schemas import closed_object
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -150,7 +150,6 @@ _SYSTEM = (
     "- `same_fix`: true only when one code change fixes both findings.\n"
     "- `reason`: the one change that fixes both findings, or why each finding needs its own change."
 )
-_FINDING_FIELDS = ("title", "category", "entrypoint", "location", "claimed evidence", "claimed attack path")
 _PROMPT_TEMPLATE = (
     "{first}\n\n{second}\n\nCode at finding A's location:\n{first_code}\n\nCode at finding B's location:\n{second_code}"
 )
@@ -162,22 +161,6 @@ _RESPONSE_SCHEMA = ResponseSchema(
 
 class IssueLinkError(RuntimeError):
     """An issue link judgment produced no usable decision."""
-
-
-def _finding_block(label: str, finding: Finding) -> str:
-    """Render one finding's structured fields as single line untrusted values, omitting empty fields."""
-    values = (
-        finding.title,
-        finding.category,
-        finding.entrypoint,
-        f"{finding.file}:{finding.line}",
-        finding.evidence,
-        finding.attack_path,
-    )
-    lines = [
-        f"- {name}: {one_line_source(value)}" for name, value in zip(_FINDING_FIELDS, values, strict=True) if value
-    ]
-    return "\n".join((f"Finding {label}:", *lines))
 
 
 def _source_window(root: str, finding: Finding) -> str:
@@ -200,8 +183,8 @@ def _source_window(root: str, finding: Finding) -> str:
 def link_prompt(first: Finding, second: Finding, root: str) -> str:
     """Build the stable same-fix question for one candidate pair in candidate id order."""
     return _PROMPT_TEMPLATE.format(
-        first=_finding_block("A", first),
-        second=_finding_block("B", second),
+        first=finding_claim("Finding A:", first),
+        second=finding_claim("Finding B:", second),
         first_code=_source_window(root, first),
         second_code=_source_window(root, second),
     )
@@ -265,7 +248,7 @@ class ModelIssueJudge:
                 "model": self._model,
                 "max_tokens": self._max_tokens,
                 "system": _SYSTEM,
-                "finding_fields": list(_FINDING_FIELDS),
+                "finding_fields": list(CLAIM_FIELDS),
                 "prompt_template": _PROMPT_TEMPLATE,
                 "response_schema": _RESPONSE_SCHEMA.schema,
             }

@@ -18,18 +18,11 @@ import string
 from collections.abc import Sequence
 from pathlib import Path
 
-from evals.adjudication import (
-    LEDGER_SCHEMA,
-    Attempt,
-    adjudicate,
-    collect_attempts,
-    find_attempts,
-    load_attempt,
-    read_json,
-)
-from evals.benchmarks.cases import BenchmarkCase, checks_sha256, expected_checks, target_repository
+from evals.adjudication import LEDGER_SCHEMA, adjudicate
+from evals.attempts import Attempt, collect_attempts, find_attempts, load_attempt, read_json, unique_attempts
+from evals.benchmarks.cases import BenchmarkCase, checks_sha256, expected_checks
+from evals.benchmarks.targets import source_root, target_repository
 from evals.benchmarks.validate import validate_document
-from evals.review.source import source_root
 
 RUBRIC = Path(__file__).resolve().parent / "adjudication-rubric-v1.md"
 _PROVENANCE = frozenset({"candidate_id", "id", "supporting_reviewers", "evidence_refs", "status", "issue_id"})
@@ -53,18 +46,16 @@ def default_mapping_path(out: Path) -> Path:
 
 def _reference_attempts(references: Sequence[Path]) -> list[Attempt]:
     """Load reference attempts from runs directories or from the private mapping of an earlier round."""
-    unique: dict[Path, Attempt] = {}
+    attempts: list[Attempt] = []
     for reference in references:
-        if reference.is_file():
-            mapping = read_json(reference)
-            if not isinstance(mapping, dict) or not isinstance(mapping.get("attempts"), dict):
-                raise ValueError(f"reference {reference} is neither a runs directory nor a packets mapping")
-            attempts = [load_attempt(path) for path in mapping["attempts"]]
-        else:
-            attempts = find_attempts(reference)
-        for attempt in attempts:
-            unique.setdefault(attempt.path.resolve(), attempt)
-    return list(unique.values())
+        if not reference.is_file():
+            attempts.extend(find_attempts(reference))
+            continue
+        mapping = read_json(reference)
+        if not isinstance(mapping, dict) or not isinstance(mapping.get("attempts"), dict):
+            raise ValueError(f"reference {reference} is neither a runs directory nor a packets mapping")
+        attempts.extend(load_attempt(path) for path in mapping["attempts"])
+    return unique_attempts(attempts)
 
 
 def _references(case: BenchmarkCase, attempts: Sequence[Attempt]) -> list[dict]:
