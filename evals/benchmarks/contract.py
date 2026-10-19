@@ -1,4 +1,4 @@
-"""Versioned answer key contract."""
+"""Versioned benchmark check contract."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Literal
 
 
 @dataclass(frozen=True, kw_only=True)
-class ExpectedLocation:
+class Location:
     """One source location hint for a benchmark check."""
 
     file: str
@@ -17,7 +17,7 @@ class ExpectedLocation:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ExpectedChange:
+class ChangeAnchor:
     """One exact changed line that establishes a diff check identity."""
 
     file: str
@@ -26,29 +26,45 @@ class ExpectedChange:
 
 
 @dataclass(frozen=True, kw_only=True)
-class KeyCheck:
-    """One expected finding from an answer key."""
+class Check:
+    """One expected finding of a benchmark case."""
 
     id: str
-    applies_to: tuple[str, ...] = ()
-    locations: tuple[ExpectedLocation, ...] = ()
-    changes: tuple[ExpectedChange, ...] = ()
+    root_cause: str
+    locations: tuple[Location, ...] = ()
+    change_anchors: tuple[ChangeAnchor, ...] = ()
+
+    def to_dict(self) -> dict:
+        """Return the check in its benchmark.yaml form, without unset location fields or absent anchors."""
+        data: dict = {
+            "id": self.id,
+            "root_cause": self.root_cause,
+            "locations": [
+                {"file": item.file} | ({"line": item.line} if item.line is not None else {"symbol": item.symbol})
+                for item in self.locations
+            ],
+        }
+        if self.change_anchors:
+            data["change_anchors"] = [
+                {"file": item.file, "line": item.line, "side": item.side} for item in self.change_anchors
+            ]
+        return data
 
 
-def key_checks(answer_key: Mapping[str, Sequence[Mapping]]) -> tuple[KeyCheck, ...]:
-    """Construct checks from an answer key document that its JSON Schema already accepted."""
+def case_checks(rows: Sequence[Mapping]) -> tuple[Check, ...]:
+    """Construct the checks of one case that its JSON Schema already accepted."""
     return tuple(
-        KeyCheck(
+        Check(
             id=row["id"],
-            applies_to=tuple(row["applies_to"]),
+            root_cause=row["root_cause"],
             locations=tuple(
-                ExpectedLocation(file=item["file"], line=item.get("line"), symbol=item.get("symbol", ""))
+                Location(file=item["file"], line=item.get("line"), symbol=item.get("symbol", ""))
                 for item in row["locations"]
             ),
-            changes=tuple(
-                ExpectedChange(file=item["file"], line=item["line"], side=item["side"])
-                for item in row.get("changes", ())
+            change_anchors=tuple(
+                ChangeAnchor(file=item["file"], line=item["line"], side=item["side"])
+                for item in row.get("change_anchors", ())
             ),
         )
-        for row in answer_key["checks"]
+        for row in rows
     )

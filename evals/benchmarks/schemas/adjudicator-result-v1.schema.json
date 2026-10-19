@@ -14,7 +14,7 @@
       "properties": {
         "case": {"type": "string", "minLength": 1},
         "records": {"type": "array", "items": {"$ref": "#/$defs/record"}},
-        "key_notes": {"type": "object", "additionalProperties": {"type": "string"}}
+        "check_notes": {"type": "object", "additionalProperties": {"type": "string"}}
       }
     },
     "record": {

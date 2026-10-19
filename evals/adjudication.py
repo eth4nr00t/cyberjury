@@ -1,8 +1,8 @@
 """Bind source assessment ledgers to recorded review attempts.
 
-An attempt is one review of one benchmark case, recorded as `<project>/<task>/attempt-NN.json`
+An attempt is one review of one benchmark case, recorded as `<project>/<case>/attempt-NN.json`
 under a runs directory. Its ledger, `ledger-NN.json` beside it, assesses every report exactly once
-at the case's pinned source commit and is bound to the attempt bytes, the current answer key, the
+at the case's pinned source commit and is bound to the attempt bytes, the current case checks, the
 adjudication round that produced it, and the rubric that round used. The attempt's issues are
 measured against the supported and duplicate verdicts: an issue that holds reports of two root
 causes is mixed, and a root cause spread over several issues leaves duplicate issues. An attempt
@@ -24,7 +24,7 @@ from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
 from cyberjury.sources.snapshot import capture_source_snapshot
 from evals.benchmarks.cases import BenchmarkCase, checks_sha256
 from evals.benchmarks.validate import validate_document
-from evals.review.source import review_scope, source_root
+from evals.review.source import source_root
 
 LEDGER_SCHEMA = "cyberjury.eval-ledger/v1"
 VERDICTS = ("duplicate", "needs_review", "not_actionable", "supported")
@@ -69,8 +69,8 @@ class Adjudication:
 
 def attempt_path(directory: Path, case: str, number: int) -> Path:
     """Return the attempt record path of one case and run under a runs directory."""
-    project, task = case.split(":", 1)
-    return directory / project / task / f"attempt-{number:02d}.json"
+    project, case_id = case.split(":", 1)
+    return directory / project / case_id / f"attempt-{number:02d}.json"
 
 
 def read_json(path: str | Path) -> object:
@@ -150,7 +150,7 @@ def recorded_attempt(case: BenchmarkCase, directory: Path, number: int, *, error
     """Record the product output of one review attempt directory as an adjudicable attempt.
 
     Diff and Repository Review attempts are recorded the same way, from `findings.json` and
-    `outcome.json`. The review must have read exactly the task source, so its findings can be
+    `outcome.json`. The review must have read exactly the case source, so its findings can be
     judged against that revision. An attempt without a result is recorded as incomplete with
     `error`, the failure the review reported.
     """
@@ -168,7 +168,7 @@ def recorded_attempt(case: BenchmarkCase, directory: Path, number: int, *, error
     outcome = OutcomeArtifact.from_dict(read_json(directory / "outcome.json"))
     if outcome.target != case.kind or outcome.findings_sha256 != artifact.content_sha256:
         raise ValueError(f"{directory} outcome does not identify its {case.kind} findings")
-    _require_task_source(case, directory, outcome.source_revision)
+    _require_case_source(case, directory, outcome.source_revision)
     return {
         "case": case.name,
         "attempt": number,
@@ -179,7 +179,7 @@ def recorded_attempt(case: BenchmarkCase, directory: Path, number: int, *, error
     }
 
 
-def _require_task_source(case: BenchmarkCase, directory: Path, source_revision: str) -> None:
+def _require_case_source(case: BenchmarkCase, directory: Path, source_revision: str) -> None:
     session = directory.resolve().parent.parent
     if directory.resolve().parent.name != "attempts":
         raise ValueError(f"{directory} is not a review attempt directory inside its review session")
@@ -190,15 +190,15 @@ def _require_task_source(case: BenchmarkCase, directory: Path, source_revision: 
         raise ValueError(f"{session} snapshot.json does not identify the reviewed source of {directory}")
     if case.kind == "diff":
         git = target.get("git") if isinstance(target.get("git"), dict) else {}
-        if (git.get("patch_base_revision"), git.get("right_revision")) != (case.target["base"], case.target["ref"]):
+        if (git.get("patch_base_revision"), git.get("right_revision")) != (case.target["base"], case.target["commit"]):
             raise ValueError(
-                f"{directory} did not review the change of {case.name}: the task is {case.target['base']}.."
-                f"{case.target['ref']}, but the review compared {git.get('patch_base_revision')}.."
+                f"{directory} did not review the change of {case.name}: the case is {case.target['base']}.."
+                f"{case.target['commit']}, but the review compared {git.get('patch_base_revision')}.."
                 f"{git.get('right_revision')}"
             )
         return
     with source_root(case.target) as root:
-        expected = capture_source_snapshot(review_scope(root, case.target))
+        expected = capture_source_snapshot(root)
     if expected.snapshot_id == source_revision:
         return
     wanted = {entry.path: entry.to_dict() for entry in expected.entries}
@@ -207,8 +207,8 @@ def _require_task_source(case: BenchmarkCase, directory: Path, source_revision: 
     missing, extra = sorted(wanted.keys() - reviewed.keys()), sorted(reviewed.keys() - wanted.keys())
     examples = ", ".join([*changed[:2], *missing[:2], *extra[:2]])
     raise ValueError(
-        f"{directory} did not review the source of {case.name}: the task is commit {case.target['ref']} "
-        f"scope {case.target['path']!r}, but the review read {_describe_root(str(target.get('repository_root')))}. "
+        f"{directory} did not review the source of {case.name}: the case is commit {case.target['commit']}, "
+        f"but the review read {_describe_root(str(target.get('repository_root')))}. "
         f"Its source differs in {len(changed)} changed, {len(missing)} missing, and {len(extra)} extra files"
         + (f", for example {examples}" if examples else "")
     )
@@ -229,16 +229,16 @@ def _describe_root(root: str) -> str:
         head = git("rev-parse", "HEAD")
     except (OSError, subprocess.CalledProcessError):
         return f"{root}, a plain directory outside any git checkout"
-    scope = path.resolve().relative_to(top).as_posix() if path.resolve().is_relative_to(top) else str(path)
+    relative = path.resolve().relative_to(top).as_posix() if path.resolve().is_relative_to(top) else str(path)
     dirty = bool(git("status", "--porcelain", "--untracked-files=all", "--", "."))
     state = " with uncommitted or untracked changes" if dirty else ""
-    return f"{root}, a git checkout of commit {head} scope {scope!r}{state}"
+    return f"{root}, a git checkout of commit {head} path {relative!r}{state}"
 
 
 def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Path | None) -> Adjudication:
     """Validate one ledger against its attempt and case, and count reviewed credit and verdicts.
 
-    `source` is the review scope inside a checkout at the pinned commit. When given, every
+    `source` is the root of a checkout at the pinned commit. When given, every
     evidence location must name an existing line there.
     """
     validate_document(ledger, "ledger-v1.schema.json", attempt.ledger_path)
@@ -246,14 +246,14 @@ def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Pa
         ledger["case"] != case.name
         or attempt.case != case.name
         or ledger["attempt"] != attempt.number
-        or ledger["source_commit"] != case.target["ref"]
+        or ledger["source_commit"] != case.target["commit"]
         or ledger["attempt_sha256"] != attempt.sha256
     ):
         raise ValueError(f"{attempt.ledger_path} does not identify this attempt and pinned source")
     if not attempt.complete:
         raise ValueError(f"{attempt.path} is not a complete review")
     if ledger["checks_sha256"] != checks_sha256(case):
-        raise ValueError(f"{attempt.ledger_path} was adjudicated against another answer key; adjudicate it again")
+        raise ValueError(f"{attempt.ledger_path} was adjudicated against other case checks; adjudicate it again")
     records = {record["candidate_id"]: record for record in ledger["records"]}
     if len(records) != len(ledger["records"]) or set(records) != set(attempt.findings):
         raise ValueError(f"{attempt.ledger_path} must assess every report of the attempt exactly once")

@@ -1,19 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/eth4nr00t/cyberjury/main/evals/benchmarks/schemas/benchmark-v1.schema.json",
-  "title": "Benchmark Manifest Schema",
-  "description": "The version 1 schema for benchmark manifests.",
+  "title": "Benchmark Schema",
+  "description": "The version 1 schema for one benchmark project: the pinned repository and its review cases, each with the checks a review must find. Every review covers the whole repository.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "benchmark_id", "source", "tasks"],
+  "required": ["id", "repository", "cases"],
   "properties": {
-    "schema_version": {"const": 1},
-    "benchmark_id": {"$ref": "#/$defs/slug"},
-    "source": {"$ref": "#/$defs/source"},
-    "tasks": {
+    "id": {"$ref": "#/$defs/slug"},
+    "repository": {"$ref": "#/$defs/repository"},
+    "cases": {
       "type": "array",
       "minItems": 1,
-      "items": {"$ref": "#/$defs/task"}
+      "items": {"$ref": "#/$defs/case"}
     }
   },
   "$defs": {
@@ -25,84 +24,126 @@
     },
     "gitCommit": {
       "type": "string",
-      "pattern": "^[0-9a-fA-F]{40}$"
+      "pattern": "^[0-9a-f]{40}$"
     },
-    "path": {
+    "repositoryPath": {
+      "description": "A repository-root-relative POSIX path such as src/documents/views.py, without a leading ./ or / and without backslashes or .. segments.",
       "type": "string",
-      "minLength": 1
+      "pattern": "^(?!\\./)(?!/)[^\\\\]+$"
     },
-    "gitIdentity": {
+    "repository": {
+      "description": "The reviewed git repository, named by exactly one of url and local_path, and the commit the repository case reviews.",
       "type": "object",
       "additionalProperties": false,
       "required": ["commit"],
       "properties": {
         "url": {"type": "string", "pattern": "^https://", "format": "uri", "minLength": 1},
-        "repository_path": {"type": "string", "minLength": 1},
+        "local_path": {"type": "string", "pattern": "^/", "minLength": 1},
         "commit": {"$ref": "#/$defs/gitCommit"}
       },
       "oneOf": [
-        {"required": ["url"], "not": {"required": ["repository_path"]}},
-        {"required": ["repository_path"], "not": {"required": ["url"]}}
+        {"required": ["url"], "not": {"required": ["local_path"]}},
+        {"required": ["local_path"], "not": {"required": ["url"]}}
       ]
     },
-    "gitSource": {
+    "location": {
+      "description": "A source location hint: a file with either a line or a symbol. A symbol is a qualified name without parentheses, signature, or line number: Class.method, Class, or function.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "identity", "path"],
+      "required": ["file"],
       "properties": {
-        "kind": {"const": "git"},
-        "identity": {"$ref": "#/$defs/gitIdentity"},
-        "path": {"$ref": "#/$defs/path"}
+        "file": {"$ref": "#/$defs/repositoryPath"},
+        "line": {"type": "integer", "minimum": 1},
+        "symbol": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*$"}
+      },
+      "oneOf": [
+        {"required": ["line"], "not": {"required": ["symbol"]}},
+        {"required": ["symbol"], "not": {"required": ["line"]}}
+      ]
+    },
+    "changeAnchor": {
+      "description": "One changed line of the reviewed diff that establishes the check identity, on the new or old side.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "line", "side"],
+      "properties": {
+        "file": {"$ref": "#/$defs/repositoryPath"},
+        "line": {"type": "integer", "minimum": 1},
+        "side": {"enum": ["new", "old"]}
       }
     },
-    "source": {
-      "$ref": "#/$defs/gitSource"
+    "checkId": {
+      "description": "<subject>-<weakness> in kebab-case. subject names the feature or component that holds the defect, such as mail-test or storage-path-template. weakness is one of: missing-permission (model or object permission check missing), idor (object fetched by id without ownership or visibility scoping), missing-owner (created object has no owner and becomes visible to all), privilege-escalation, information-disclosure, path-traversal, stored-xss, ssrf, csrf, injection, denial-of-service, authentication-bypass, symlink-following. One vulnerability keeps one id across cases; distinct vulnerabilities of one case get distinct ids.",
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*-(?:missing-permission|idor|missing-owner|privilege-escalation|information-disclosure|path-traversal|stored-xss|ssrf|csrf|injection|denial-of-service|authentication-bypass|symlink-following)$",
+      "maxLength": 80
     },
-    "repositoryRevision": {
+    "rootCause": {
+      "description": "Exactly one present-tense sentence without a trailing period: the code element that holds the defect, then the missing or broken control, then what it fails to protect. Code positions use the repository-relative form src/documents/views.py:LINE. No attacker narrative or severity words.",
+      "type": "string",
+      "pattern": "^\\S(?:[^\\n\\r]*\\S)?$",
+      "not": {"anyOf": [{"pattern": "\\.$"}, {"pattern": "[\\n\\r]"}]}
+    },
+    "check": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["commit"],
+      "required": ["id", "root_cause", "locations"],
       "properties": {
-        "commit": {"$ref": "#/$defs/gitCommit"}
+        "id": {"$ref": "#/$defs/checkId"},
+        "root_cause": {"$ref": "#/$defs/rootCause"},
+        "locations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/location"}
+        },
+        "change_anchors": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/changeAnchor"}
+        }
       }
     },
-    "diffRevision": {
+    "repositoryCase": {
+      "description": "A review of the whole repository at repository.commit; its id is repository-<first 7 hex of repository.commit>.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["base_commit", "commit"],
-      "properties": {
-        "base_commit": {"$ref": "#/$defs/gitCommit"},
-        "commit": {"$ref": "#/$defs/gitCommit"}
-      }
-    },
-    "repositoryTask": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "kind"],
+      "required": ["id", "kind", "checks"],
       "properties": {
         "id": {"type": "string", "pattern": "^repository-[0-9a-f]{7}$"},
         "kind": {"const": "repository"},
-        "revision": {"$ref": "#/$defs/repositoryRevision"}
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"allOf": [{"$ref": "#/$defs/check"}, {"not": {"required": ["change_anchors"]}}]}
+        }
       }
     },
-    "diffTask": {
+    "diffCase": {
+      "description": "A review of the change base..commit; its id is diff-<first 7 hex of commit>, and every check carries change_anchors.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "revision"],
+      "required": ["id", "kind", "base", "commit", "checks"],
       "properties": {
-        "id": {
-          "type": "string",
-          "pattern": "^diff-[0-9a-f]{7}-[0-9]+$"
-        },
+        "id": {"type": "string", "pattern": "^diff-[0-9a-f]{7}$"},
         "kind": {"const": "diff"},
-        "revision": {"$ref": "#/$defs/diffRevision"}
+        "base": {"$ref": "#/$defs/gitCommit"},
+        "commit": {"$ref": "#/$defs/gitCommit"},
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"allOf": [{"$ref": "#/$defs/check"}, {"required": ["change_anchors"]}]}
+        }
       }
     },
-    "task": {
-      "oneOf": [
-        {"$ref": "#/$defs/repositoryTask"},
-        {"$ref": "#/$defs/diffTask"}
-      ]
+    "case": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {"kind": {"enum": ["repository", "diff"]}},
+      "if": {"properties": {"kind": {"const": "diff"}}},
+      "then": {"$ref": "#/$defs/diffCase"},
+      "else": {"$ref": "#/$defs/repositoryCase"}
     }
   }
 }

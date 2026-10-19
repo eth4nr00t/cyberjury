@@ -11,7 +11,7 @@ from tests.support import git
 
 @pytest.fixture
 def benchmark_project(tmp_path):
-    """A local git repository with one repository task and one findings diff task over it."""
+    """A local git repository with one repository case and one diff case over it."""
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init")
@@ -22,34 +22,29 @@ def benchmark_project(tmp_path):
     git(repo, "commit", "-m", "base")
     base = git(repo, "rev-parse", "HEAD")
     (repo / "views.py").write_text("def create():\n    return save(owner=None)\n", encoding="utf-8")
-    git(repo, "commit", "-am", "ref")
-    ref = git(repo, "rev-parse", "HEAD")
+    git(repo, "commit", "-am", "change")
+    commit = git(repo, "rev-parse", "HEAD")
     project = tmp_path / "demo"
     project.mkdir()
-    repository_task, diff_task = f"repository-{ref[:7]}", f"diff-{ref[:7]}-1"
+    repository_case, diff_case = f"repository-{commit[:7]}", f"diff-{commit[:7]}"
     (project / "benchmark.yaml").write_text(
-        "schema_version: 1\nbenchmark_id: demo\n"
-        f"source:\n  kind: git\n  identity:\n    repository_path: {repo}\n    commit: {ref}\n  path: .\n"
-        f"tasks:\n  - id: {repository_task}\n    kind: repository\n"
-        f"  - id: {diff_task}\n    kind: diff\n    revision:\n      base_commit: {base}\n      commit: {ref}\n",
-        encoding="utf-8",
-    )
-    (project / "answer-key.yaml").write_text(
-        "schema_version: 1\nbenchmark_id: demo\nchecks:\n"
-        f"  - id: object-authorization\n    applies_to: [{diff_task}]\n"
-        "    locations: [{file: views.py, symbol: create}]\n"
-        "    changes: [{file: views.py, line: 2, side: new}]\n"
-        f"  - id: object-authorization\n    applies_to: [{repository_task}]\n"
-        "    locations: [{file: views.py, line: 2}]\n",
+        f"id: demo\nrepository:\n  local_path: {repo}\n  commit: {commit}\n"
+        f"cases:\n  - id: {repository_case}\n    kind: repository\n    checks:\n"
+        "      - id: create-missing-owner\n        root_cause: create saves without an owner check\n"
+        "        locations: [{file: views.py, line: 2}]\n"
+        f"  - id: {diff_case}\n    kind: diff\n    base: {base}\n    commit: {commit}\n    checks:\n"
+        "      - id: create-missing-owner\n        root_cause: create saves without an owner check\n"
+        "        locations: [{file: views.py, symbol: create}]\n"
+        "        change_anchors: [{file: views.py, line: 2, side: new}]\n",
         encoding="utf-8",
     )
     return SimpleNamespace(
-        manifest=project / "benchmark.yaml",
+        benchmark=project / "benchmark.yaml",
         repo=repo,
         base=base,
-        ref=ref,
-        diff_case=f"demo:{diff_task}",
-        repository_case=f"demo:{repository_task}",
+        commit=commit,
+        diff_case=f"demo:{diff_case}",
+        repository_case=f"demo:{repository_case}",
     )
 
 
@@ -67,7 +62,7 @@ def write_attempt(benchmark_project):
         complete: bool = True,
         issues: tuple[tuple[str, ...], ...] | None = None,
     ) -> Path:
-        case = find_case(benchmark_project.diff_case, [benchmark_project.manifest])
+        case = find_case(benchmark_project.diff_case, [benchmark_project.benchmark])
         path = attempt_path(runs, case.name, number)
         path.parent.mkdir(parents=True, exist_ok=True)
         record = {
@@ -121,11 +116,11 @@ def write_ledger(benchmark_project):
             "schema": "cyberjury.eval-ledger/v1",
             "case": data["case"],
             "attempt": data["attempt"],
-            "source_commit": benchmark_project.ref,
+            "source_commit": benchmark_project.commit,
             "attempt_sha256": hashlib.sha256(attempt.read_bytes()).hexdigest(),
             "round_id": "round-" + "0" * 16,
             "rubric_sha256": "f" * 64,
-            "checks_sha256": checks_sha256(find_case(data["case"], [benchmark_project.manifest])),
+            "checks_sha256": checks_sha256(find_case(data["case"], [benchmark_project.benchmark])),
             "records": records,
         } | overrides
         path = attempt.with_name(f"ledger-{data['attempt']:02d}.json")

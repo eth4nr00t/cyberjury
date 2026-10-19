@@ -1,8 +1,8 @@
-"""Materialize benchmark tasks as review cases.
+"""Materialize the cases of benchmark definitions as review cases.
 
-A case is one task of a project manifest, named `<benchmark_id>:<task_id>`, with the answer key
-checks scoped to that task. Public projects live under `evals/projects/<project-id>`. This module is
-engine-free so listing and adjudication do not import the review runner.
+A case of a project's `benchmark.yaml` is named `<project id>:<case id>` and carries its nested
+checks. Public projects live under `evals/projects/<project-id>`. This module is engine-free so
+listing and adjudication do not import the review runner.
 """
 
 from __future__ import annotations
@@ -10,12 +10,12 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
-from evals.benchmarks.contract import KeyCheck, key_checks
-from evals.benchmarks.validate import manifest_path, validate_benchmark
+from evals.benchmarks.contract import Check, case_checks
+from evals.benchmarks.validate import benchmark_path, validate_benchmark
 
 PROJECTS_DIR = Path(__file__).resolve().parent.parent / "projects"
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -23,17 +23,17 @@ EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 @dataclass(frozen=True, kw_only=True)
 class BenchmarkCase:
-    """One benchmark task with its pinned git target and the answer key checks scoped to it."""
+    """One benchmark case with its pinned git target and its checks."""
 
     name: str
     kind: str
     target: dict[str, str]
-    checks: tuple[KeyCheck, ...]
+    checks: tuple[Check, ...]
 
 
 def expected_checks(case: BenchmarkCase) -> list[dict]:
-    """Return the JSON form of the case checks."""
-    return json.loads(json.dumps([asdict(check) for check in case.checks]))
+    """Return the case checks in their benchmark.yaml form."""
+    return [check.to_dict() for check in case.checks]
 
 
 def checks_sha256(case: BenchmarkCase) -> str:
@@ -41,49 +41,46 @@ def checks_sha256(case: BenchmarkCase) -> str:
     return sha256(json.dumps(expected_checks(case), sort_keys=True).encode()).hexdigest()
 
 
-def public_manifests() -> list[Path]:
-    """Return every public project manifest."""
+def public_benchmarks() -> list[Path]:
+    """Return every public project benchmark definition."""
     return sorted(PROJECTS_DIR.glob("*/benchmark.yaml"))
 
 
-def load_cases(manifests: Sequence[str | Path] | None = None) -> dict[str, BenchmarkCase]:
-    """Load every task of the given manifests, defaulting to the public projects."""
+def load_cases(benchmarks: Sequence[str | Path] | None = None) -> dict[str, BenchmarkCase]:
+    """Load every case of the given benchmark definitions, defaulting to the public projects."""
     cases: dict[str, BenchmarkCase] = {}
-    for path in manifests or public_manifests():
-        manifest, answer_key = validate_benchmark(manifest_path(path))
-        checks = key_checks(answer_key)
-        for task in manifest["tasks"]:
-            name = f"{manifest['benchmark_id']}:{task['id']}"
+    for path in benchmarks or public_benchmarks():
+        benchmark = validate_benchmark(benchmark_path(path))
+        for case in benchmark["cases"]:
+            name = f"{benchmark['id']}:{case['id']}"
             if name in cases:
-                raise ValueError(f"two manifests define benchmark case {name!r}")
+                raise ValueError(f"two benchmark definitions define case {name!r}")
             cases[name] = BenchmarkCase(
                 name=name,
-                kind=task["kind"],
-                target=target_for_task(manifest["source"], task),
-                checks=tuple(check for check in checks if task["id"] in check.applies_to),
+                kind=case["kind"],
+                target=case_target(benchmark["repository"], case),
+                checks=case_checks(case["checks"]),
             )
     return cases
 
 
-def find_case(name: str, manifests: Sequence[str | Path] | None = None) -> BenchmarkCase:
+def find_case(name: str, benchmarks: Sequence[str | Path] | None = None) -> BenchmarkCase:
     """Resolve one case and fail loud with the known names."""
-    cases = load_cases(manifests)
+    cases = load_cases(benchmarks)
     if name not in cases:
         raise ValueError(f"unknown benchmark case {name!r}. Known: {', '.join(cases) or 'none'}")
     return cases[name]
 
 
-def target_for_task(source: Mapping, task: Mapping) -> dict[str, str]:
-    """Translate a validated git source and task into the pinned review target."""
-    identity = source["identity"]
-    revision = task.get("revision") or {}
-    target = {"ref": revision.get("commit") or identity["commit"], "path": source["path"]}
-    if identity.get("url"):
-        target["url"] = identity["url"]
+def case_target(repository: Mapping, case: Mapping) -> dict[str, str]:
+    """Translate a validated repository and case into the pinned whole-repository review target."""
+    target = {"commit": case["commit"] if case["kind"] == "diff" else repository["commit"]}
+    if repository.get("url"):
+        target["url"] = repository["url"]
     else:
-        target["root"] = identity["repository_path"]
-    if task["kind"] == "diff":
-        target["base"] = revision["base_commit"]
+        target["local_path"] = repository["local_path"]
+    if case["kind"] == "diff":
+        target["base"] = case["base"]
     return target
 
 
@@ -93,7 +90,7 @@ def target_repository(target: Mapping[str, str]) -> Path:
         name = Path(url.rstrip("/").removesuffix(".git")).name or "repo"
         digest = sha256(url.encode("utf-8")).hexdigest()[:12]
         return Path.home() / ".cache" / "cyberjury" / "diff-targets" / f"{name}-{digest}"
-    return Path(target["root"]).expanduser()
+    return Path(target["local_path"])
 
 
 def git_target_root(target: Mapping[str, str]) -> Path:
@@ -108,7 +105,7 @@ def ensure_git_target_refs(target: Mapping[str, str], root: Path) -> None:
     """Fetch exact commit targets that are not advertised by branch or tag refs."""
     if not target.get("url"):
         return
-    for ref in (target.get("base"), target.get("ref")):
+    for ref in (target.get("base"), target.get("commit")):
         if ref and ref != EMPTY_TREE:
             _ensure_commit(root, ref)
 
@@ -149,8 +146,8 @@ def _sync_clone(url: str, root: Path) -> None:
 
 
 def validate_change_anchors(case: BenchmarkCase, diff: str) -> None:
-    """Reject answer key changes absent from the patch the review reads."""
-    if not any(check.changes for check in case.checks):
+    """Reject change anchors absent from the patch the review reads."""
+    if not any(check.change_anchors for check in case.checks):
         return
     from cyberjury.detection import load_detection
     from cyberjury.review.diff.model import diff_line_ranges
@@ -158,11 +155,11 @@ def validate_change_anchors(case: BenchmarkCase, diff: str) -> None:
     ranges = diff_line_ranges(diff, load_detection())
     sides = {"old": ranges.old, "new": ranges.new}
     for check in case.checks:
-        for anchor in check.changes:
+        for anchor in check.change_anchors:
             line_ranges = sides[anchor.side].get(anchor.file, ())
             if any(start <= anchor.line <= end for start, end in line_ranges):
                 continue
             raise ValueError(
-                f"diff case {case.name!r} answer-key check {check.id!r} change anchor "
+                f"diff case {case.name!r} check {check.id!r} change anchor "
                 f"{anchor.file}:{anchor.line}:{anchor.side} is absent from the reviewed patch"
             )

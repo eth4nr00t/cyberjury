@@ -8,14 +8,13 @@ from dataclasses import replace
 import pytest
 
 from evals.benchmarks.cases import find_case
-from evals.benchmarks.contract import ExpectedChange
+from evals.benchmarks.contract import ChangeAnchor
 from evals.review.diff import execution
-from evals.review.source import review_scope
 
 
 @pytest.fixture
 def case(benchmark_project):
-    return find_case(benchmark_project.diff_case, [benchmark_project.manifest])
+    return find_case(benchmark_project.diff_case, [benchmark_project.benchmark])
 
 
 def test_run_reviews_the_pinned_range_through_the_product_command(tmp_path, case, scripted_model, owner_finding):
@@ -66,9 +65,9 @@ def test_run_records_a_failed_review_with_its_reason(tmp_path, case, scripted_mo
     assert events[1].startswith(f"run 1/2 [1/1] {case.name} failed after ")
 
 
-def test_run_rejects_an_answer_key_change_absent_from_the_reviewed_patch(tmp_path, case, scripted_model):
+def test_run_rejects_a_change_anchor_absent_from_the_reviewed_patch(tmp_path, case, scripted_model):
     provider = scripted_model()
-    check = replace(case.checks[0], changes=(ExpectedChange(file="views.py", line=9, side="new"),))
+    check = replace(case.checks[0], change_anchors=(ChangeAnchor(file="views.py", line=9, side="new"),))
 
     with pytest.raises(ValueError, match=r"change anchor .* is absent from the reviewed patch"):
         execution.run([replace(case, checks=(check,))], workspace=tmp_path / "reviews")
@@ -96,12 +95,3 @@ def test_run_aborts_on_missing_provider_credentials(tmp_path, case, scripted_mod
 def test_run_rejects_nonpositive_runs(tmp_path, case):
     with pytest.raises(ValueError, match="runs must be at least 1"):
         execution.run([case], workspace=tmp_path / "reviews", runs=0)
-
-
-def test_review_scope_resolves_the_target_path_inside_the_checkout(tmp_path):
-    (tmp_path / "backend").mkdir()
-
-    assert review_scope(tmp_path, {"path": "."}) == tmp_path
-    assert review_scope(tmp_path, {"path": "backend"}) == tmp_path / "backend"
-    with pytest.raises(ValueError, match="does not exist"):
-        review_scope(tmp_path, {"path": "frontend"})

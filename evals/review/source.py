@@ -1,4 +1,4 @@
-"""Materialize pinned benchmark source revisions in disposable worktrees."""
+"""Materialize pinned benchmark source commits in disposable worktrees."""
 
 from __future__ import annotations
 
@@ -14,13 +14,13 @@ from evals.benchmarks.cases import ensure_git_target_refs, git_target_root
 
 @contextmanager
 def source_root(target: Mapping[str, str]) -> Iterator[Path]:
-    """Check out the exact source revision of a git target."""
+    """Check out the exact source commit of a git target."""
     root = git_target_root(target)
     ensure_git_target_refs(target, root)
     temporary = Path(tempfile.mkdtemp(prefix="cyberjury-eval-target-"))
     try:
         subprocess.run(
-            ["git", "-C", str(root), "worktree", "add", "--detach", "--quiet", str(temporary), target["ref"]],
+            ["git", "-C", str(root), "worktree", "add", "--detach", "--quiet", str(temporary), target["commit"]],
             check=True,
             capture_output=True,
             text=True,
@@ -34,13 +34,3 @@ def source_root(target: Mapping[str, str]) -> Iterator[Path]:
             text=True,
         )
         shutil.rmtree(temporary, ignore_errors=True)
-
-
-def review_scope(root: Path, target: Mapping[str, str]) -> Path:
-    """Resolve the validated benchmark path inside its checked out repository."""
-    if target["path"] == ".":
-        return root
-    scoped = root / target["path"]
-    if not scoped.is_dir():
-        raise ValueError(f"target path {target['path']!r} does not exist in the checked out repository")
-    return scoped

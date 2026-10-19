@@ -6,7 +6,7 @@ its own and without its issue, so issue grouping never changes check credit. The
 each anonymous report label to its attempt and candidate and names the adjudication round.
 Adjudicators write `result-N.json` for each packet. `write_ledgers` checks the results against the
 mapping, validates each ledger at a fresh checkout of the pinned commit, and writes `ledger-NN.json`
-beside each attempt, bound to the round, the rubric sha256, and the answer key checks.
+beside each attempt, bound to the round, the rubric sha256, and the case checks.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from evals.adjudication import (
 )
 from evals.benchmarks.cases import BenchmarkCase, checks_sha256, expected_checks, target_repository
 from evals.benchmarks.validate import validate_document
-from evals.review.source import review_scope, source_root
+from evals.review.source import source_root
 
 RUBRIC = Path(__file__).resolve().parent / "adjudication-rubric-v1.md"
 _PROVENANCE = frozenset({"candidate_id", "id", "supporting_reviewers", "evidence_refs", "status", "issue_id"})
@@ -38,17 +38,6 @@ _INDEX = ("label", "run", "file", "line", "title")
 
 def _report(finding: dict) -> dict:
     return {key: value for key, value in finding.items() if key not in _PROVENANCE}
-
-
-def _checks(case: BenchmarkCase) -> list[dict]:
-    return [
-        {
-            "id": check["id"],
-            "locations": [{key: value for key, value in item.items() if value} for item in check["locations"]],
-            "changes": check["changes"],
-        }
-        for check in expected_checks(case)
-    ]
 
 
 def default_mapping_path(out: Path) -> Path:
@@ -141,12 +130,11 @@ def build_packets(
         entry = {
             "case": name,
             "repository": str(target_repository(case.target)),
-            "commit": case.target["ref"],
-            "scope": case.target["path"],
-            "checks": _checks(case),
+            "commit": case.target["commit"],
+            "checks": expected_checks(case),
         }
         if "base" in case.target:
-            entry["base_commit"] = case.target["base"]
+            entry["base"] = case.target["base"]
         if references:
             entry["reference_decisions"] = _references(case, prior)
             reference_counts[name] = len(entry["reference_decisions"])
@@ -233,8 +221,8 @@ def write_ledgers(
             raise ValueError(f"{path} names an unknown case {attempt.case!r}")
         case = cases[attempt.case]
         if checks_sha256(case) != mapping.get("checks_sha256", {}).get(attempt.case):
-            raise ValueError(f"the answer key of {attempt.case} changed after these packets were built")
-        ledger = _ledger(attempt, case.target["ref"], by_attempt[path], labels, results)
+            raise ValueError(f"the checks of {attempt.case} changed after these packets were built")
+        ledger = _ledger(attempt, case.target["commit"], by_attempt[path], labels, results)
         attempts.append(
             (
                 attempt,
@@ -255,12 +243,11 @@ def write_ledgers(
     for name in sorted({attempt.case for attempt, _ in attempts}):
         case = cases[name]
         with source_root(case.target) as root:
-            scope = review_scope(root, case.target)
             for attempt, ledger in attempts:
                 if attempt.case != name:
                     continue
                 try:
-                    adjudicate(case, attempt, ledger, scope)
+                    adjudicate(case, attempt, ledger, root)
                 except ValueError as exc:
                     failures.append(f"{attempt.path}: {exc}")
                     continue

@@ -16,7 +16,7 @@ A, B, C = ("candidate-" + letter * 20 for letter in "abc")
 
 @pytest.fixture
 def cases(benchmark_project):
-    return load_cases([benchmark_project.manifest])
+    return load_cases([benchmark_project.benchmark])
 
 
 @pytest.fixture
@@ -38,14 +38,14 @@ def _result(packets, verdicts):
                     "label": report["label"],
                     "verdict": verdicts.get(report["title"], "not_actionable"),
                     "canonical": None,
-                    "check_ids": ["object-authorization"] if verdicts.get(report["title"]) == "supported" else [],
+                    "check_ids": ["create-missing-owner"] if verdicts.get(report["title"]) == "supported" else [],
                     "evidence": [{"file": "views.py", "line": 2}],
                     "reason": "The view saves without an ownership check at views.py:2.",
                     "proof_gap": None,
                 }
                 for report in entry["reports"]
             ],
-            "key_notes": {"object-authorization": "valid"},
+            "check_notes": {"create-missing-owner": "valid"},
         }
         for entry in entries
     ]
@@ -66,14 +66,15 @@ def test_packets_hide_report_provenance_and_include_no_earlier_verdicts(tmp_path
     }
     assert counts["references"] is None
     (entry,) = json.loads((out / "packet-1.json").read_text(encoding="utf-8"))
-    assert entry["commit"] == benchmark_project.ref
-    assert entry["base_commit"] == benchmark_project.base
+    assert entry["commit"] == benchmark_project.commit
+    assert entry["base"] == benchmark_project.base
     assert entry["repository"] == str(benchmark_project.repo)
     assert entry["checks"] == [
         {
-            "id": "object-authorization",
+            "id": "create-missing-owner",
+            "root_cause": "create saves without an owner check",
             "locations": [{"file": "views.py", "symbol": "create"}],
-            "changes": [{"file": "views.py", "line": 2, "side": "new"}],
+            "change_anchors": [{"file": "views.py", "line": 2, "side": "new"}],
         }
     ]
     assert "reference_decisions" not in entry
@@ -169,7 +170,7 @@ def test_packets_include_earlier_verdicts_only_from_requested_references(
     tmp_path, cases, arms, write_ledger, write_attempt
 ):
     reference = write_attempt(tmp_path / "earlier", 1, (A,))
-    write_ledger(reference, {A: ("supported", ("object-authorization",))})
+    write_ledger(reference, {A: ("supported", ("create-missing-owner",))})
 
     counts = build_packets(cases, [arms[0]], tmp_path / "adjudication", groups=1, references=[tmp_path / "earlier"])
 
@@ -213,8 +214,8 @@ def test_results_become_ledgers_beside_each_attempt(tmp_path, cases, arms, bench
     written, failures = write_ledgers(cases, out)
 
     assert (written, failures) == (2, [])
-    task = arms[0] / "demo" / benchmark_project.diff_case.split(":", 1)[1]
-    changed = json.loads((task / "ledger-01.json").read_text(encoding="utf-8"))
+    case_dir = arms[0] / "demo" / benchmark_project.diff_case.split(":", 1)[1]
+    changed = json.loads((case_dir / "ledger-01.json").read_text(encoding="utf-8"))
     mapping = json.loads(default_mapping_path(out).read_text(encoding="utf-8"))
     assert changed["round_id"] == mapping["round_id"]
     assert changed["rubric_sha256"] == hashlib.sha256(RUBRIC.read_bytes()).hexdigest()
@@ -223,7 +224,7 @@ def test_results_become_ledgers_beside_each_attempt(tmp_path, cases, arms, bench
         A: "supported",
         B: "not_actionable",
     }
-    assert not (task / "ledger-02.json").exists()
+    assert not (case_dir / "ledger-02.json").exists()
 
 
 def test_a_ledger_with_evidence_outside_the_pinned_source_is_rejected_and_not_written(tmp_path, cases, arms):
@@ -240,7 +241,7 @@ def test_a_ledger_with_evidence_outside_the_pinned_source_is_rejected_and_not_wr
     assert not list(arms[1].rglob("ledger-*.json"))
 
 
-def test_attempts_recorded_before_an_answer_key_fix_are_adjudicated_against_the_fixed_key(
+def test_attempts_recorded_before_a_check_fix_are_adjudicated_against_the_fixed_checks(
     tmp_path, cases, arms, benchmark_project
 ):
     name = benchmark_project.diff_case
@@ -252,12 +253,12 @@ def test_attempts_recorded_before_an_answer_key_fix_are_adjudicated_against_the_
     _result(out, {f"Claim {A}": "supported"})
 
     assert write_ledgers(fixed, out) == (2, [])
-    task = arms[0] / "demo" / name.split(":", 1)[1]
-    ledger = json.loads((task / "ledger-01.json").read_text(encoding="utf-8"))
+    case_dir = arms[0] / "demo" / name.split(":", 1)[1]
+    ledger = json.loads((case_dir / "ledger-01.json").read_text(encoding="utf-8"))
     assert ledger["checks_sha256"] == checks_sha256(fixed[name]) != checks_sha256(cases[name])
 
 
-def test_an_answer_key_changed_after_the_packets_were_built_stops_the_ledgers(tmp_path, cases, arms, benchmark_project):
+def test_checks_changed_after_the_packets_were_built_stop_the_ledgers(tmp_path, cases, arms, benchmark_project):
     out = tmp_path / "adjudication"
     build_packets(cases, list(arms), out, groups=1)
     _result(out, {})

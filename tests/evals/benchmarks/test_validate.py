@@ -8,192 +8,243 @@ import pytest
 
 from evals.benchmarks.validate import validate_benchmark
 
+_DIFF_CASE = """  - id: diff-a1b2c3d
+    kind: diff
+    base: 0123456789abcdef0123456789abcdef01234567
+    commit: a1b2c3d456789abcdef0123456789abcdef01234
+    checks:
+      - id: record-owner-missing-permission
+        root_cause: Record.save does not check the record owner
+        locations:
+          - {file: models/records.py, symbol: Record.owner}
+        change_anchors:
+          - {file: producers/input.py, line: 12, side: new}
+"""
 
-def _write_benchmark(root: Path) -> None:
+
+def _write_benchmark(root: Path) -> Path:
     root.mkdir()
-    (root / "benchmark.yaml").write_text(
-        """schema_version: 1
-benchmark_id: example-project
-source:
-  kind: git
-  identity:
-    url: https://github.com/example/example-project.git
-    commit: 0123456789abcdef0123456789abcdef01234567
-  path: .
-tasks:
+    path = root / "benchmark.yaml"
+    path.write_text(
+        """id: example-project
+repository:
+  url: https://github.com/example/example-project.git
+  commit: 0123456789abcdef0123456789abcdef01234567
+cases:
   - id: repository-0123456
     kind: repository
-  - id: diff-a1b2c3d-1
-    kind: diff
-    revision:
-      base_commit: 0123456789abcdef0123456789abcdef01234567
-      commit: a1b2c3d456789abcdef0123456789abcdef01234
-""",
+    checks:
+      - id: record-owner-missing-permission
+        root_cause: Record.save does not check the record owner
+        locations:
+          - {file: models/records.py, line: 1}
+"""
+        + _DIFF_CASE,
         encoding="utf-8",
     )
-    (root / "answer-key.yaml").write_text(
-        """schema_version: 1
-benchmark_id: example-project
-checks:
-  - id: record-owner-check
-    applies_to: [diff-a1b2c3d-1]
-    locations:
-      - {file: models/records.py, symbol: Record.owner}
-    changes:
-      - {file: producers/input.py, line: 12, side: new}
-  - id: record-owner-check
-    applies_to: [repository-0123456]
-    locations:
-      - {file: models/records.py, line: 1}
-""",
-        encoding="utf-8",
-    )
+    return path
+
+
+def _replace(path: Path, old: str, new: str, count: int = -1) -> None:
+    text = path.read_text(encoding="utf-8")
+    assert old in text
+    path.write_text(text.replace(old, new, count), encoding="utf-8")
 
 
 def test_validate_benchmark_accepts_the_versioned_contract(tmp_path):
     root = tmp_path / "example"
     _write_benchmark(root)
-    validate_benchmark(root)
+    benchmark = validate_benchmark(root)
+
+    assert [case["id"] for case in benchmark["cases"]] == ["repository-0123456", "diff-a1b2c3d"]
 
 
-def test_validate_benchmark_rejects_a_task_without_an_answer_key_check(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    key = root / "answer-key.yaml"
-    key.write_text(
-        "schema_version: 1\nbenchmark_id: example-project\nchecks:\n"
-        "  - id: repository-only\n    applies_to: [repository-0123456]\n"
-        "    locations: [{file: models/records.py, line: 1}]\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match=r"task diff-a1b2c3d-1 has no answer-key check"):
-        validate_benchmark(root)
+def test_validate_benchmark_accepts_a_local_repository(tmp_path):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(path, "url: https://github.com/example/example-project.git", f"local_path: {tmp_path / 'repo'}")
+
+    validate_benchmark(path)
 
 
-def test_validate_benchmark_checks_answer_key_file_locations_when_source_is_given(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    key = root / "answer-key.yaml"
-    key.write_text(
-        key.read_text(encoding="utf-8")
-        + """  - id: repository-location
-    applies_to: [repository-0123456]
-    locations: [{file: models/records.py, line: 1}]
-""",
-        encoding="utf-8",
-    )
+def test_validate_benchmark_rejects_a_repository_with_url_and_local_path(tmp_path):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(path, "  commit: 0123", "  local_path: /srv/repo\n  commit: 0123", 1)
+
+    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
+        validate_benchmark(path)
+
+
+def test_validate_benchmark_rejects_a_case_without_checks(tmp_path):
+    path = _write_benchmark(tmp_path / "example")
+    text = path.read_text(encoding="utf-8")
+    path.write_text(text[: text.index("    checks:\n", text.index("diff-a1b2c3d"))] + "    checks: []\n")
+
+    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
+        validate_benchmark(path)
+
+
+def test_validate_benchmark_checks_repository_case_locations_when_source_is_given(tmp_path):
+    path = _write_benchmark(tmp_path / "example")
     source = tmp_path / "source"
     source.mkdir()
-    with pytest.raises(ValueError, match="location does not exist"):
-        validate_benchmark(root, source_root=source)
+
+    with pytest.raises(ValueError, match=r"location does not exist: models/records\.py"):
+        validate_benchmark(path, source_root=source)
 
 
-def test_validate_benchmark_does_not_apply_manifest_source_to_historical_diff_locations(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
+def test_validate_benchmark_does_not_apply_repository_source_to_diff_case_locations(tmp_path):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(path, "{file: models/records.py, symbol: Record.owner}", "{file: models/absent.py, symbol: Record}")
     source = tmp_path / "source"
     (source / "models").mkdir(parents=True)
     (source / "models" / "records.py").write_text("owner = None\n", encoding="utf-8")
 
-    validate_benchmark(root, source_root=source)
+    validate_benchmark(path, source_root=source)
 
 
-def test_validate_benchmark_rejects_a_diff_id_that_disagrees_with_revision(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    manifest = root / "benchmark.yaml"
-    text = manifest.read_text(encoding="utf-8").replace("diff-a1b2c3d-1", "diff-bbbbbbb-1")
-    manifest.write_text(text, encoding="utf-8")
-    with pytest.raises(ValueError, match="does not agree with revision"):
-        validate_benchmark(root)
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [("id: diff-a1b2c3d", "id: diff-bbbbbbb"), ("id: repository-0123456", "id: repository-aaaaaaa")],
+)
+def test_validate_benchmark_rejects_a_case_id_that_disagrees_with_its_commit(tmp_path, old, new):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(path, old, new)
+
+    with pytest.raises(ValueError, match="id does not agree with its commit"):
+        validate_benchmark(path)
 
 
-def test_validate_benchmark_rejects_two_diff_tasks_with_the_same_revision(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    manifest = root / "benchmark.yaml"
-    with manifest.open("a", encoding="utf-8") as stream:
-        stream.write(
-            """  - id: diff-a1b2c3d-2
-    kind: diff
-    revision:
-      base_commit: 0123456789ABCDEF0123456789ABCDEF01234567
-      commit: A1B2C3D456789ABCDEF0123456789ABCDEF01234
-"""
-        )
-    key = root / "answer-key.yaml"
-    key.write_text(
-        key.read_text(encoding="utf-8").replace(
-            "applies_to: [diff-a1b2c3d-1]", "applies_to: [diff-a1b2c3d-1, diff-a1b2c3d-2]"
-        ),
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="repeats the revision of diff task diff-a1b2c3d-1"):
-        validate_benchmark(root)
+def test_validate_benchmark_rejects_a_diff_id_with_an_ordinal(tmp_path):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(path, "id: diff-a1b2c3d", "id: diff-a1b2c3d-1")
 
-
-@pytest.mark.parametrize("source_path", ["foo//bar", "foo/./bar", "foo/", "./foo"])
-def test_validate_benchmark_rejects_a_noncanonical_source_path(tmp_path, source_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    manifest = root / "benchmark.yaml"
-    text = manifest.read_text(encoding="utf-8").replace("  path: .\n", f"  path: {source_path}\n")
-    manifest.write_text(text, encoding="utf-8")
-    with pytest.raises(ValueError, match="normalized repository-relative scope"):
-        validate_benchmark(root)
-
-
-def test_validate_benchmark_rejects_unknown_manifest_fields(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    manifest = root / "benchmark.yaml"
-    manifest.write_text(
-        manifest.read_text(encoding="utf-8").replace("tasks:\n", "unknown: value\ntasks:\n"), encoding="utf-8"
-    )
     with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
-        validate_benchmark(root)
+        validate_benchmark(path)
 
 
-def test_validate_benchmark_rejects_overlapping_check_ids(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    key = root / "answer-key.yaml"
-    with key.open("a", encoding="utf-8") as stream:
+def test_validate_benchmark_rejects_duplicate_case_ids(tmp_path):
+    path = _write_benchmark(tmp_path / "example")
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(_DIFF_CASE.replace("base: 0123456789abcdef", "base: 1123456789abcdef"))
+
+    with pytest.raises(ValueError, match="duplicate case ids"):
+        validate_benchmark(path)
+
+
+def test_validate_benchmark_rejects_duplicate_check_ids_in_one_case(tmp_path):
+    path = _write_benchmark(tmp_path / "example")
+    with path.open("a", encoding="utf-8") as stream:
         stream.write(
-            """  - id: record-owner-check
-    applies_to: [diff-a1b2c3d-1]
-    locations: [{file: models/records.py, line: 1}]
-    changes: [{file: models/records.py, line: 1, side: new}]
+            """      - id: record-owner-missing-permission
+        root_cause: Record.save does not check the record owner
+        locations: [{file: models/records.py, line: 1}]
+        change_anchors: [{file: models/records.py, line: 1, side: new}]
 """
         )
-    with pytest.raises(ValueError, match="overlapping task scope"):
-        validate_benchmark(root)
+
+    with pytest.raises(ValueError, match="case diff-a1b2c3d has duplicate check ids"):
+        validate_benchmark(path)
 
 
-def test_validate_benchmark_rejects_duplicate_check_scopes(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    key = root / "answer-key.yaml"
-    text = key.read_text(encoding="utf-8").replace(
-        "applies_to: [diff-a1b2c3d-1]",
-        "applies_to: [diff-a1b2c3d-1, diff-a1b2c3d-1]",
+@pytest.mark.parametrize(
+    "root_cause",
+    ['""', "Record.save does not check the record owner.", '"Record.save does not check the record owner\\n"'],
+)
+def test_validate_benchmark_requires_a_root_cause_sentence_without_a_trailing_period(tmp_path, root_cause):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(path, "root_cause: Record.save does not check the record owner\n", f"root_cause: {root_cause}\n", 1)
+
+    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
+        validate_benchmark(path)
+
+
+def test_validate_benchmark_requires_a_root_cause_for_every_check(tmp_path):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(path, "        root_cause: Record.save does not check the record owner\n", "", 1)
+
+    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
+        validate_benchmark(path)
+
+
+@pytest.mark.parametrize("check_id", ["record-owner", "record-owner-unknown-weakness", "Record-owner-idor"])
+def test_validate_benchmark_rejects_a_check_id_outside_the_weakness_vocabulary(tmp_path, check_id):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(path, "id: record-owner-missing-permission", f"id: {check_id}", 1)
+
+    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
+        validate_benchmark(path)
+
+
+def test_validate_benchmark_reports_the_field_path_of_a_bad_check_id(tmp_path):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(path, "id: record-owner-missing-permission", "id: record-owner-bad")
+
+    with pytest.raises(ValueError, match=r"benchmark-v1\.schema") as raised:
+        validate_benchmark(path)
+
+    message = str(raised.value)
+    assert "cases.0.checks.0.id" in message
+    assert len(message) < 2000
+
+
+def test_validate_benchmark_accepts_a_location_path_with_spaces(tmp_path):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(path, "{file: models/records.py, line: 1}", '{file: "models/my records.py", line: 1}')
+
+    validate_benchmark(path)
+
+
+@pytest.mark.parametrize("file", ["./models/records.py", "/models/records.py", '"models\\\\records.py"'])
+def test_validate_benchmark_rejects_a_location_outside_repository_relative_form(tmp_path, file):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(path, "{file: models/records.py, line: 1}", f"{{file: {file}, line: 1}}")
+
+    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
+        validate_benchmark(path)
+
+
+@pytest.mark.parametrize("file", ["models//records.py", "models/./records.py", "models/../records.py", "models/"])
+def test_validate_benchmark_rejects_a_noncanonical_location_path(tmp_path, file):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(path, "{file: models/records.py, line: 1}", f"{{file: {file}, line: 1}}")
+
+    with pytest.raises(ValueError, match="normalized repository-relative path"):
+        validate_benchmark(path)
+
+
+@pytest.mark.parametrize("symbol", ["Record.owner()", "Record.owner:12", "records.py:Record"])
+def test_validate_benchmark_rejects_a_symbol_that_is_not_a_qualified_name(tmp_path, symbol):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(path, "symbol: Record.owner}", f'symbol: "{symbol}"}}')
+
+    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
+        validate_benchmark(path)
+
+
+def test_validate_benchmark_rejects_unknown_fields(tmp_path):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(path, "cases:\n", "unknown: value\ncases:\n")
+
+    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
+        validate_benchmark(path)
+
+
+def test_validate_benchmark_requires_change_anchors_on_diff_checks(tmp_path):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(path, "        change_anchors:\n          - {file: producers/input.py, line: 12, side: new}\n", "")
+
+    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
+        validate_benchmark(path)
+
+
+def test_validate_benchmark_rejects_change_anchors_on_repository_checks(tmp_path):
+    path = _write_benchmark(tmp_path / "example")
+    _replace(
+        path,
+        "          - {file: models/records.py, line: 1}\n",
+        "          - {file: models/records.py, line: 1}\n"
+        "        change_anchors:\n          - {file: models/records.py, line: 1, side: new}\n",
     )
-    key.write_text(text, encoding="utf-8")
-    with pytest.raises(ValueError, match=r"answer-key-v1\.schema"):
-        validate_benchmark(root)
 
-
-def test_validate_benchmark_rejects_diff_changes_on_repository_tasks(tmp_path):
-    root = tmp_path / "example"
-    _write_benchmark(root)
-    key = root / "answer-key.yaml"
-    with key.open("a", encoding="utf-8") as stream:
-        stream.write(
-            "  - id: repository-only\n"
-            "    applies_to: [repository-0123456]\n"
-            "    changes: [{file: models/records.py, line: 12, side: new}]\n"
-            "    locations: [{file: models/records.py, line: 12}]\n"
-        )
-
-    with pytest.raises(ValueError, match="changes require exactly one diff task"):
-        validate_benchmark(root)
+    with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
+        validate_benchmark(path)

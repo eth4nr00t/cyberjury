@@ -19,7 +19,7 @@ from evals.benchmarks.cases import load_cases
 from evals.report import format_summary, regressions, summarize
 
 A, B = "candidate-" + "a" * 20, "candidate-" + "b" * 20
-_CREDIT = ("supported", ("object-authorization",))
+_CREDIT = ("supported", ("create-missing-owner",))
 
 
 class _Fake(Provider):
@@ -40,7 +40,7 @@ def _receipt(path):
 
 @pytest.fixture
 def cases(benchmark_project):
-    return load_cases([benchmark_project.manifest])
+    return load_cases([benchmark_project.benchmark])
 
 
 def test_report_counts_recall_per_run_and_check_precision_and_cost(
@@ -54,7 +54,7 @@ def test_report_counts_recall_per_run_and_check_precision_and_cost(
 
     summary = summarize(cases, runs, [tmp_path / "calls"])
 
-    check = f"{benchmark_project.diff_case}:object-authorization"
+    check = f"{benchmark_project.diff_case}:create-missing-owner"
     assert summary["recall"] == {"found": 1, "total": 2}
     assert summary["recall_by_run"] == {1: {"found": 1, "total": 1}, 2: {"found": 0, "total": 1}}
     assert summary["checks"] == {check: {"found": 1, "attempts": 2}}

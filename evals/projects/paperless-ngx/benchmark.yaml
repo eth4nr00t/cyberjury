@@ -1,81 +1,516 @@
-schema_version: 1
-benchmark_id: paperless-ngx
-source:
-  kind: git
-  identity:
-    url: https://github.com/paperless-ngx/paperless-ngx
-    commit: 6f3451bce0d0bd4b97199ca057002be34c2705bf
-  path: .
-tasks:
+id: paperless-ngx
+repository:
+  url: https://github.com/paperless-ngx/paperless-ngx
+  commit: 6f3451bce0d0bd4b97199ca057002be34c2705bf
+cases:
   - id: repository-6f3451b
     kind: repository
-  - id: diff-11af74b-3
+    checks:
+      - id: webhook-ssrf
+        root_cause: send_webhook validates only the first resolved IP of the URL host, then httpx re-resolves it at request time, so the private-address block is not pinned to the connection actually made
+        locations:
+          - {file: src/documents/signals/handlers.py, symbol: send_webhook}
+      - id: matching-regex-denial-of-service
+        root_cause: matches() runs user-defined MATCH_REGEX patterns with re.search over the full document content with no timeout or complexity bound on the regex evaluation
+        locations:
+          - {file: src/documents/matching.py, symbol: matches}
+      - id: confirm-dialog-stored-xss
+        root_cause: BulkEditorComponent interpolates tag/correspondent/type/path/custom field names into confirm-dialog messages, which confirm-dialog renders via [innerHTML] through the sanitizer-bypassing safeHtml pipe
+        locations:
+          - {file: src-ui/src/app/components/common/confirm-dialog/confirm-dialog.component.html, line: 11}
+          - {file: src-ui/src/app/components/document-list/bulk-editor/bulk-editor.component.ts, line: 411}
+          - {file: src-ui/src/app/pipes/safehtml.pipe.ts, symbol: SafeHtmlPipe}
+      - id: storage-path-template-path-traversal
+        root_cause: FilePathTemplate.render, called from validate_filepath_template_and_render, only strips leading and trailing separators from rendered storage-path and filename templates (src/documents/templating/filepath.py:48) and never rejects '..' components, and the target is not confined to ORIGINALS_DIR/ARCHIVE_DIR before files move
+        locations:
+          - {file: src/documents/templating/filepath.py, symbol: validate_filepath_template_and_render}
+          - {file: src/documents/signals/handlers.py, symbol: update_filename_and_move_files}
+      - id: owned-object-update-missing-permission
+        root_cause: OwnedObjectSerializer.update applies owner and set_permissions changes without requiring the requester to be the object's owner or a superuser, so any change-permission holder can reassign or regrant objects
+        locations:
+          - {file: src/documents/serialisers.py, symbol: OwnedObjectSerializer.update}
+          - {file: src/documents/serialisers.py, symbol: DocumentSerializer}
+          - {file: src/documents/serialisers.py, line: 389}
+          - {file: src/documents/serialisers.py, line: 608}
+      - id: document-upload-missing-permission
+        root_cause: PostDocumentView (document upload) requires only IsAuthenticated and never checks the documents.add_document model permission
+        locations:
+          - {file: src/documents/views.py, symbol: PostDocumentView.post}
+      - id: storage-path-test-idor
+        root_cause: StoragePathViewSet.test drops to IsAuthenticated and StoragePathTestSerializer.document accepts any Document id, so templates render against documents the caller has no view permission on
+        locations:
+          - {file: src/documents/serialisers.py, symbol: StoragePathTestSerializer}
+          - {file: src/documents/views.py, symbol: StoragePathViewSet.test}
+      - id: storage-path-template-information-disclosure
+        root_cause: validate_filepath_template_and_render puts the live Document ORM object in the Jinja context (the sandbox blocks only save/delete/update), and the test action returns the render, exposing related rows
+        locations:
+          - {file: src/documents/templating/filepath.py, symbol: validate_filepath_template_and_render}
+          - {file: src/documents/views.py, symbol: StoragePathViewSet.test}
+      - id: share-link-idor
+        root_cause: ShareLinkSerializer accepts any document id on create and update without checking the requester's view or change permission on that document
+        locations:
+          - {file: src/documents/serialisers.py, symbol: ShareLinkSerializer}
+      - id: user-create-privilege-escalation
+        root_cause: UserViewSet.create guards superuser creation with an identity test (request.data is_superuser is True) instead of checking the validated boolean, so non-bool truthy values pass
+        locations:
+          - {file: src/paperless/views.py, symbol: UserViewSet.create}
+          - {file: src/paperless/views.py, symbol: UserViewSet.update}
+      - id: user-delete-privilege-escalation
+        root_cause: UserViewSet has no destroy guard, so a non-superuser holding delete_user can delete superuser accounts, while only create and update enforce the superusers-only-by-superusers rule
+        locations:
+          - {file: src/paperless/views.py, symbol: UserViewSet}
+      - id: global-search-mail-information-disclosure
+        root_cause: GlobalSearchView queries MailRule and MailAccount gated only by the global view permission instead of get_objects_for_user_owner_aware, returning other users' mail rules and accounts
+        locations:
+          - {file: src/documents/views.py, line: 2043}
+          - {file: src/documents/views.py, line: 2049}
+      - id: edit-pdf-denial-of-service
+        root_cause: edit_pdf allocates max(doc)+1 output PDFs from a caller-supplied per-operation doc index that _validate_parameters_edit_pdf only type-checks and never bounds
+        locations:
+          - {file: src/documents/bulk_edit.py, line: 578}
+      - id: document-link-missing-permission
+        root_cause: reflect_doclinks writes symmetric document-link custom field values into every target document id without checking the editor's change_document permission on those targets
+        locations:
+          - {file: src/documents/bulk_edit.py, line: 674}
+      - id: consume-folder-symlink-following
+        root_cause: _consume in the consume-folder watcher follows symlinks (stat/is_file/open) and enqueues files without rejecting links or paths that resolve outside CONSUMPTION_DIR
+        locations:
+          - {file: src/documents/management/commands/document_consumer.py, line: 134}
+      - id: tag-children-information-disclosure
+        root_cause: TagSerializer.get_children serializes every child from get_children_queryset() without filtering to tags the requester may view, so a visible parent exposes private child tags
+        locations:
+          - {file: src/documents/serialisers.py, line: 584}
+      - id: selection-data-idor
+        root_cause: SelectionDataView accepts document ids validated only for existence (DocumentListSerializer) and aggregates their tags, correspondents, types and custom fields without per-document view checks
+        locations:
+          - {file: src/documents/serialisers.py, line: 1370}
+      - id: bulk-edit-split-denial-of-service
+        root_cause: _validate_parameters_split materializes every page of caller-supplied a-b ranges via range() with no size bound, and this validation runs before BulkEditView's permission check
+        locations:
+          - {file: src/documents/serialisers.py, line: 1593}
+      - id: note-delete-idor
+        root_cause: DocumentViewSet.notes authorizes the URL document on DELETE but fetches the note with Note.objects.get(id=...) without a document=doc filter, so any note id can be deleted
+        locations:
+          - {file: src/documents/views.py, line: 1062}
+      - id: bulk-edit-originals-missing-permission
+        root_cause: BulkEditView's ownership clause for original-modifying calls (edit_pdf update_document, merge/split delete_originals) replaces has_perms instead of AND-ing it, skipping the change_document check
+        locations:
+          - {file: src/documents/views.py, line: 1542}
+      - id: mail-rule-account-idor
+        root_cause: MailRuleSerializer's AccountField uses MailAccount.objects.all(), so a rule can be bound to a mail account the requester neither owns nor has object permission on
+        locations:
+          - {file: src/paperless_mail/serialisers.py, line: 57}
+      - id: mail-test-idor
+        root_cause: MailAccountViewSet.test loads MailAccount.objects.get(pk=request id) and reuses its stored password and OAuth token without an owner or object-permission check on that account
+        locations:
+          - {file: src/paperless_mail/views.py, line: 95}
+      - id: bulk-download-zip-name-denial-of-service
+        root_cause: BulkArchiveStrategy picks unique zip entry names by rescanning zipf.namelist() in a counter loop for every document, with no cap on the number of requested documents
+        locations:
+          - {file: src/documents/bulk_download.py, line: 38}
+      - id: search-more-like-idor
+        root_cause: DelayedMoreLikeThisQuery builds full-text more_like_id results from any document id's content without checking that the requester can view that document
+        locations:
+          - {file: src/documents/index.py, line: 463}
+      - id: document-upload-idor
+        root_cause: PostDocumentSerializer's storage_path, correspondent and document_type override fields use unscoped querysets, so uploads apply objects the uploader cannot view (names leak via title placeholders)
+        locations:
+          - {file: src/documents/serialisers.py, line: 1753}
+          - {file: src/documents/serialisers.py, line: 1737}
+          - {file: src/documents/consumer.py, symbol: ConsumerPlugin._parse_title_placeholders}
+      - id: consumption-task-missing-owner
+        root_cause: TasksViewSet shows every owner=None task to all users and TasksViewSerializer returns its result text, while system-created consumption tasks are stored without an owner
+        locations:
+          - {file: src/documents/serialisers.py, line: 2049}
+      - id: bulk-download-temp-file-denial-of-service
+        root_cause: BulkDownloadView writes the zip to NamedTemporaryFile(delete=False) in SCRATCH_DIR and never unlinks it after the response is built
+        locations:
+          - {file: src/documents/views.py, line: 2275}
+      - id: oauth-mail-account-missing-owner
+        root_cause: OauthCallbackView creates the OAuth MailAccount via update_or_create without owner=request.user, leaving the account and its token ownerless and visible to every mail-permission holder
+        locations:
+          - {file: src/paperless_mail/views.py, line: 245}
+      - id: storage-path-template-denial-of-service
+        root_cause: validate_filepath_template_and_render renders storage-path templates in a Jinja SandboxedEnvironment that does not intercept binary operators or bound output size, so string multiplication in a path template allocates unbounded memory at render
+        locations:
+          - {file: src/documents/templating/filepath.py, line: 310}
+      - id: mail-test-missing-permission
+        root_cause: MailAccountViewSet.get_permissions downgrades the test action to IsAuthenticated, so users without mail-account model permission can make the server open IMAP connections and logins to any caller-chosen host and port (src/paperless_mail/views.py:102)
+        locations:
+          - {file: src/paperless_mail/views.py, line: 77}
+          - {file: src/paperless_mail/views.py, line: 102}
+          - {file: src/paperless_mail/views.py, line: 80}
+      - id: tag-parent-missing-permission
+        root_cause: TagViewSet.perform_update calls update_document_parent_tags on reparenting, which adds the parent tags to every document carrying the tag without checking change_document on those documents
+        locations:
+          - {file: src/documents/tasks.py, symbol: update_document_parent_tags}
+          - {file: src/documents/views.py, line: 458}
+      - id: release-changelog-injection
+        root_cause: append-Changelog (.github/workflows/ci.yml:666) expands the release body built from PR titles via ${{ }} directly inside its shell script instead of passing it through an env variable
+        locations:
+          - {file: .github/workflows/ci.yml, line: 666}
+          - {file: .github/workflows/ci.yml, line: 598}
+          - {file: .github/release-drafter.yml, line: 48}
+      - id: edit-pdf-delete-original-missing-permission
+        root_cause: BulkEditView's delete_document check and _validate_parameters_edit_pdf ignore edit_pdf's delete_original parameter, so edit_pdf deletes the source document without delete permission
+        locations:
+          - {file: src/documents/views.py, line: 1577}
+          - {file: src/documents/bulk_edit.py, line: 633}
+          - {file: src/documents/serialisers.py, symbol: BulkEditSerializer._validate_parameters_edit_pdf}
+      - id: admin-user-privilege-escalation
+        root_cause: PaperlessUserAdmin guards only superuser-flag changes, not edits, password resets or deletion of superuser targets by non-superuser staff, and is_staff is self-grantable via the user API
+        locations:
+          - {file: src/paperless/admin.py, symbol: PaperlessUserAdmin}
+          - {file: src/paperless/admin.py, symbol: PaperlessUserForm.clean}
+          - {file: src/paperless/serialisers.py, line: 85}
+      - id: suggestions-cache-information-disclosure
+        root_cause: get_suggestion_cache_key keys cached suggestions by document id only, so one user's permission-filtered suggestions are replayed to other users requesting that document
+        locations:
+          - {file: src/documents/caching.py, symbol: get_suggestion_cache_key}
+          - {file: src/documents/views.py, line: 905}
+      - id: duplicate-check-information-disclosure
+        root_cause: ConsumerPreflightPlugin.pre_check_duplicate puts the existing duplicate's title and id in the failure message without checking that the uploader can view that document
+        locations:
+          - {file: src/documents/consumer.py, symbol: ConsumerPreflightPlugin.pre_check_duplicate}
+          - {file: src/documents/consumer.py, line: 789}
+      - id: last-correspondence-information-disclosure
+        root_cause: CorrespondentViewSet annotates last_correspondence with Max over all documents instead of applying the user's document permission filter to the aggregate
+        locations:
+          - {file: src/documents/views.py, line: 413}
+          - {file: src/documents/views.py, line: 419}
+      - id: path-check-symlink-following
+        root_cause: path_check creates its predictable __paperless_write_test_<pid>__ probe with open('w'), which follows a symlink planted in a writable checked directory instead of creating exclusively
+        locations:
+          - {file: src/paperless/checks.py, symbol: path_check}
+          - {file: src/paperless/checks.py, line: 33}
+      - id: processed-mail-missing-owner
+        root_cause: ProcessedMail records created in error_callback and the no-attachment path (src/paperless_mail/mail.py:889) omit owner=rule.owner, so the ownerless records are visible to every user
+        locations:
+          - {file: src/paperless_mail/mail.py, symbol: error_callback}
+          - {file: src/paperless_mail/mail.py, line: 889}
+      - id: document-etag-information-disclosure
+        root_cause: metadata_etag and preview_etag derive ETags from document checksums in the condition decorator, which runs before the view's object-permission check, so they leak for unviewable documents
+        locations:
+          - {file: src/documents/conditionals.py, symbol: metadata_etag}
+          - {file: src/documents/conditionals.py, symbol: preview_etag}
+          - {file: src/documents/views.py, line: 827}
+      - id: failed-login-log-injection
+        root_cause: handle_failed_login writes the client-supplied username into the paperless.auth log without escaping CR/LF or control characters, so forged lines reach log parsers such as fail2ban
+        locations:
+          - {file: src/paperless/signals.py, symbol: handle_failed_login}
+          - {file: src/paperless/signals.py, line: 19}
+      - id: trash-missing-permission
+        root_cause: TrashView requires only IsAuthenticated with no documents model permission, and its owner-aware check passes ownerless documents, so any user can list, restore or empty them
+        locations:
+          - {file: src/documents/views.py, symbol: TrashView}
+          - {file: src/documents/views.py, line: 3113}
+          - {file: src/documents/views.py, line: 3137}
+      - id: bulk-download-missing-permission
+        root_cause: BulkDownloadView requires only IsAuthenticated, not the documents.view_document model permission, and has_perms_owner_aware passes ownerless documents, so their files download
+        locations:
+          - {file: src/documents/views.py, symbol: BulkDownloadView.post}
+          - {file: src/documents/views.py, line: 2256}
+      - id: workflow-template-information-disclosure
+        root_cause: email_action and webhook_action pass the live Correspondent model instead of its name into consumption-trigger workflow templates (src/documents/signals/handlers.py:1125, src/documents/signals/handlers.py:1244), exposing related ORM rows
+        locations:
+          - {file: src/documents/signals/handlers.py, line: 1125}
+          - {file: src/documents/signals/handlers.py, line: 1244}
+          - {file: src/documents/templating/workflows.py, symbol: parse_w_workflow_placeholders}
+      - id: api-login-authentication-bypass
+        root_cause: rest_framework.urls mounted at /api/auth/ (src/paperless/urls.py:92) and admin.site.urls (src/paperless/urls.py:235) serve login views that create sessions from a password alone, skipping allauth MFA and the DISABLE_REGULAR_LOGIN check
+        locations:
+          - {file: src/paperless/urls.py, line: 92}
+          - {file: src/paperless/urls.py, line: 235}
+      - id: password-reset-host-header-injection
+        root_cause: get_reset_password_from_key_url builds reset links from the request Host when PAPERLESS_URL is unset, and ALLOWED_HOSTS defaults to *, so the emailed link can point at an attacker host
+        locations:
+          - {file: src/paperless/adapter.py, symbol: CustomAccountAdapter.get_reset_password_from_key_url}
+          - {file: src/paperless/settings.py, line: 607}
+      - id: search-correction-information-disclosure
+        root_cause: DelayedFullTextQuery corrects queries with Whoosh correct_query over the whole index lexicon (src/documents/index.py:447) and returns corrected_query, exposing terms from documents the user cannot view
+        locations:
+          - {file: src/documents/index.py, line: 447}
+          - {file: src/documents/views.py, line: 1340}
+  - id: diff-11af74b
     kind: diff
-    revision:
-      base_commit: 9e4147ac52521dd34c6b0dbc8f2583d733d1516a
-      commit: 11af74ba3672e5678d3321d28698a7178bcb4f8f
-  - id: diff-69ef26d-5
+    base: 9e4147ac52521dd34c6b0dbc8f2583d733d1516a
+    commit: 11af74ba3672e5678d3321d28698a7178bcb4f8f
+    checks:
+      - id: matching-regex-denial-of-service
+        root_cause: matches() runs the user-writable match string as a regex (MATCH_REGEX re.search, src/documents/matching.py:64) over full document content with no timeout or complexity bound
+        locations:
+          - {file: src/documents/matching.py, symbol: matches}
+        change_anchors:
+          - {file: src/documents/serialisers.py, line: 18, side: new}
+          - {file: src/documents/matching.py, line: 64, side: new}
+      - id: matching-invalid-pattern-denial-of-service
+        root_cause: matches() compiles user match strings (REGEX patterns and unescaped LITERAL and ANY/ALL terms) with no re.error handling or serializer validation, so an invalid pattern raises through set_tags and aborts consumption
+        locations:
+          - {file: src/documents/matching.py, symbol: matches}
+          - {file: src/documents/signals/handlers.py, line: 107}
+        change_anchors:
+          - {file: src/documents/matching.py, line: 54, side: new}
+          - {file: src/documents/matching.py, line: 64, side: new}
+  - id: diff-69ef26d
     kind: diff
-    revision:
-      base_commit: c3997c9f26130f1d1a1cdd409b372e2579ac67e3
-      commit: 69ef26dab04d51e7e102dcb33cd98ddc6ad975fd
-  - id: diff-7c11a37-7
+    base: c3997c9f26130f1d1a1cdd409b372e2579ac67e3
+    commit: 69ef26dab04d51e7e102dcb33cd98ddc6ad975fd
+    checks:
+      - id: confirm-dialog-stored-xss
+        root_cause: confirm-dialog now renders its message via [innerHTML] through the sanitizer-bypassing safeHtml pipe (src-ui/src/app/components/common/confirm-dialog/confirm-dialog.component.html:8), while the bulk editor interpolates raw object names such as the storage path name into those messages (src-ui/src/app/components/document-list/bulk-editor/bulk-editor.component.ts:339)
+        locations:
+          - {file: src-ui/src/app/components/common/confirm-dialog/confirm-dialog.component.html, line: 8}
+          - {file: src-ui/src/app/components/document-list/bulk-editor/bulk-editor.component.ts, line: 339}
+          - {file: src-ui/src/app/pipes/safehtml.pipe.ts, symbol: SafeHtmlPipe}
+        change_anchors:
+          - {file: src-ui/src/app/components/document-list/bulk-editor/bulk-editor.component.ts, line: 339, side: new}
+          - {file: src-ui/src/app/components/common/confirm-dialog/confirm-dialog.component.html, line: 8, side: new}
+      - id: storage-path-template-path-traversal
+        root_cause: StoragePathSerializer.validate_path only checks that the template formats, accepting '..' segments, and generate_filename uses doc.storage_path.path without confining the result to the media directories
+        locations:
+          - {file: src/documents/serialisers.py, symbol: StoragePathSerializer.validate_path}
+          - {file: src/documents/file_handling.py, symbol: generate_filename}
+          - {file: src/documents/consumer.py, line: 330}
+          - {file: src/documents/consumer.py, line: 454}
+          - {file: src/documents/signals/handlers.py, symbol: update_filename_and_move_files}
+        change_anchors:
+          - {file: src/documents/file_handling.py, line: 139, side: new}
+          - {file: src/documents/serialisers.py, line: 547, side: new}
+  - id: diff-7c11a37
     kind: diff
-    revision:
-      base_commit: e49ed58f1a3222090bff08aef445ea142e87be9d
-      commit: 7c11a371502b7420e6378a67e250c3675308d169
-  - id: diff-024b606-13
+    base: e49ed58f1a3222090bff08aef445ea142e87be9d
+    commit: 7c11a371502b7420e6378a67e250c3675308d169
+    checks:
+      - id: storage-path-list-stored-xss
+        root_cause: StoragePathListComponent's path column interpolates the raw storage path into a <code> HTML string (rendersHtml), which management-list renders via [innerHtml] through the sanitizer-bypassing safeHtml pipe
+        locations:
+          - {file: src-ui/src/app/components/manage/management-list/management-list.component.html, line: 69}
+          - {file: src-ui/src/app/components/manage/storage-path-list/storage-path-list.component.ts, symbol: StoragePathListComponent}
+          - {file: src-ui/src/app/pipes/safehtml.pipe.ts, symbol: SafeHtmlPipe}
+        change_anchors:
+          - {file: src-ui/src/app/components/manage/storage-path-list/storage-path-list.component.ts, line: 43, side: new}
+          - {file: src-ui/src/app/components/manage/storage-path-list/storage-path-list.component.ts, line: 46, side: new}
+      - id: storage-path-template-denial-of-service
+        root_cause: validate_filepath_template_and_render (src/documents/templating/filepath.py:317) renders filenames in a SandboxedEnvironment without intercepted binops or output limits, so string multiplication in a path template is unbounded
+        locations:
+          - {file: src/documents/templating/filepath.py, line: 317}
+        change_anchors:
+          - {file: src/documents/templating/filepath.py, line: 317, side: new}
+      - id: storage-path-template-information-disclosure
+        root_cause: validate_filepath_template_and_render passes the live Document model (src/documents/templating/filepath.py:302) into the sandbox, so a storage path can read ORM relations into the filename, which metadata returns as media_filename
+        locations:
+          - {file: src/documents/templating/filepath.py, line: 302}
+          - {file: src/documents/views.py, line: 493}
+        change_anchors:
+          - {file: src/documents/templating/filepath.py, line: 302, side: new}
+  - id: diff-024b606
     kind: diff
-    revision:
-      base_commit: 8dd355f6bf746b5ce99091eb10fc802b661b67e3
-      commit: 024b60638afd94c7a34cb50e254d193c9f7b30cc
-  - id: diff-7c9ab8c-15
+    base: 8dd355f6bf746b5ce99091eb10fc802b661b67e3
+    commit: 024b60638afd94c7a34cb50e254d193c9f7b30cc
+    checks:
+      - id: storage-path-test-idor
+        root_cause: StoragePathTestView is IsAuthenticated-only and StoragePathTestSerializer.document uses Document.objects.all(), so it renders paths for documents the caller cannot view
+        locations:
+          - {file: src/documents/serialisers.py, symbol: StoragePathTestSerializer}
+          - {file: src/documents/views.py, symbol: StoragePathTestView.post}
+        change_anchors:
+          - {file: src/documents/serialisers.py, line: 2023, side: new}
+          - {file: src/documents/views.py, line: 1563, side: new}
+      - id: storage-path-template-information-disclosure
+        root_cause: validate_filepath_template_and_render passes the live Document ORM object into the template context, and StoragePathTestView returns the rendered string, letting a template read related rows
+        locations:
+          - {file: src/documents/templating/filepath.py, symbol: validate_filepath_template_and_render}
+          - {file: src/documents/views.py, symbol: StoragePathTestView.post}
+        change_anchors:
+          - {file: src/documents/views.py, line: 1569, side: new}
+  - id: diff-7c9ab8c
     kind: diff
-    revision:
-      base_commit: 3a36d9b1aebb5d2ad5296db5db970d209c4f9495
-      commit: 7c9ab8c0b6ac7d6910ac8e4f98ca736a2e0e9ee7
-  - id: diff-4333bd5-17
+    base: 3a36d9b1aebb5d2ad5296db5db970d209c4f9495
+    commit: 7c9ab8c0b6ac7d6910ac8e4f98ca736a2e0e9ee7
+    checks:
+      - id: share-link-idor
+        root_cause: ShareLinkSerializer accepts any document id without checking that the requester can view that document before a public share link is created
+        locations:
+          - {file: src/documents/serialisers.py, symbol: ShareLinkSerializer}
+        change_anchors:
+          - {file: src/documents/serialisers.py, line: 948, side: new}
+  - id: diff-4333bd5
     kind: diff
-    revision:
-      base_commit: 96a29883cd9c3d961665fb9e51ac9ec1cb264caf
-      commit: 4333bd58cfeec5c613a8b9b5d3a3b713964f5c8e
-  - id: diff-c6e7d06-20
+    base: 96a29883cd9c3d961665fb9e51ac9ec1cb264caf
+    commit: 4333bd58cfeec5c613a8b9b5d3a3b713964f5c8e
+    checks:
+      - id: user-group-api-missing-permission
+        root_cause: UserViewSet and GroupViewSet use permission_classes IsAuthenticated only, and UserSerializer leaves is_staff/is_superuser writable, so any user gets full user and group CRUD
+        locations:
+          - {file: src/paperless/views.py, symbol: UserViewSet}
+          - {file: src/paperless/views.py, symbol: GroupViewSet}
+          - {file: src/paperless/serialisers.py, line: 22}
+          - {file: src/paperless/serialisers.py, line: 20}
+          - {file: src/paperless/views.py, line: 58}
+        change_anchors:
+          - {file: src/paperless/views.py, line: 45, side: new}
+          - {file: src/paperless/views.py, line: 58, side: new}
+          - {file: src/paperless/serialisers.py, line: 20, side: new}
+          - {file: src/paperless/serialisers.py, line: 22, side: new}
+          - {file: src/paperless/views.py, line: 38, side: new}
+  - id: diff-c6e7d06
     kind: diff
-    revision:
-      base_commit: 40289cd714988d41287f1bd8bd4fd82084621be4
-      commit: c6e7d06bb7049367f015dc3b124bb0a3bcabcc22
-  - id: diff-6d72ee7-23
+    base: 40289cd714988d41287f1bd8bd4fd82084621be4
+    commit: c6e7d06bb7049367f015dc3b124bb0a3bcabcc22
+    checks:
+      - id: global-search-mail-information-disclosure
+        root_cause: GlobalSearchView returns MailRule and MailAccount matches gated only by the global view permission (src/documents/views.py:1229, src/documents/views.py:1234), without the owner-aware object filter used for other types
+        locations:
+          - {file: src/documents/views.py, line: 1229}
+          - {file: src/documents/views.py, line: 1234}
+        change_anchors:
+          - {file: src/documents/views.py, line: 1229, side: new}
+          - {file: src/documents/views.py, line: 1234, side: new}
+  - id: diff-6d72ee7
     kind: diff
-    revision:
-      base_commit: 6730896894f3a6ee4a4f1a6c16c1e2e1936f9cf3
-      commit: 6d72ee795f2cacb72cc8fee9cc6f15acd34cbd67
-  - id: diff-18e0012-27
+    base: 6730896894f3a6ee4a4f1a6c16c1e2e1936f9cf3
+    commit: 6d72ee795f2cacb72cc8fee9cc6f15acd34cbd67
+    checks:
+      - id: edit-pdf-denial-of-service
+        root_cause: edit_pdf allocates max(doc)+1 pikepdf output documents (src/documents/bulk_edit.py:528-529) from a caller-supplied per-operation doc index that _validate_parameters_edit_pdf only type-checks and never bounds
+        locations:
+          - {file: src/documents/bulk_edit.py, line: 528}
+        change_anchors:
+          - {file: src/documents/bulk_edit.py, line: 528, side: new}
+          - {file: src/documents/bulk_edit.py, line: 529, side: new}
+      - id: bulk-edit-originals-missing-permission
+        root_cause: BulkEditView's edit_pdf update_document clause (src/documents/views.py:1378) sets has_perms to the ownership result instead of AND-ing the change_document check, so owned or ownerless documents bypass it
+        locations:
+          - {file: src/documents/views.py, line: 1378}
+        change_anchors:
+          - {file: src/documents/views.py, line: 1378, side: new}
+          - {file: src/documents/views.py, line: 1371, side: new}
+      - id: edit-pdf-delete-original-missing-permission
+        root_cause: BulkEditView's delete_document check covers only delete and merge/split delete_originals, while the new edit_pdf delete_original parameter deletes the source document (src/documents/bulk_edit.py:584)
+        locations:
+          - {file: src/documents/views.py, line: 1397}
+          - {file: src/documents/bulk_edit.py, line: 584}
+        change_anchors:
+          - {file: src/documents/bulk_edit.py, line: 584, side: new}
+  - id: diff-18e0012
     kind: diff
-    revision:
-      base_commit: 2554ced1983ef846c9a49dcfbf80dc342ede0df8
-      commit: 18e0012a5932d6f0858cad585691a8cc4ae62129
-  - id: diff-4cff907-28
+    base: 2554ced1983ef846c9a49dcfbf80dc342ede0df8
+    commit: 18e0012a5932d6f0858cad585691a8cc4ae62129
+    checks:
+      - id: owned-object-update-missing-permission
+        root_cause: OwnedObjectSerializer.update applies the new grant_permissions/revoke_permissions fields with no check that the requester owns the object, so any object-level change holder can regrant it
+        locations:
+          - {file: src/documents/serialisers.py, line: 96}
+        change_anchors:
+          - {file: src/documents/serialisers.py, line: 96, side: new}
+          - {file: src/documents/serialisers.py, line: 196, side: new}
+  - id: diff-4cff907
     kind: diff
-    revision:
-      base_commit: 4b32c3228e63babe42d037e94a5e1b584122a7fb
-      commit: 4cff907ba0a5a2fd117a9bec3a0e61c1d5c8c5da
-  - id: diff-2973e46-29
+    base: 4b32c3228e63babe42d037e94a5e1b584122a7fb
+    commit: 4cff907ba0a5a2fd117a9bec3a0e61c1d5c8c5da
+    checks:
+      - id: tag-children-information-disclosure
+        root_cause: TagSerializer.get_children serializes obj.get_children() without a view-permission filter, so a visible parent exposes child tags the requester cannot view
+        locations:
+          - {file: src/documents/serialisers.py, line: 560}
+        change_anchors:
+          - {file: src/documents/serialisers.py, line: 560, side: new}
+          - {file: src/documents/serialisers.py, line: 561, side: new}
+      - id: tag-parent-missing-permission
+        root_cause: update_document_parent_tags (src/documents/tasks.py:528), called from perform_update, adds the parent tags to every document with the tag without checking change permission on those documents
+        locations:
+          - {file: src/documents/tasks.py, line: 528}
+          - {file: src/documents/views.py, line: 350}
+        change_anchors:
+          - {file: src/documents/tasks.py, line: 528, side: new}
+  - id: diff-2973e46
     kind: diff
-    revision:
-      base_commit: 18e0012a5932d6f0858cad585691a8cc4ae62129
-      commit: 2973e4672a612c1ac6f0c52030a35478141507df
-  - id: diff-4af8070-31
+    base: 18e0012a5932d6f0858cad585691a8cc4ae62129
+    commit: 2973e4672a612c1ac6f0c52030a35478141507df
+    checks:
+      - id: owned-object-update-missing-permission
+        root_cause: TagSerializer now exposes owner, grant_permissions and revoke_permissions, and OwnedObjectSerializer.update applies them without requiring the requester to own the tag, so any tag change holder can reassign or regrant it
+        locations:
+          - {file: src/documents/serialisers.py, line: 343}
+        change_anchors:
+          - {file: src/documents/serialisers.py, line: 343, side: new}
+      - id: tag-create-missing-owner
+        root_cause: TagViewSet does not use PassUserMixin (get_serializer_class sets user on a discarded kwargs dict), so the serializer has no user and API-created tags are saved without an owner
+        locations:
+          - {file: src/documents/views.py, line: 177}
+          - {file: src/documents/views.py, line: 186}
+        change_anchors:
+          - {file: src/documents/views.py, line: 177, side: new}
+  - id: diff-4af8070
     kind: diff
-    revision:
-      base_commit: d6d00711754087f57b297ee1529c140acc167bc8
-      commit: 4af8070450b0aa08b15b6c4ad7e795d364385447
-  - id: diff-2353f7c-53
+    base: d6d00711754087f57b297ee1529c140acc167bc8
+    commit: 4af8070450b0aa08b15b6c4ad7e795d364385447
+    checks:
+      - id: bulk-edit-split-denial-of-service
+        root_cause: _validate_parameters_split expands caller-supplied a-b page ranges into full lists via range() (src/documents/serialisers.py:1017-1018) with no bound on the range size
+        locations:
+          - {file: src/documents/serialisers.py, line: 1017}
+        change_anchors:
+          - {file: src/documents/serialisers.py, line: 1017, side: new}
+          - {file: src/documents/serialisers.py, line: 1018, side: new}
+      - id: bulk-edit-merge-missing-owner
+        root_cause: merge consumes the merged document with empty DocumentMetadataOverrides when no metadata document is chosen (src/documents/bulk_edit.py:244) and never sets owner to the requesting user
+        locations:
+          - {file: src/documents/bulk_edit.py, symbol: merge}
+          - {file: src/documents/bulk_edit.py, line: 244}
+        change_anchors:
+          - {file: src/documents/bulk_edit.py, line: 243, side: new}
+          - {file: src/documents/bulk_edit.py, line: 244, side: new}
+          - {file: src/documents/bulk_edit.py, line: 247, side: new}
+  - id: diff-2353f7c
     kind: diff
-    revision:
-      base_commit: dcc8d4046ac7ca28d406bf4b5faa8930f17e5b16
-      commit: 2353f7c2db65b7c2607390dc9a1db9bb5b8e3499
-  - id: diff-23fefc3-54
+    base: dcc8d4046ac7ca28d406bf4b5faa8930f17e5b16
+    commit: 2353f7c2db65b7c2607390dc9a1db9bb5b8e3499
+    checks:
+      - id: oauth-mail-account-missing-owner
+        root_cause: OauthCallbackView creates the Gmail/Outlook MailAccount via update_or_create (src/paperless_mail/views.py:153) without setting owner=request.user, so the account and token are ownerless
+        locations:
+          - {file: src/paperless_mail/views.py, line: 153}
+        change_anchors:
+          - {file: src/paperless_mail/views.py, line: 153, side: new}
+      - id: oauth-callback-csrf
+        root_cause: PaperlessMailOAuth2Manager builds the OAuth authorization URL with no state value and OauthCallbackView accepts any code without verifying a session-bound state, so the account-creating callback is CSRF-able
+        locations:
+          - {file: src/paperless_mail/views.py, line: 110}
+          - {file: src/paperless_mail/oauth.py, line: 46}
+        change_anchors:
+          - {file: src/paperless_mail/views.py, line: 110, side: new}
+      - id: mail-test-idor
+        root_cause: MailAccountTestView copies any account's stored password, OAuth refresh token and expiry by request id (src/paperless_mail/views.py:63-67) and refreshes it (src/paperless_mail/views.py:82) without checking the caller may use that account
+        locations:
+          - {file: src/paperless_mail/views.py, line: 63}
+          - {file: src/paperless_mail/views.py, line: 82}
+        change_anchors:
+          - {file: src/paperless_mail/views.py, line: 82, side: new}
+          - {file: src/paperless_mail/views.py, line: 85, side: new}
+  - id: diff-23fefc3
     kind: diff
-    revision:
-      base_commit: 0beb9f0b5f3911a663850b6b687217600a85948f
-      commit: 23fefc3ab7a888bc60c1c1b435f4eca9073ba16e
+    base: 0beb9f0b5f3911a663850b6b687217600a85948f
+    commit: 23fefc3ab7a888bc60c1c1b435f4eca9073ba16e
+    checks:
+      - id: mail-test-idor
+        root_cause: MailAccountTestView loads any MailAccount's stored password by request id (src/paperless_mail/views.py:58) without an owner or object-permission filter, bypassing the per-owner account isolation the diff adds
+        locations:
+          - {file: src/paperless_mail/views.py, line: 58}
+          - {file: src/paperless_mail/views.py, symbol: MailAccountTestView}
+        change_anchors:
+          - {file: src/paperless_mail/views.py, line: 29, side: new}
+          - {file: src/paperless_mail/views.py, line: 30, side: new}
+      - id: mail-test-missing-permission
+        root_cause: MailAccountTestView keeps permission_classes IsAuthenticated only (src/paperless_mail/views.py:44) while the diff gates the mail viewsets with model permissions, so users lacking mail-account permission can call it
+        locations:
+          - {file: src/paperless_mail/views.py, symbol: MailAccountTestView}
+          - {file: src/paperless_mail/views.py, line: 44}
+        change_anchors:
+          - {file: src/paperless_mail/views.py, line: 29, side: new}
+      - id: mail-rule-account-idor
+        root_cause: MailRuleSerializer's AccountField keeps MailAccount.objects.all() while the diff adds per-owner mail account isolation, so rules can reference accounts the requester does not own
+        locations:
+          - {file: src/paperless_mail/serialisers.py, line: 56}
+        change_anchors:
+          - {file: src/paperless_mail/views.py, line: 30, side: new}

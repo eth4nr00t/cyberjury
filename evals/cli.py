@@ -1,12 +1,12 @@
 """Measure review quality on benchmark cases by source-reviewed adjudication.
 
-A runs directory holds one attempt record per case and run, `<project>/<task>/attempt-NN.json`,
+A runs directory holds one attempt record per case and run, `<project>/<case>/attempt-NN.json`,
 and the source assessment ledger of each attempt beside it as `ledger-NN.json`. Both modes record
 attempts from the product review output, `findings.json` and `outcome.json`, the same way.
 
 Workflow:
   python -m evals diff --runs 2 --attempts-dir runs --workspace reviews
-  python -m evals repository <project>:<repository-task> <review attempt directory> --attempts-dir runs
+  python -m evals repository <project>:<repository-case> <review attempt directory> --attempts-dir runs
   python -m evals packets runs --out adjudication --groups 3
   adjudicators get only adjudication/, follow INSTRUCTIONS.md there, and write result-N.json
   python -m evals ledger adjudication
@@ -29,7 +29,7 @@ from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 _EPILOG = (
     "Run from the repository root with the dev extra installed, for example "
-    "`pip install -e '.[dev]'` then `python -m evals ...`. Commands that take --manifest default to "
+    "`pip install -e '.[dev]'` then `python -m evals ...`. Commands that take --benchmark default to "
     "every project under evals/projects."
 )
 
@@ -37,7 +37,7 @@ _EPILOG = (
 def _cases(args) -> dict:
     from evals.benchmarks.cases import load_cases
 
-    return load_cases(args.manifest)
+    return load_cases(args.benchmark)
 
 
 def _write_new(path: Path, document: dict[str, object]) -> None:
@@ -98,9 +98,9 @@ def _cmd_repository(args) -> int:
     from evals.adjudication import attempt_path, recorded_attempt
     from evals.benchmarks.cases import find_case
 
-    case = find_case(args.case, args.manifest)
+    case = find_case(args.case, args.benchmark)
     if case.kind != "repository":
-        raise ValueError(f"{case.name} is not a repository task")
+        raise ValueError(f"{case.name} is not a repository case")
     attempts = Path(args.attempts_dir)
     number = 1
     while attempt_path(attempts, case.name, number).exists():
@@ -198,13 +198,13 @@ def main(argv: list[str] | None = None) -> int:
         allow_abbrev=False,
     )
     sub = p.add_subparsers(dest="cmd", required=True)
-    manifest = argparse.ArgumentParser(add_help=False)
-    manifest.add_argument(
-        "--manifest", action="append", default=None, help="benchmark.yaml or project directory, repeatable"
+    benchmark = argparse.ArgumentParser(add_help=False)
+    benchmark.add_argument(
+        "--benchmark", action="append", default=None, help="benchmark.yaml or project directory, repeatable"
     )
 
     d = sub.add_parser(
-        "diff", parents=[manifest], help="run diff cases and record one attempt per case and run", allow_abbrev=False
+        "diff", parents=[benchmark], help="run diff cases and record one attempt per case and run", allow_abbrev=False
     )
     d.add_argument("--case", default=None, help="run one exact case name")
     d.add_argument("--model", default=None)
@@ -215,27 +215,27 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
         help="diff unit reviews or verification calls to run in parallel",
     )
-    d.add_argument("--attempts-dir", required=True, help="runs directory for <project>/<task>/attempt-NN.json")
+    d.add_argument("--attempts-dir", required=True, help="runs directory for <project>/<case>/attempt-NN.json")
     d.add_argument(
         "--workspace",
         required=True,
-        help="review state root for <project>/<task>/run-NN, holding each attempt and its model-calls.json",
+        help="review state root for <project>/<case>/run-NN, holding each attempt and its model-calls.json",
     )
     d.set_defaults(func=_cmd_diff)
 
     r = sub.add_parser(
         "repository",
-        parents=[manifest],
+        parents=[benchmark],
         help="record a Repository Review attempt directory as the next attempt of a repository case",
         allow_abbrev=False,
     )
-    r.add_argument("case", help="full project:repository-task case name")
+    r.add_argument("case", help="full <project>:<repository case id> name")
     r.add_argument("review_attempt", help="review attempt directory holding findings.json and outcome.json")
-    r.add_argument("--attempts-dir", required=True, help="runs directory for <project>/<task>/attempt-NN.json")
+    r.add_argument("--attempts-dir", required=True, help="runs directory for <project>/<case>/attempt-NN.json")
     r.set_defaults(func=_cmd_repository)
 
     pk = sub.add_parser(
-        "packets", parents=[manifest], help="build blind adjudication packets from runs", allow_abbrev=False
+        "packets", parents=[benchmark], help="build blind adjudication packets from runs", allow_abbrev=False
     )
     pk.add_argument("runs", nargs="+", help="runs directories, for example both arms of a paired backtest")
     pk.add_argument("--out", required=True, help="directory adjudicators receive: packets and rubric only")
@@ -260,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
 
     lg = sub.add_parser(
         "ledger",
-        parents=[manifest],
+        parents=[benchmark],
         help="validate adjudicator results and write a ledger beside each attempt",
         allow_abbrev=False,
     )
@@ -275,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
 
     rp = sub.add_parser(
         "report",
-        parents=[manifest],
+        parents=[benchmark],
         help="reviewed recall, report precision, verdicts, and model call cost",
         allow_abbrev=False,
     )
@@ -292,13 +292,15 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--json", default=None, help="write both arms and the blocking failures")
     rp.set_defaults(func=_cmd_report)
 
-    sub.add_parser("list", parents=[manifest], help="list benchmark cases", allow_abbrev=False).set_defaults(
+    sub.add_parser("list", parents=[benchmark], help="list benchmark cases", allow_abbrev=False).set_defaults(
         func=_cmd_list
     )
 
-    val = sub.add_parser("validate", help="validate a benchmark manifest and answer key", allow_abbrev=False)
+    val = sub.add_parser("validate", help="validate a benchmark definition", allow_abbrev=False)
     val.add_argument("path", help="benchmark directory or benchmark.yaml")
-    val.add_argument("--source-root", default=None, help="checkout root used to verify answer-key file locations")
+    val.add_argument(
+        "--source-root", default=None, help="checkout of repository.commit that repository case locations must exist in"
+    )
     val.set_defaults(func=_cmd_validate)
 
     args = p.parse_args(argv)

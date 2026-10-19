@@ -76,8 +76,8 @@ class _Tee(io.TextIOBase):
 
 def case_workspace(workspace: Path, case: BenchmarkCase, number: int) -> Path:
     """Return the review workspace of one case run."""
-    project, task = case.name.split(":", 1)
-    return workspace / project / task / f"run-{number:02d}"
+    project, case_id = case.name.split(":", 1)
+    return workspace / project / case_id / f"run-{number:02d}"
 
 
 def run(
@@ -125,13 +125,11 @@ def _review_case(
     model_override: str | None,
     concurrency: int | None,
 ) -> dict[str, object]:
-    if case.target["path"] != ".":
-        raise ValueError(f"diff case {case.name!r} must review the whole repository, not {case.target['path']!r}")
     if workspace.exists():
         raise ValueError(f"diff review workspace already exists: {workspace}")
     root = git_target_root(case.target)
     ensure_git_target_refs(case.target, root)
-    git_range = f"{case.target['base']}..{case.target['ref']}"
+    git_range = f"{case.target['base']}..{case.target['commit']}"
     validate_change_anchors(case, resolve_diff_target(root, git_range).patch.text)
     argv = ["review", "diff", "--repository", str(root), "--git-range", git_range, "--workspace", str(workspace)]
     if model_override:

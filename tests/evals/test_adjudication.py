@@ -1,4 +1,4 @@
-"""Source assessment ledgers must bind to their attempt, pinned commit, and current answer key."""
+"""Source assessment ledgers must bind to their attempt, pinned commit, and current case checks."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ A, B = "candidate-" + "a" * 20, "candidate-" + "b" * 20
 
 @pytest.fixture
 def case(benchmark_project):
-    return find_case(benchmark_project.diff_case, [benchmark_project.manifest])
+    return find_case(benchmark_project.diff_case, [benchmark_project.benchmark])
 
 
 @pytest.fixture
@@ -33,11 +33,11 @@ def _adjudicate(case, attempt, source=None):
 
 
 def test_ledger_credits_checks_and_counts_verdicts(case, attempt, write_ledger, benchmark_project):
-    write_ledger(attempt, {A: ("supported", ("object-authorization",)), B: ("not_actionable", ())})
+    write_ledger(attempt, {A: ("supported", ("create-missing-owner",)), B: ("not_actionable", ())})
 
     result = _adjudicate(case, attempt, benchmark_project.repo)
 
-    assert result.found == ("object-authorization",)
+    assert result.found == ("create-missing-owner",)
     assert result.missed == ()
     assert result.pending == ()
     assert result.counts == {"duplicate": 0, "needs_review": 0, "not_actionable": 1, "supported": 1}
@@ -52,11 +52,11 @@ def test_ledger_must_assess_every_report_exactly_once(case, attempt, write_ledge
 
 def test_a_grouped_attempt_is_assessed_per_report_and_measures_its_issues(case, tmp_path, write_attempt, write_ledger):
     grouped = write_attempt(tmp_path / "grouped", 1, (A, B), issues=((B, A),))
-    write_ledger(grouped, {A: ("supported", ("object-authorization",)), B: ("duplicate", ())})
+    write_ledger(grouped, {A: ("supported", ("create-missing-owner",)), B: ("duplicate", ())})
 
     result = _adjudicate(case, grouped)
 
-    assert result.found == ("object-authorization",)
+    assert result.found == ("create-missing-owner",)
     assert result.counts == {"duplicate": 1, "needs_review": 0, "not_actionable": 0, "supported": 1}
     assert (result.issues, result.duplicate_issues, result.mixed_issues) == (1, 0, 0)
     write_ledger(grouped, {A: ("supported", ()), B: ("supported", ())})
@@ -80,11 +80,11 @@ def test_attempt_issues_must_partition_its_reports(tmp_path, write_attempt):
 
 
 def test_a_check_credited_by_two_reports_counts_once_and_a_duplicate_may_credit_it(case, attempt, write_ledger):
-    write_ledger(attempt, {A: ("supported", ("object-authorization",)), B: ("duplicate", ("object-authorization",))})
+    write_ledger(attempt, {A: ("supported", ("create-missing-owner",)), B: ("duplicate", ("create-missing-owner",))})
 
     result = _adjudicate(case, attempt)
 
-    assert result.found == ("object-authorization",)
+    assert result.found == ("create-missing-owner",)
 
 
 def test_ledger_rejects_a_check_outside_the_case(case, attempt, write_ledger):
@@ -95,7 +95,7 @@ def test_ledger_rejects_a_check_outside_the_case(case, attempt, write_ledger):
 
 
 def test_ledger_rejects_check_credit_on_an_unsupported_report(case, attempt, write_ledger):
-    write_ledger(attempt, {A: ("not_actionable", ("object-authorization",)), B: ("not_actionable", ())})
+    write_ledger(attempt, {A: ("not_actionable", ("create-missing-owner",)), B: ("not_actionable", ())})
 
     with pytest.raises(ValueError, match=r"ledger-v1\.schema"):
         _adjudicate(case, attempt)
@@ -123,10 +123,10 @@ def test_ledger_is_bound_to_the_pinned_commit(case, attempt, write_ledger, bench
         _adjudicate(case, attempt)
 
 
-def test_ledger_adjudicated_against_another_answer_key_is_rejected(case, attempt, write_ledger):
+def test_ledger_adjudicated_against_other_case_checks_is_rejected(case, attempt, write_ledger):
     write_ledger(attempt, {A: ("supported", ()), B: ("supported", ())}, checks_sha256="0" * 64)
 
-    with pytest.raises(ValueError, match="another answer key"):
+    with pytest.raises(ValueError, match="other case checks"):
         _adjudicate(case, attempt)
 
 
@@ -190,10 +190,10 @@ def _review_attempt(directory, reviewed_root, *, target=None):
 
 @pytest.fixture
 def repository_case(benchmark_project):
-    return find_case(benchmark_project.repository_case, [benchmark_project.manifest])
+    return find_case(benchmark_project.repository_case, [benchmark_project.benchmark])
 
 
-def test_recorded_repository_attempt_records_a_review_of_the_task_source(tmp_path, benchmark_project, repository_case):
+def test_recorded_repository_attempt_records_a_review_of_the_case_source(tmp_path, benchmark_project, repository_case):
     attempt = recorded_attempt(repository_case, _review_attempt(tmp_path, benchmark_project.repo), 3)
 
     assert attempt["case"] == repository_case.name
@@ -214,7 +214,7 @@ def test_recorded_repository_attempt_rejects_a_review_of_a_plain_directory(
         recorded_attempt(repository_case, _review_attempt(tmp_path, plain), 1)
 
     message = str(error.value)
-    assert f"the task is commit {benchmark_project.ref} scope '.'" in message
+    assert f"the case is commit {benchmark_project.commit}, but" in message
     assert "a plain directory outside any git checkout" in message
     assert "0 changed, 1 missing, and 1 extra files" in message
 
@@ -227,7 +227,7 @@ def test_recorded_repository_attempt_rejects_a_review_of_another_commit(tmp_path
         recorded_attempt(repository_case, _review_attempt(tmp_path, other), 1)
 
     message = str(error.value)
-    assert f"a git checkout of commit {benchmark_project.base} scope '.'" in message
+    assert f"a git checkout of commit {benchmark_project.base} path '.'" in message
     assert "1 changed, 0 missing, and 0 extra files, for example views.py" in message
 
 
@@ -250,7 +250,7 @@ def _diff_target(benchmark_project, base, ref):
 def test_recorded_diff_attempt_has_the_same_finding_fields_as_a_repository_attempt(
     tmp_path, benchmark_project, case, repository_case
 ):
-    diff_target = _diff_target(benchmark_project, benchmark_project.base, benchmark_project.ref)
+    diff_target = _diff_target(benchmark_project, benchmark_project.base, benchmark_project.commit)
     diff = recorded_attempt(case, _review_attempt(tmp_path / "d", benchmark_project.repo, target=diff_target), 1)
     repository = recorded_attempt(repository_case, _review_attempt(tmp_path / "r", benchmark_project.repo), 1)
 
@@ -259,7 +259,7 @@ def test_recorded_diff_attempt_has_the_same_finding_fields_as_a_repository_attem
 
 
 def test_recorded_diff_attempt_rejects_a_review_of_another_range(tmp_path, benchmark_project, case):
-    other = _diff_target(benchmark_project, benchmark_project.ref, benchmark_project.ref)
+    other = _diff_target(benchmark_project, benchmark_project.commit, benchmark_project.commit)
 
     with pytest.raises(ValueError, match="did not review the change"):
         recorded_attempt(case, _review_attempt(tmp_path, benchmark_project.repo, target=other), 1)
