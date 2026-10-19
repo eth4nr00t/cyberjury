@@ -11,7 +11,7 @@ import pytest
 from evals.benchmarks.cases import checks_sha256, load_cases
 from evals.packets import RUBRIC, build_packets, default_mapping_path, write_ledgers
 
-A, B, C = ("candidate-" + letter * 20 for letter in "abc")
+A, B, C, D = ("candidate-" + letter * 20 for letter in "abcd")
 
 
 @pytest.fixture
@@ -126,6 +126,24 @@ def test_a_large_case_is_split_into_entries_that_index_each_other(tmp_path, case
     _result(out, {f"Claim {A}": "supported"})
 
     assert write_ledgers(cases, out) == (2, [])
+
+
+def test_split_entries_keep_reports_of_the_same_place_from_every_run_together(tmp_path, cases, write_attempt):
+    runs = tmp_path / "runs"
+    lines = {A: 2, B: 9, C: 9, D: 2}
+    for number, candidates in ((1, (A, B)), (2, (C, D))):
+        path = write_attempt(runs, number, candidates)
+        record = json.loads(path.read_text(encoding="utf-8"))
+        for finding in record["findings"]:
+            finding["line"] = lines[finding["id"]]
+        path.write_text(json.dumps(record), encoding="utf-8")
+    out = tmp_path / "adjudication"
+
+    build_packets(cases, [runs], out, groups=1, max_reports=2)
+
+    entries = json.loads((out / "packet-1.json").read_text(encoding="utf-8"))
+    assert [sorted(report["line"] for report in entry["reports"]) for entry in entries] == [[2, 2], [9, 9]]
+    assert all({report["run"] for report in entry["reports"]} == {"A", "B"} for entry in entries)
 
 
 def test_a_duplicate_of_a_duplicate_resolves_to_the_first_canonical(tmp_path, cases, write_attempt):

@@ -40,6 +40,12 @@ def _report(finding: dict) -> dict:
     return {key: value for key, value in finding.items() if key not in _PROVENANCE}
 
 
+def _location(report: dict) -> tuple[str, int, int]:
+    """Order reports by file and line, then by label, so reports of the same place share an entry."""
+    line = report.get("line")
+    return str(report.get("file") or ""), line if isinstance(line, int) else 0, int(report["label"].rsplit("#", 1)[1])
+
+
 def default_mapping_path(out: Path) -> Path:
     """Return the private mapping location beside, never inside, an adjudicator directory."""
     return out.parent / f"{out.name}.private" / "mapping.json"
@@ -95,9 +101,10 @@ def build_packets(
     or configuration produced an attempt. An attempt reached through overlapping runs directories is
     packaged once. Earlier verdicts are included only from `references`, which are runs directories
     or private mappings of earlier rounds. The mapping is written to `mapping_path`, outside `out`.
-    With `max_reports`, a case with more reports is split into entries of at most that many reports,
-    and each entry lists the case's other reports under `other_reports`, so a duplicate can name a
-    canonical report in another entry.
+    Reports are ordered by file and line, then label, so reports of the same place from every run sit
+    together. With `max_reports`, a case with more reports is split into entries of at most that many
+    reports, and each entry lists the case's other reports under `other_reports`, so a duplicate can
+    name a canonical report in another entry.
     """
     if groups < 1:
         raise ValueError("adjudication packets need at least one group")
@@ -139,7 +146,8 @@ def build_packets(
             entry["reference_decisions"] = _references(case, prior)
             reference_counts[name] = len(entry["reference_decisions"])
         size = max_reports or len(reports) or 1
-        chunks = [reports[start : start + size] for start in range(0, len(reports), size)] or [[]]
+        located = sorted(reports, key=_location)
+        chunks = [located[start : start + size] for start in range(0, len(located), size)] or [[]]
         for chunk in chunks:
             part = entry | {"reports": chunk}
             if len(chunks) > 1:
