@@ -3,9 +3,12 @@
 ``cache`` marks an ephemeral cache_control breakpoint on the system prompt, which holds
 the review contract shared by every call of a run. ``cache_prefix`` adds a second
 breakpoint by splitting the first user message after its stable evidence block, so the
-follow ups of one unit reuse that evidence. The Anthropic client is injectable so the
-mapping and caching logic can be tested without the SDK or an API key. Constructed
-lazily otherwise, reading ANTHROPIC_API_KEY from the environment.
+follow ups of one unit reuse that evidence. Each of ``cache_segments`` becomes its own block
+after the prefix and the last one carries a third breakpoint, so a follow up reads the
+evidence of earlier exchanges from the cache entry the previous call wrote at its own last
+segment, found by the API's lookback over earlier block boundaries. The Anthropic client is
+injectable so the mapping and caching logic can be tested without the SDK or an API key.
+Constructed lazily otherwise, reading ANTHROPIC_API_KEY from the environment.
 """
 
 from __future__ import annotations
@@ -66,13 +69,14 @@ class AnthropicProvider(Provider):
         max_tokens: int,
         cache: bool = False,
         cache_prefix: str = "",
+        cache_segments: tuple[str, ...] = (),
         response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
         """Return one provider completion with optional usage accounting."""
         api_messages = [{"role": m.role, "content": m.content} for m in messages]
         system_param: Any = system
         if cache:
-            _mark_cache_prefix(api_messages, cache_prefix)
+            _mark_cache_prefix(api_messages, cache_prefix, cache_segments)
             if system:
                 system_param = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
@@ -106,14 +110,20 @@ class AnthropicProvider(Provider):
             return client.messages.create(**request)
 
 
-def _mark_cache_prefix(api_messages: list[dict], cache_prefix: str) -> None:
+def _mark_cache_prefix(api_messages: list[dict], cache_prefix: str, cache_segments: tuple[str, ...]) -> None:
     if not cache_prefix or not api_messages:
         return
     content = api_messages[0].get("content")
     if not isinstance(content, str) or not content.startswith(cache_prefix):
         return
+    segments = [segment for segment in cache_segments if segment]
+    if not content.startswith(cache_prefix + "".join(segments)):
+        segments = []
     blocks: list[dict] = [{"type": "text", "text": cache_prefix, "cache_control": {"type": "ephemeral"}}]
-    remainder = content[len(cache_prefix) :]
+    blocks.extend({"type": "text", "text": segment} for segment in segments)
+    if segments:
+        blocks[-1]["cache_control"] = {"type": "ephemeral"}
+    remainder = content[len(cache_prefix) + sum(len(segment) for segment in segments) :]
     if remainder:
         blocks.append({"type": "text", "text": remainder})
     api_messages[0]["content"] = blocks

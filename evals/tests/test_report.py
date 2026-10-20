@@ -22,7 +22,18 @@ _CREDIT = ("supported", ("create-missing-owner",))
 
 
 class _Fake(Provider):
-    def complete(self, *, system, messages, model, max_tokens, cache=False, cache_prefix="", response_schema=None):
+    def complete(
+        self,
+        *,
+        system,
+        messages,
+        model,
+        max_tokens,
+        cache=False,
+        cache_prefix="",
+        cache_segments=(),
+        response_schema=None,
+    ):
         return CompletionResult(text="{}", usage=Usage(input_tokens=7, cache_read_tokens=5, output_tokens=3))
 
 

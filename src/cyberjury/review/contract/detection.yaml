@@ -13,9 +13,29 @@ doc_extensions:
 asset_extensions:
   - ".css"
   - ".less"
+  - ".map"
   - ".po"
   - ".pot"
   - ".sass"
   - ".scss"
   - ".svg"
   - ".xlf"
+
+translation_dirs:
+  - "i18n"
+  - "l10n"
+  - "locale"
+  - "locales"
+  - "localization"
+  - "translations"
+
+translation_extensions:
+  - ".ftl"
+  - ".ini"
+  - ".json"
+  - ".properties"
+  - ".strings"
+  - ".toml"
+  - ".xml"
+  - ".yaml"
+  - ".yml"

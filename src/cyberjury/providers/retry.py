@@ -130,6 +130,7 @@ class RetryProvider(Provider):
         max_tokens: int,
         cache: bool = False,
         cache_prefix: str = "",
+        cache_segments: tuple[str, ...] = (),
         response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
         """Return one provider completion with successful response usage accounting."""
@@ -143,6 +144,7 @@ class RetryProvider(Provider):
                     max_tokens=max_tokens,
                     cache=cache,
                     cache_prefix=cache_prefix,
+                    cache_segments=cache_segments,
                     response_schema=response_schema,
                 )
             except Exception as exc:

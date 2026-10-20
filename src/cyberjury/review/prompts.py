@@ -12,10 +12,20 @@ from cyberjury.severity import SEVERITIES
 
 @dataclass(frozen=True, kw_only=True)
 class PromptPlan:
-    """One reusable evidence prefix followed by the controls that change between calls."""
+    """One reusable evidence prefix followed by the controls that change between calls.
+
+    `cache_segments` are the leading blocks of the dynamic suffix that every later call of the
+    same judgment repeats verbatim, the evidence exchanges already delivered.
+    """
 
     stable_prefix: str
     dynamic_suffix: str
+    cache_segments: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Reject segments that are not the leading text of the dynamic suffix."""
+        if not self.dynamic_suffix.startswith("".join(self.cache_segments)):
+            raise ValueError("prompt cache segments must lead the dynamic suffix")
 
     @property
     def text(self) -> str:

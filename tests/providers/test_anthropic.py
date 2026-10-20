@@ -98,6 +98,44 @@ def test_cache_prefix_marks_the_system_and_the_stable_message_prefix():
     assert client.create_kwargs["system"] == [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}]
 
 
+def test_cache_segments_become_blocks_with_a_breakpoint_on_the_last_one():
+    """Segments ONE and TWO after the STABLE prefix are separate blocks, and TWO carries the third breakpoint."""
+    provider, client = _provider()
+    provider.complete(
+        system="sys",
+        messages=[Message(role="user", content="STABLEONETWOtail")],
+        model="m",
+        max_tokens=8,
+        cache=True,
+        cache_prefix="STABLE",
+        cache_segments=("ONE", "TWO"),
+    )
+    assert client.create_kwargs["messages"][0]["content"] == [
+        {"type": "text", "text": "STABLE", "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": "ONE"},
+        {"type": "text", "text": "TWO", "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": "tail"},
+    ]
+
+
+def test_cache_segments_that_do_not_follow_the_prefix_mark_only_the_prefix():
+    """Segments absent from the message leave the STABLE breakpoint and one plain remainder block."""
+    provider, client = _provider()
+    provider.complete(
+        system="sys",
+        messages=[Message(role="user", content="STABLEtail")],
+        model="m",
+        max_tokens=8,
+        cache=True,
+        cache_prefix="STABLE",
+        cache_segments=("ONE",),
+    )
+    assert client.create_kwargs["messages"][0]["content"] == [
+        {"type": "text", "text": "STABLE", "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": "tail"},
+    ]
+
+
 def test_cache_prefix_equal_to_the_message_marks_a_single_block():
     """A message equal to the STABLE prefix is sent as one cached text block with no empty remainder."""
     provider, client = _provider()

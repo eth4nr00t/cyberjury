@@ -39,6 +39,7 @@ class MockProvider(Provider):
         max_tokens: int,
         cache: bool = False,
         cache_prefix: str = "",
+        cache_segments: tuple[str, ...] = (),
         response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
         """Return one provider completion with optional usage accounting."""
@@ -49,6 +50,7 @@ class MockProvider(Provider):
                 "model": model,
                 "cache": cache,
                 "cache_prefix": cache_prefix,
+                "cache_segments": cache_segments,
                 "max_tokens": max_tokens,
                 "response_schema": response_schema,
             }

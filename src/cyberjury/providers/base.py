@@ -8,7 +8,10 @@ OpenAI maps it to a routing key and relies on automatic prefix caching. ``cache_
 when given, is the leading substring of the first user message that stays constant
 across calls, such as one review unit's evidence. A provider with explicit cache controls
 marks a second breakpoint there, and a routing key covers the system prompt plus that
-prefix.
+prefix. ``cache_segments`` are the text blocks that follow the prefix and that later calls
+of the same conversation repeat, such as evidence delivered in earlier exchanges. A
+provider with explicit cache controls marks a breakpoint after the last of them, while the
+routing key stays on the prefix so every call of one conversation reaches the same cache.
 """
 
 from __future__ import annotations
@@ -86,6 +89,7 @@ class Provider(ABC):
         max_tokens: int,
         cache: bool = False,
         cache_prefix: str = "",
+        cache_segments: tuple[str, ...] = (),
         response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
         """Return one provider completion with optional usage accounting."""

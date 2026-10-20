@@ -218,6 +218,7 @@ class UnitFinder[U: GroundedUnit]:
                 max_tokens=self._max_tokens,
                 cache=True,
                 cache_prefix=prompt.stable_prefix,
+                cache_segments=prompt.cache_segments,
                 response_schema=target.response_schema,
             )
             return parse_role_response(result.text, role=target.role, response_schema=target.response_schema)

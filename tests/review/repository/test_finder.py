@@ -427,6 +427,10 @@ def test_repository_navigation_keeps_profile_coverage_and_runs_a_final_evidence_
     assert final["cache"] is True
     assert first["cache_prefix"] == final["cache_prefix"]
     assert first["messages"][0].content.startswith(first["cache_prefix"])
+    assert first["cache_segments"] == ()
+    assert len(final["cache_segments"]) == 1
+    assert final["messages"][0].content.startswith(final["cache_prefix"] + final["cache_segments"][0])
+    assert "owner_scope = True" in final["cache_segments"][0]
     assert first["messages"][0].content.endswith("Evidence request budget: 8 request batches remain.")
     final_prompt = final["messages"][0].content
     assert final_prompt.startswith(first["cache_prefix"])

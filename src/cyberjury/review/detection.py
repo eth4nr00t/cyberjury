@@ -32,6 +32,8 @@ class Detection:
     test_name_patterns: tuple[str, ...]
     doc_extensions: frozenset[str]
     asset_extensions: frozenset[str]
+    translation_dirs: frozenset[str]
+    translation_extensions: frozenset[str]
     lockfiles: frozenset[str]
     attribute_rules: tuple[tuple[re.Pattern[str], str, bool], ...] = ()
     oversized_files: frozenset[str] = frozenset()
@@ -62,13 +64,20 @@ class Detection:
         name = parts[-1].lower()
         return any(fnmatch.fnmatch(name, pat) for pat in self.test_name_patterns)
 
+    def is_translation(self, path: str) -> bool:
+        """Return whether a path is a translation catalog, a data file under a translation directory."""
+        pure = PurePosixPath(path)
+        return pure.suffix.lower() in self.translation_extensions and any(
+            part.lower() in self.translation_dirs for part in pure.parts[:-1]
+        )
+
     def is_noise_path(self, path: str) -> bool:
         """Return whether a path is excluded from security review.
 
         Excluded paths cover ignored directories, third-party code, test code, documentation,
-        assets, and dependency lockfiles. This is a denylist of files known to carry no project
-        logic, not an allowlist of parsed languages, so a security-relevant non-source file such as
-        a `.sql` migration, a shell script, or a Dockerfile is kept.
+        assets, translation catalogs, and dependency lockfiles. This is a denylist of files known
+        to carry no project logic, not an allowlist of parsed languages, so a security-relevant
+        non-source file such as a `.sql` migration, a shell script, or a Dockerfile is kept.
         """
         path = path.replace("\\", "/")
         name = PurePosixPath(path).name
@@ -79,6 +88,7 @@ class Detection:
             or self.is_documentation(path)
             or name in self.lockfiles
             or PurePosixPath(name).suffix.lower() in self.asset_extensions
+            or self.is_translation(path)
         )
 
     def _declared(self, path: str, attribute: str) -> bool | None:
@@ -106,6 +116,8 @@ def load_detection() -> Detection:
         test_name_patterns=joined("test_name_patterns"),
         doc_extensions=frozenset(data["doc_extensions"]),
         asset_extensions=frozenset(data["asset_extensions"]),
+        translation_dirs=frozenset(data["translation_dirs"]),
+        translation_extensions=frozenset(data["translation_extensions"]),
         lockfiles=frozenset(joined("lockfiles")),
     )
 

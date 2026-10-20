@@ -62,6 +62,7 @@ class OpenAIProvider(Provider):
         max_tokens: int,
         cache: bool = False,
         cache_prefix: str = "",
+        cache_segments: tuple[str, ...] = (),
         response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
         """Call the Responses API and return one completion with its usage.

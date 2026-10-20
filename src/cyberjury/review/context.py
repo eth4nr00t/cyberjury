@@ -845,8 +845,11 @@ class EvidencePromptContext:
     @property
     def followup(self) -> str:
         """Render delivered exchanges, then the one current correction, provisional findings, and budget."""
-        parts = (*self.delivered, self.correction, self.provisional, self.budget)
-        return "\n\n".join(part for part in parts if part)
+        return "\n\n".join(self._followup_parts)
+
+    @property
+    def _followup_parts(self) -> list[str]:
+        return [part for part in (*self.delivered, self.correction, self.provisional, self.budget) if part]
 
     @property
     def controls(self) -> str:
@@ -857,4 +860,7 @@ class EvidencePromptContext:
     def plan(self) -> PromptPlan:
         """Keep the unit evidence and catalog ahead of the controls that change between calls."""
         stable = "\n\n".join(part for part in (self.source, self.catalog) if part)
-        return PromptPlan(stable_prefix=f"{stable}\n\n", dynamic_suffix=self.followup)
+        parts = self._followup_parts
+        delivered = sum(1 for part in self.delivered if part)
+        segments = tuple(f"{part}\n\n" for part in parts[: min(delivered, len(parts) - 1)])
+        return PromptPlan(stable_prefix=f"{stable}\n\n", dynamic_suffix=self.followup, cache_segments=segments)

@@ -29,6 +29,7 @@ class _Fake(Provider):
         max_tokens,
         cache=False,
         cache_prefix="",
+        cache_segments=(),
         response_schema=None,
     ):
         return CompletionResult(text="ok", usage=self._usage)

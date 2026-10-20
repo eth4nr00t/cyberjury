@@ -54,6 +54,7 @@ def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
         "frontend/yarn.lock",
         "go.sum",
         "uv.lock",
+        "public/css/app.min.css.map",
         "bun.lock",
         "deno.lock",
         "app/tests/test_views.py",
@@ -88,6 +89,22 @@ def test_is_noise_path_keeps_source_and_security_relevant_non_source():
         "infra/main.tf",
         "config/settings.yaml",
     ):
+        assert not d.is_noise_path(f), f
+
+
+def test_translation_catalogs_are_noise_while_code_and_config_beside_them_are_kept():
+    """Data files under locale, i18n, and l10n directories are noise, and Go code there and conf/app.ini are kept."""
+    d = load_detection()
+    for f in (
+        "conf/locale/locale_de-DE.ini",
+        "config/locales/fr.yml",
+        "public/locales/zh-Hant/grafana.json",
+        "apps/settings/l10n/de.json",
+        "Server/Localization/Core/de.json",
+        "src/main/resources/i18n/messages_de.properties",
+    ):
+        assert d.is_noise_path(f), f
+    for f in ("internal/locale/locale.go", "conf/app.ini", "config/settings.yaml"):
         assert not d.is_noise_path(f), f
 
 
