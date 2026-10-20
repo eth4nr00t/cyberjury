@@ -12,7 +12,9 @@ from cyberjury.sources.snapshot import capture_source_snapshot
 def syntax_facts(root) -> Facts:
     """Extract the syntax facts of every selected source under the root."""
     snapshot = capture_source_snapshot(root)
-    facts, _receipt = extract_facts(snapshot, select_files(snapshot.root, snapshot.files, load_detection()))
+    facts, _receipt = extract_facts(
+        snapshot, select_files(snapshot.root, snapshot.files, load_detection()), load_detection()
+    )
     return facts
 
 

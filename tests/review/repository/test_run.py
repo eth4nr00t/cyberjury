@@ -157,7 +157,6 @@ def custody_repository(tmp_path):
     (d / "app" / "services").mkdir(parents=True)
     (d / "app" / "routes.py").write_text(_FLASK_APP)
     (d / "app" / "services" / "wallet.py").write_text("def get_wallet(wid):\n    return {'id': wid}\n")
-    (d / "requirements.txt").write_text("Flask==3.0\n")
     return d
 
 
@@ -199,7 +198,6 @@ def test_repository_reviews_raw_source_and_stays_incomplete_when_facts_are_limit
     target = tmp_path / "opaque"
     target.mkdir()
     (target / "app.py").write_text("from flask import Flask\napp = Flask(__name__)\ndef broken(:\n")
-    (target / "requirements.txt").write_text("Flask==3.0\n")
     provider = MockProvider(default=EMPTY_REPLY)
 
     result = run_repository_review(target, tmp_path / "ws", provider=provider)
@@ -247,7 +245,6 @@ def _two_entrypoint_repository(root):
             "from flask import Flask, request\napp = Flask(__name__)\n"
             f'@app.route("/{pkg}/<x>")\ndef h_{pkg}(x):\n    return request.args.get("y", "")\n'
         )
-    (root / "requirements.txt").write_text("Flask==3.0\n")
     return root
 
 

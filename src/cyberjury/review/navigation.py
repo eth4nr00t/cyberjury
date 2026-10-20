@@ -34,6 +34,7 @@ from cyberjury.review.relationships import (
 
 _MAX_RESULTS_PER_PAGE = 20
 _MAX_SEARCHABLE_FILE_BYTES = 2_000_000
+_SOURCE_LABELS = {"production": "source", "documentation": "documentation", "dependency": "third-party source"}
 MAX_QUERIES_PER_BATCH = 8
 MAX_UNIQUE_QUERIES_PER_SESSION = 64
 _MAX_SOURCE_TARGET_CHARS = 24_000
@@ -88,7 +89,7 @@ class SourceTarget:
     end: int
     preview: str
     definition_id: str = ""
-    source_kind: Literal["production", "documentation"] = "production"
+    source_kind: Literal["production", "documentation", "dependency"] = "production"
 
     @classmethod
     def create(
@@ -100,7 +101,7 @@ class SourceTarget:
         end: int,
         preview: str,
         definition_id: str = "",
-        source_kind: Literal["production", "documentation"] = "production",
+        source_kind: Literal["production", "documentation", "dependency"] = "production",
     ) -> SourceTarget:
         """Build an opaque id from one exact repository source range."""
         identity = f"{file}:{name}:{start}:{end}"
@@ -135,6 +136,7 @@ class SourceNavigator:
     files: tuple[str, ...]
     relationship_evidence: RelationshipEvidenceBundle = field(default_factory=RelationshipEvidenceBundle)
     documentation_files: frozenset[str] = frozenset()
+    dependency_files: frozenset[str] = frozenset()
 
     @classmethod
     def from_facts(
@@ -145,6 +147,7 @@ class SourceNavigator:
         import_files: Iterable[str] = (),
         relationship_evidence: RelationshipEvidenceBundle | None = None,
         documentation_files: Iterable[str] = (),
+        dependency_files: Iterable[str] = (),
     ) -> SourceNavigator | None:
         """Build navigation from shared facts without adding resolver semantics."""
         base = Path(root).resolve()
@@ -174,6 +177,7 @@ class SourceNavigator:
             files=files,
             relationship_evidence=relationships,
             documentation_files=frozenset(documentation_files).intersection(included),
+            dependency_files=frozenset(dependency_files).intersection(included),
         )
 
     def session(self) -> SourceNavigationSession:
@@ -409,7 +413,7 @@ class SourceNavigationSession:
                 )
             delivered_as = self._delivered_as(target)
             receipt = self._receipt(target)
-            label = "documentation" if target.source_kind == "documentation" else "source"
+            label = _SOURCE_LABELS[target.source_kind]
             heading = f"{label} `{target.id}` {one_line_source(target.file)}:{one_line_source(target.name)}"
             if delivered_as is None:
                 read_chars += len(receipt.text)
@@ -504,8 +508,9 @@ class SourceNavigationSession:
             source = self._source(file)
             for line_no, line in enumerate(split_lines(source, keepends=True), start=1):
                 if query in line:
-                    start = _line_offset(source, max(1, line_no - 3))
-                    end = _line_offset(source, line_no + 4)
+                    match = _line_offset(source, line_no) + line.index(query)
+                    start = max(_line_offset(source, max(1, line_no - 3)), match - _MAX_SOURCE_TARGET_CHARS // 2)
+                    end = min(_line_offset(source, line_no + 4), start + _MAX_SOURCE_TARGET_CHARS)
                     target = SourceTarget.create(
                         file=file,
                         name=f"text line {line_no}",
@@ -722,8 +727,12 @@ class SourceNavigationSession:
         self._targets_by_identity[registered.identity] = registered
         return registered
 
-    def _source_kind(self, file: str) -> Literal["production", "documentation"]:
-        return "documentation" if file in self._navigator.documentation_files else "production"
+    def _source_kind(self, file: str) -> Literal["production", "documentation", "dependency"]:
+        if file in self._navigator.documentation_files:
+            return "documentation"
+        if file in self._navigator.dependency_files:
+            return "dependency"
+        return "production"
 
     def _source(self, file: str) -> str:
         source = self._sources.get(file)

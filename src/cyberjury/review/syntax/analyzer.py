@@ -9,10 +9,9 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import yaml
-
-from cyberjury.review.contract import QUERIES_FILE
+from cyberjury.review.detection import MAX_SOURCE_BYTES
 from cyberjury.review.facts import FactLimitation
+from cyberjury.review.languages import load_languages
 from cyberjury.review.relationships import StructuralRelationKind
 
 if TYPE_CHECKING:
@@ -22,8 +21,6 @@ if sys.version_info >= (3, 13):
     from types import CapsuleType
 else:
     CapsuleType = object
-
-MAX_SOURCE_BYTES = 400_000
 
 
 class SourceParseError(RuntimeError):
@@ -192,10 +189,8 @@ class AnalyzedRepository:
 type AnalyzableSource = tuple[Path, str, LangSpec]
 
 
-_SPEC_FIELDS = frozenset(
+_SYNTAX_FIELDS = frozenset(
     {
-        "extensions",
-        "grammar",
         "definitions",
         "type_definitions",
         "calls",
@@ -208,18 +203,20 @@ _SPEC_FIELDS = frozenset(
 )
 
 
-def load_specs(path: Path | None = None) -> dict[str, LangSpec]:
-    """Load the declarative grammar and query contracts."""
-    raw = yaml.safe_load((path or QUERIES_FILE).read_text(encoding="utf-8"))
+def load_specs() -> dict[str, LangSpec]:
+    """Load the grammar and syntax queries of every language that declares a grammar."""
     specs: dict[str, LangSpec] = {}
-    for name, config in raw.items():
-        unknown = sorted(set(config) - _SPEC_FIELDS)
+    for name, language in load_languages().items():
+        if language.grammar is None:
+            continue
+        config = language.syntax
+        unknown = sorted(set(config) - _SYNTAX_FIELDS)
         if unknown:
             raise ValueError(f"{name} contains unknown analyzer query fields: {', '.join(unknown)}")
-        module, accessor = config["grammar"]
+        module, accessor = language.grammar
         specs[name] = LangSpec(
             name=name,
-            extensions=tuple(value.lower() for value in config["extensions"]),
+            extensions=language.extensions,
             module=module,
             accessor=accessor,
             definitions=config["definitions"].strip(),

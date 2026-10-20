@@ -14,13 +14,13 @@ _PACKAGE_ROOT = CONTRACT_DIR.parents[1]
 SECURITY_KERNEL_FILE = CONTRACT_DIR / "security-kernel.md"
 SEVERITY_RUBRIC_FILE = CONTRACT_DIR / "severity-rubric.md"
 DETECTION_FILE = CONTRACT_DIR / "detection.yaml"
-QUERIES_FILE = CONTRACT_DIR.parent / "syntax" / "queries.yaml"
-_CONTRACT_FILES = (SECURITY_KERNEL_FILE, SEVERITY_RUBRIC_FILE, DETECTION_FILE, QUERIES_FILE)
+LANGUAGE_FILES = tuple(sorted((CONTRACT_DIR / "languages").glob("*.yaml")))
+_CONTRACT_FILES = (SECURITY_KERNEL_FILE, SEVERITY_RUBRIC_FILE, DETECTION_FILE, *LANGUAGE_FILES)
 
 
 @dataclass(frozen=True, kw_only=True)
 class ContractReceipt:
-    """Identify the kernel, rubric, file classification, and syntax queries one review used."""
+    """Identify the kernel, rubric, file classification, and language contracts one review used."""
 
     files: tuple[tuple[str, str], ...]
     contract_sha256: str

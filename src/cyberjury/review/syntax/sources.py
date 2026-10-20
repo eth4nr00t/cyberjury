@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cyberjury.review.facts import FactLimitation
@@ -36,7 +36,12 @@ def reviewable_sources(
     """Select the snapshot files that belong to the analyzer input."""
     sources: list[AnalyzableSource] = []
     for rel in files:
-        if detection.is_skipped_dir(PurePosixPath(rel).parts[:-1]) or detection.is_test_path(rel):
+        if (
+            detection.is_ignored(rel)
+            or detection.is_dependency(rel)
+            or detection.is_test_path(rel)
+            or rel in detection.oversized_files
+        ):
             continue
         spec = spec_for(specs, rel)
         if spec is not None:

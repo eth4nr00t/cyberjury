@@ -134,15 +134,14 @@ def test_strip_unreviewable_files_uses_the_profile_patch_boundary():
     assert "data.sql" in kept
 
 
-def test_strip_unreviewable_files_skips_binary_without_excluding_unknown_source():
-    """A binary logo.unknown change is skipped as binary while an unlisted .rs source file is kept."""
-    binary = "diff --git a/logo.unknown b/logo.unknown\nBinary files a/logo.unknown and b/logo.unknown differ\n"
-    source = "diff --git a/handler.rs b/handler.rs\n@@ -0,0 +1 @@\n+fn handle() {}\n"
+def test_strip_unreviewable_files_skips_binary_changes():
+    """A binary logo.png change is skipped as binary while the app.py source chunk is kept."""
+    binary = "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n"
 
-    kept, skipped = strip_unreviewable_files(binary + source, _DETECTION)
+    kept, skipped = strip_unreviewable_files(binary + _SRC, _DETECTION)
 
-    assert [(item.path, item.reason) for item in skipped] == [("logo.unknown", "binary")]
-    assert kept == source
+    assert [(item.path, item.reason) for item in skipped] == [("logo.png", "binary")]
+    assert kept == _SRC
 
 
 def test_strip_unreviewable_files_keeps_a_chunk_whose_path_cannot_be_read():

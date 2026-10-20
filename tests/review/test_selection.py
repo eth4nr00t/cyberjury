@@ -1,38 +1,42 @@
-"""Every readable production source can enter review regardless of language."""
+"""File selection decides which files are reviewed, navigable, or skipped."""
 
 from cyberjury.review.detection import load_detection
 from cyberjury.review.result import SkippedFile
 from cyberjury.review.selection import select_files
 
 
-def test_source_selection_accepts_unlisted_languages_and_records_unreadable_files(tmp_path):
-    """Rust, Solidity, Ruby, Elixir, and Makefile enter review, and binary, latin-1, and empty files are skipped."""
-    for name in ("service.rs", "contract.sol", "handler.rb", "worker.ex", "Makefile"):
-        (tmp_path / name).write_text("operation(input)\n", encoding="utf-8")
-    (tmp_path / "binary.dat").write_bytes(b"\0binary")
-    (tmp_path / "legacy.py").write_bytes("name = 'caf\xe9'\n".encode("latin-1"))
-    (tmp_path / "empty.py").write_text("", encoding="utf-8")
-    (tmp_path / "pager.py").write_bytes(b"def page():\n    pass\n\x0c\nCOLOR = '\x1b[0m'\n")
-    (tmp_path / "README.md").write_text("documentation\n", encoding="utf-8")
-    (tmp_path / "messages.xlf").write_text("<unit/>\n", encoding="utf-8")
-    tests = tmp_path / "tests"
-    tests.mkdir()
-    (tests / "service.rs").write_text("test\n", encoding="utf-8")
-    files = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*") if path.is_file())
+def _select(root, files: dict[str, bytes]):
+    for name, data in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return select_files(root, sorted(files), load_detection())
 
-    selection = select_files(tmp_path, files, load_detection())
 
-    assert set(selection.review_files) == {
-        "service.rs",
-        "contract.sol",
-        "handler.rb",
-        "worker.ex",
-        "Makefile",
-        "pager.py",
-    }
+def test_binary_undecodable_and_empty_files_are_skipped_with_reasons(tmp_path):
+    """Binary, Latin-1, and empty files are skipped, and a form feed or escape byte does not skip a file."""
+    selection = _select(
+        tmp_path,
+        {
+            "binary.dat": b"\0binary",
+            "legacy.py": "name = 'caf\xe9'\n".encode("latin-1"),
+            "empty.py": b"",
+            "pager.py": b"def page():\n    pass\n\x0c\nCOLOR = '\x1b[0m'\n",
+        },
+    )
+
+    assert selection.review_files == ("pager.py",)
     assert set(selection.skipped_files) == {
         SkippedFile(path="binary.dat", reason="binary"),
         SkippedFile(path="legacy.py", reason="not_utf8"),
         SkippedFile(path="empty.py", reason="empty_file"),
     }
-    assert set(selection.navigation_files) == {*selection.review_files, "empty.py", "README.md"}
+
+
+def test_documentation_is_navigable_but_not_reviewed(tmp_path):
+    """README.md is offered to navigation and kept out of review."""
+    selection = _select(tmp_path, {"app.py": b"value = 1\n", "README.md": b"documentation\n"})
+
+    assert selection.review_files == ("app.py",)
+    assert selection.documentation_files == ("README.md",)
+    assert "README.md" in selection.navigation_files

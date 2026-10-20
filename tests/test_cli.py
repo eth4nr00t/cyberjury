@@ -829,7 +829,10 @@ def test_stage_one_request_is_shared_across_targets(
         "review/contract/security-kernel.md",
         "review/contract/severity-rubric.md",
         "review/contract/detection.yaml",
-        "review/syntax/queries.yaml",
+        *(
+            f"review/contract/languages/{name}.yaml"
+            for name in ("c", "cpp", "go", "java", "javascript", "python", "rust", "tsx", "typescript")
+        ),
     }
     assert facts_artifact["schema"] == "cyberjury.facts/v1"
     assert units_artifact["schema"] == "cyberjury.unit-plan/v1"

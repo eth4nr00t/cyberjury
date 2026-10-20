@@ -1,0 +1,5 @@
+extensions: [.tsx]
+grammar: [tree_sitter_typescript, language_tsx]
+inherits: typescript
+files:
+  test_name_patterns: ['*.spec.tsx', '*.test.tsx']

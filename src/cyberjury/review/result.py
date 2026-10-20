@@ -21,6 +21,7 @@ SKIP_REASONS = {
     "binary": "binary file",
     "not_utf8": "not UTF-8 text",
     "empty_file": "empty file",
+    "too_large": "larger than the review file size limit",
     "rename_only": "rename only",
     "copy_only": "copy only",
     "mode_only": "mode change only",

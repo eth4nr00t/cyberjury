@@ -1,0 +1,28 @@
+extensions: [.go]
+grammar: [tree_sitter_go, language]
+files:
+  dependency_dirs: [vendor]
+  test_dirs: [testdata]
+  test_name_patterns: ['*_test.go']
+  lockfiles: [go.sum]
+syntax:
+  definitions: |
+    [(function_declaration name: (identifier) @name)
+     (method_declaration name: (field_identifier) @name)
+     (type_declaration (type_spec name: (type_identifier) @name))] @def
+  type_definitions: |
+    (type_declaration (type_spec name: (type_identifier) @name)) @type
+  calls: |
+    (call_expression function: (identifier) @callee arguments: (argument_list) @arguments) @call
+    (call_expression function: (selector_expression operand: (_) @receiver field: (field_identifier) @member)
+      arguments: (argument_list) @arguments) @call
+  receivers: |
+    (method_declaration receiver: (parameter_list (_) @receiver)) @def
+  imports: []
+  namespace_imports:
+  - |
+    (import_spec !name path: (interpreted_string_literal) @module) @statement
+  - |
+    (import_spec name: (package_identifier) @alias path: (interpreted_string_literal) @module) @statement
+  qualified_uses: |
+    (selector_expression operand: (identifier) @qualifier field: (field_identifier) @name)

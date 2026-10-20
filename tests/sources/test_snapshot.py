@@ -121,6 +121,38 @@ def test_git_work_tree_snapshot_lists_tracked_and_unignored_files_without_walkin
     assert not snapshot.matches()
 
 
+def test_listing_skips_symlinks_that_do_not_resolve_to_a_contained_file(tmp_path):
+    """Directory, dangling, and outside links are left out of a plain tree, and link.py to app.py stays."""
+    (tmp_path / "app.py").write_text("app\n", encoding="utf-8")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "mod.py").write_text("mod\n", encoding="utf-8")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.py"
+    outside.write_text("outside\n", encoding="utf-8")
+    (tmp_path / "link.py").symlink_to("app.py")
+    (tmp_path / "pkg-link").symlink_to("pkg", target_is_directory=True)
+    (tmp_path / "dangling.py").symlink_to("missing.py")
+    (tmp_path / "outside.py").symlink_to(outside)
+
+    files = source_snapshot_files(tmp_path)
+
+    assert files == ("app.py", "link.py", "pkg/mod.py")
+    assert SourceSnapshot.capture(tmp_path, files).files == files
+
+
+def test_git_listing_skips_a_tracked_directory_symlink(tmp_path):
+    """A tracked fixtures/dir-link symlink to a directory is left out, and its target file is still listed."""
+    git(tmp_path, "init", "--quiet")
+    (tmp_path / "fixtures" / "dir").mkdir(parents=True)
+    (tmp_path / "fixtures" / "dir" / "data.py").write_text("data\n", encoding="utf-8")
+    (tmp_path / "fixtures" / "dir-link").symlink_to("dir", target_is_directory=True)
+    git(tmp_path, "add", ".")
+
+    files = source_snapshot_files(tmp_path)
+
+    assert files == ("fixtures/dir/data.py",)
+    assert SourceSnapshot.capture(tmp_path, files).files == files
+
+
 def test_snapshot_rejects_unsupported_file_type(tmp_path):
     """Capturing a FIFO named events.pipe raises SourceSnapshotError mentioning "regular file"."""
     fifo = tmp_path / "events.pipe"

@@ -3,6 +3,7 @@
 import pytest
 
 from cyberjury.review import prepare
+from cyberjury.review.detection import load_detection
 from cyberjury.review.facts import FactLimitation, Facts, FactsReceipt
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.selection import FileSelection
@@ -28,7 +29,7 @@ def test_extract_facts_fails_loud_when_extraction_fails(tmp_path, monkeypatch):
     selection = FileSelection(review_files=(), navigation_files=(), skipped_files=())
 
     with pytest.raises(BackendUnavailable, match="no grounding: parser missing"):
-        prepare.extract_facts(capture_source_snapshot(tmp_path), selection)
+        prepare.extract_facts(capture_source_snapshot(tmp_path), selection, load_detection())
 
 
 def test_fact_limitation_identity_names_its_location():

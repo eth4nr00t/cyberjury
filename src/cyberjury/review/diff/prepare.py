@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cyberjury.review.detection import load_detection
+from cyberjury.review.detection import detection_for
 from cyberjury.review.diff.context import ground_diff_unit, plan_diff_units
 from cyberjury.review.diff.model import DiffUnit, has_diff_hunk, strip_unreviewable_files
 from cyberjury.review.prepare import PreparedReview, prepare_review
@@ -15,7 +15,7 @@ def prepare_diff_review(diff: str, snapshot: SourceSnapshot) -> PreparedReview[D
     Noise files and file sections without a hunk, such as pure renames, mode changes, and
     empty new or deleted files, are skipped before planning and recorded with their reasons.
     """
-    review_diff, skipped = strip_unreviewable_files(diff, load_detection())
+    review_diff, skipped = strip_unreviewable_files(diff, detection_for(snapshot.root, snapshot.files))
     if review_diff.strip() and not has_diff_hunk(review_diff):
         raise ValueError("diff review input is nonempty but contains no unified diff hunk")
     return prepare_review(

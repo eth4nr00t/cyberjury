@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from cyberjury.review.detection import load_detection
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.prepare import extract_facts
 from cyberjury.review.selection import FileSelection
@@ -25,7 +26,7 @@ def test_specs_ship_a_grammar_and_every_query_per_language():
     from tree_sitter import Language, Query
 
     specs = load_specs()
-    assert {"python", "javascript", "typescript", "tsx", "go"} <= set(specs)
+    assert set(specs) == {"c", "cpp", "go", "java", "javascript", "python", "rust", "tsx", "typescript"}
     for name, spec in specs.items():
         language = Language(grammar_for(spec))
         queries = (
@@ -59,7 +60,7 @@ def test_specs_ship_a_grammar_and_every_query_per_language():
             assert "@target_name" in relationship.query, name
 
 
-def test_every_language_whose_imports_name_a_symbol_ships_an_imports_query():
+def test_python_and_javascript_family_ship_imports_queries():
     """Python, JavaScript, TypeScript, and TSX define import queries, and Go defines none."""
     specs = load_specs()
     for name in ("python", "javascript", "typescript", "tsx"):
@@ -103,6 +104,48 @@ def test_definition_target_query_rejects_an_unknown_grammar_node(tmp_path):
 
     with pytest.raises(AnalyzerConfigurationError, match="invalid query"):
         analyze_repository([(tmp_path / "app.py", "app.py", specs["python"])])
+
+
+@pytest.mark.parametrize(
+    ("name", "source", "definitions", "calls"),
+    [
+        (
+            "lib.rs",
+            "struct User { id: u32 }\nimpl User {\n    fn load(&self) -> u32 { helper(self.id) }\n}\n"
+            "fn helper(x: u32) -> u32 { x }\n",
+            {"User", "load", "helper"},
+            {"helper"},
+        ),
+        (
+            "App.java",
+            "class App extends Base {\n  void load() { helper(1); }\n  void helper(int x) {}\n}\n",
+            {"App", "load", "helper"},
+            {"helper"},
+        ),
+        (
+            "app.c",
+            "struct user { int id; };\nstatic int helper(int x) { return x; }\nint load(int x) { return helper(x); }\n",
+            {"user", "helper", "load"},
+            {"helper"},
+        ),
+        (
+            "app.cpp",
+            "namespace app {\nclass User : public Base {\n public:\n  int load() { return helper(1); }\n};\n}\n"
+            "int helper(int x) { return x; }\n",
+            {"app", "User", "load", "helper"},
+            {"helper"},
+        ),
+    ],
+)
+def test_rust_java_c_and_cpp_sources_yield_definitions_and_calls(tmp_path, name, source, definitions, calls):
+    """Each new language parses one file into its named definitions and the calls between them."""
+    (tmp_path / name).write_text(source, encoding="utf-8")
+
+    facts = syntax_facts(tmp_path)
+
+    assert not facts.limitations
+    assert definitions <= {definition.name for definition in facts.relationships.definitions}
+    assert calls <= {callsite.callee_spelling for callsite in facts.relationships.callsites}
 
 
 def test_one_extension_maps_to_one_language():
@@ -275,15 +318,21 @@ def test_tests_and_noise_directories_are_left_out(tmp_path):
     assert set(callgraph(tmp_path)) == {"keep.py"}
 
 
-def test_a_file_over_the_parse_cap_preserves_other_facts(tmp_path):
-    """A huge.py beyond MAX_SOURCE_BYTES gets an "over the parse cap" limitation while small.py keeps facts."""
-    limit = MAX_SOURCE_BYTES
-    (tmp_path / "huge.py").write_text("def f():\n    return 1\n" + "PAD = 1\n" * (limit // 8))
-    (tmp_path / "small.py").write_text("def g():\n    return 1\n")
-    facts = syntax_facts(tmp_path)
+def test_the_analyzer_refuses_a_file_that_grew_past_the_parse_cap(tmp_path):
+    """A huge.py handed to the analyzer beyond MAX_SOURCE_BYTES is an "over the parse cap" limitation."""
+    specs = load_specs()
+    inputs = []
+    for name, source in (
+        ("huge.py", "def f():\n    return 1\n" + "PAD = 1\n" * (MAX_SOURCE_BYTES // 8)),
+        ("small.py", "def g():\n    return 1\n"),
+    ):
+        (tmp_path / name).write_text(source)
+        inputs.append((tmp_path / name, name, specs["python"]))
 
-    assert set(callgraph(tmp_path)) == {"small.py"}
-    assert [(item.source, item.reason) for item in facts.limitations] == [("huge.py", "over the parse cap")]
+    analyzed = analyze_repository(inputs)
+
+    assert {definition.file for definition in analyzed.definitions} == {"small.py"}
+    assert [(item.source, item.reason) for item in analyzed.limitations] == [("huge.py", "over the parse cap")]
 
 
 def test_an_unreadable_source_fails_facts_extraction(monkeypatch, tmp_path):
@@ -301,7 +350,7 @@ def test_an_unreadable_source_fails_facts_extraction(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "open", fail_selected_path)
 
     with pytest.raises(BackendUnavailable, match=r"cannot read source unreadable\.py"):
-        extract_facts(snapshot, FileSelection(review_files=(), navigation_files=(), skipped_files=()))
+        extract_facts(snapshot, FileSelection(review_files=(), navigation_files=(), skipped_files=()), load_detection())
 
 
 def test_a_syntactically_broken_file_preserves_other_facts(tmp_path):
@@ -335,6 +384,10 @@ def test_parse_limitation_column_uses_characters_after_non_ascii_text(tmp_path):
         ("broken.ts", "function broken( {\n", "typescript"),
         ("broken.tsx", "function broken( {\n", "tsx"),
         ("broken.go", "package main\nfunc broken( {\n", "go"),
+        ("broken.rs", "fn broken( {\n", "rust"),
+        ("broken.java", "class Broken { void broken( { }\n", "java"),
+        ("broken.c", "int broken( {\n", "c"),
+        ("broken.cpp", "int broken( {\n", "cpp"),
     ],
 )
 def test_every_tree_sitter_language_uses_one_parse_limitation_contract(tmp_path, name, source, analyzer):

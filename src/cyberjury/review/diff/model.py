@@ -228,6 +228,8 @@ def strip_unreviewable_files(diff: str, detection: Detection) -> tuple[str, tupl
         path = chunk_path(chunk)
         if path and detection.is_noise_path(path):
             skipped.append(SkippedFile(path=path, reason="noise"))
+        elif path in detection.oversized_files:
+            skipped.append(SkippedFile(path=path, reason="too_large"))
         elif path and not _parsed_hunks(chunk):
             skipped.append(SkippedFile(path=path, reason=_hunkless_reason(chunk)))
         else:

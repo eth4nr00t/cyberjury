@@ -1,0 +1,43 @@
+extensions: [.py]
+grammar: [tree_sitter_python, language]
+files:
+  ignored_dirs: [.mypy_cache, .pytest_cache, .ruff_cache, .tox, .venv, __pycache__, venv]
+  test_name_patterns: ['*_test.py', test_*.py]
+  lockfiles: [Pipfile.lock, pdm.lock, poetry.lock, uv.lock]
+syntax:
+  definitions: |
+    [(function_definition name: (identifier) @name)
+     (class_definition name: (identifier) @name)] @def
+    (decorated_definition definition: (function_definition name: (identifier) @name)) @def
+    (decorated_definition definition: (class_definition name: (identifier) @name)) @def
+  type_definitions: |
+    (class_definition name: (identifier) @name) @type
+    (decorated_definition definition: (class_definition name: (identifier) @name)) @type
+  structural_relationships:
+  - kind: inheritance
+    query: |
+      (class_definition
+        name: (identifier) @owner_name
+        superclasses: (argument_list
+          [(identifier) @reference @target_name
+           (attribute attribute: (identifier) @target_name) @reference])) @owner
+  calls: |
+    (call function: (identifier) @callee arguments: (argument_list) @arguments) @call
+    (call function: (attribute object: (_) @receiver attribute: (identifier) @member)
+      arguments: (argument_list) @arguments) @call
+    (decorator (identifier) @callee) @call
+  imports:
+  - query: |
+      (import_from_statement module_name: (_) @module (dotted_name (identifier) @imported)) @statement
+  - query: |
+      (import_from_statement module_name: (_) @module
+        (aliased_import name: (dotted_name (identifier) @imported) alias: (identifier) @alias)) @statement
+  - query: |
+      (import_from_statement module_name: (_) @module (wildcard_import) @imported) @statement
+  namespace_imports:
+  - |
+    (import_statement (dotted_name) @module) @statement
+  - |
+    (import_statement (aliased_import name: (dotted_name) @module alias: (identifier) @alias)) @statement
+  qualified_uses: |
+    (attribute object: [(identifier) (attribute)] @qualifier attribute: (identifier) @name)

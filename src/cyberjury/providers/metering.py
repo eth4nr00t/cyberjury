@@ -1,7 +1,7 @@
 """Model call context and token accounting across a review run.
 
 Review paths can report where calls and tokens went without threading observability data
-through every reviewer and verifier return value.
+through every finder and issue judge return value.
 """
 
 from __future__ import annotations

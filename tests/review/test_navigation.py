@@ -49,6 +49,30 @@ def test_navigation_contract_states_the_exact_search_semantics():
     assert "at most 20 results per page. `page` starts at 0" in instructions
 
 
+def test_dependency_text_hits_are_labeled_and_bounded_on_minified_lines(tmp_path):
+    """A hit in a one-line 200,000 character vendor bundle is [dependency], third-party, and read in 24,000 chars."""
+    (tmp_path / "app.py").write_text("def app(): pass\n", encoding="utf-8")
+    (tmp_path / "vendor").mkdir()
+    bundle = "a" * 100_000 + "innerHTML=cell" + "b" * 100_000
+    (tmp_path / "vendor" / "notebook.min.js").write_text(bundle, encoding="utf-8")
+    navigator = SourceNavigator.from_facts(
+        tmp_path,
+        source_files=("app.py", "vendor/notebook.min.js"),
+        dependency_files=("vendor/notebook.min.js",),
+    )
+    assert navigator is not None
+
+    result = navigator.session().execute(
+        [{"kind": "search_text", "query": "innerHTML=cell", "page": 0}],
+        target_chars=48_000,
+    )
+
+    assert "[dependency] vendor/notebook.min.js" in result.text
+    assert "Read third-party source" in result.text
+    assert "innerHTML=cell" in result.text
+    assert len(result.text) < 30_000
+
+
 def test_documentation_navigation_preserves_its_source_kind(tmp_path):
     """A text hit in docs/development.md is labeled [documentation] and read as documentation, line 1."""
     (tmp_path / "app.py").write_text("def app(): pass\n", encoding="utf-8")

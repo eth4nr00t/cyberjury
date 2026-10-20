@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from cyberjury.review.detection import Detection
 from cyberjury.review.result import SkippedFile
@@ -17,25 +17,33 @@ class FileSelection:
     review_files: tuple[str, ...]
     navigation_files: tuple[str, ...]
     skipped_files: tuple[SkippedFile, ...]
+    documentation_files: tuple[str, ...] = ()
+    dependency_files: tuple[str, ...] = ()
 
 
 def select_files(root: str | Path, files: Sequence[str], detection: Detection) -> FileSelection:
     """Keep every readable non-noise text file for review and record the ones that cannot be read.
 
-    Navigation also publishes readable documentation, and keeps empty source files that no
-    review unit covers.
+    Navigation also publishes readable documentation and third-party code, which no review unit
+    covers, and keeps empty source files that no review unit covers.
     """
     base = Path(root)
     sources: list[str] = []
     documentation: list[str] = []
+    dependencies: list[str] = []
     review: list[str] = []
     skipped: list[SkippedFile] = []
     for relative in files:
-        if detection.is_skipped_dir(PurePosixPath(relative).parts[:-1]):
+        if detection.is_ignored(relative):
             continue
+        dependency = detection.is_dependency(relative)
+        doc = not dependency and detection.is_documentation(relative)
         noise = detection.is_noise_path(relative)
-        doc = PurePosixPath(relative).suffix.lower() in detection.doc_extensions
-        if noise and not doc:
+        if noise and not (dependency or doc):
+            continue
+        if relative in detection.oversized_files:
+            if not noise:
+                skipped.append(SkippedFile(path=relative, reason="too_large"))
             continue
         data = (base / relative).read_bytes()
         try:
@@ -44,9 +52,9 @@ def select_files(root: str | Path, files: Sequence[str], detection: Detection) -
             decodable = False
         else:
             decodable = True
-        if doc and decodable:
-            documentation.append(relative)
         if noise:
+            if decodable and b"\0" not in data:
+                (dependencies if dependency else documentation).append(relative)
             continue
         if b"\0" in data:
             skipped.append(SkippedFile(path=relative, reason="binary"))
@@ -60,6 +68,8 @@ def select_files(root: str | Path, files: Sequence[str], detection: Detection) -
             review.append(relative)
     return FileSelection(
         review_files=tuple(review),
-        navigation_files=tuple(dict.fromkeys((*sources, *documentation))),
+        navigation_files=tuple(dict.fromkeys((*sources, *documentation, *dependencies))),
         skipped_files=tuple(skipped),
+        documentation_files=tuple(documentation),
+        dependency_files=tuple(dependencies),
     )

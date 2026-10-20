@@ -108,7 +108,7 @@ def test_prepare_splits_a_large_candidate_into_slice_units(tmp_path):
 def _block_facts(monkeypatch):
     calls = []
 
-    def extract(root, files, navigation_files):
+    def extract(root, files, navigation_files, detection):
         calls.append(root)
         return Facts(by_file={"app.py": "def f():\n    return 1"})
 
@@ -178,10 +178,10 @@ def test_prepare_records_binary_undecodable_and_empty_files_as_skipped(tmp_path)
 
 
 def test_plain_repository_still_prepares(tmp_path):
-    """A directory holding only notes.txt prepares with no owned paths and no units."""
+    """A directory holding only notes.md prepares with no owned paths and no units."""
     d = tmp_path / "plain"
     d.mkdir()
-    (d / "notes.txt").write_text("hi")
+    (d / "notes.md").write_text("hi")
     res = prepare_target(d)
     assert res.unit_plan.expected_owned_paths == ()
     assert res.units == ()

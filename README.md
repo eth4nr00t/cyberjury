@@ -16,8 +16,8 @@ by itself clear the repository.
 
 The review contract is data. One language-independent security reasoning kernel, one severity
 rubric, and the file classification rules live in `src/cyberjury/review/contract/`. Language
-support is the Tree-sitter query data in `src/cyberjury/review/syntax/queries.yaml`. A language
-without queries is still reviewed from its raw source. Each review records a hash of these files
+support is one file per language in `src/cyberjury/review/contract/languages/`. A language
+without a file is still reviewed from its raw source. Each review records a hash of these files
 in `contract.json`.
 
 A Repository Review of a Git work tree covers the tracked files and the untracked files Git does not
@@ -64,7 +64,7 @@ All model settings come from a `.env` file in the working directory. An exported
 over the file. Copy [.env.example](.env.example) to `.env` and fill in what you use:
 
 | Setting | Meaning |
-|---|---|
+| :--- | :--- |
 | `OPENAI_API_KEY` | OpenAI key. When it is set the review uses OpenAI. |
 | `ANTHROPIC_API_KEY` | Anthropic key, used when no OpenAI key is set. |
 | `CYBERJURY_MODEL` | Model name, default `gpt-5.6` for OpenAI and `claude-opus-5` for Anthropic. |

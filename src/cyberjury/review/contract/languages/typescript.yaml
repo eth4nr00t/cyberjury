@@ -1,0 +1,37 @@
+extensions: [.ts, .mts, .cts]
+grammar: [tree_sitter_typescript, language_typescript]
+inherits: javascript
+files:
+  test_name_patterns: ['*.spec.mts', '*.spec.ts', '*.test.mts', '*.test.ts']
+syntax:
+  definitions: |
+    [(function_declaration name: (identifier) @name)
+     (class_declaration name: (type_identifier) @name)
+     (method_definition name: (property_identifier) @name)
+     (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])
+     (assignment_expression
+       left: (member_expression
+         object: (identifier) @exports
+         property: (property_identifier) @name)
+       right: [(function_expression) (arrow_function)]
+       (#eq? @exports "exports"))
+     (assignment_expression
+       left: (member_expression
+         object: (member_expression
+           object: (identifier) @module
+           property: (property_identifier) @exports)
+         property: (property_identifier) @name)
+       right: [(function_expression) (arrow_function)]
+       (#eq? @module "module")
+       (#eq? @exports "exports"))] @def
+  type_definitions: |
+    (class_declaration name: (type_identifier) @name) @type
+  structural_relationships:
+  - kind: inheritance
+    query: |
+      (class_declaration
+        name: (type_identifier) @owner_name
+        (class_heritage
+          (extends_clause value:
+            [(identifier) @reference @target_name
+             (member_expression property: (property_identifier) @target_name) @reference]))) @owner

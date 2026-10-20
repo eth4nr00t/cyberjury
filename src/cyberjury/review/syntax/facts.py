@@ -9,7 +9,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from cyberjury.canonical import canonical_sha256
-from cyberjury.review.detection import load_detection
+from cyberjury.review.detection import Detection
 from cyberjury.review.facts import Facts
 from cyberjury.review.syntax.analyzer import analyze_repository, load_specs
 from cyberjury.review.syntax.graph import facts_from_repository
@@ -35,10 +35,12 @@ def syntax_backend_id() -> str:
     return canonical_sha256(payload)
 
 
-def extract_syntax_facts(root: str | Path, files: Sequence[str], navigation_files: Sequence[str]) -> Facts:
+def extract_syntax_facts(
+    root: str | Path, files: Sequence[str], navigation_files: Sequence[str], detection: Detection
+) -> Facts:
     """Extract source evidence from the snapshot files and disclose source level limitations."""
     base = Path(root).resolve()
-    analyzed = analyze_repository(reviewable_sources(base, files, load_detection(), load_specs()))
+    analyzed = analyze_repository(reviewable_sources(base, files, detection, load_specs()))
     navigation = collect_navigation_evidence(base, analyzed, navigation_files)
     facts = facts_from_repository(replace(analyzed, sources={**analyzed.sources, **navigation.navigation_sources}))
     return replace(facts, limitations=tuple(dict.fromkeys((*analyzed.limitations, *navigation.limitations))))

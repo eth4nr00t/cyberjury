@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Protocol
 
 from cyberjury.review.context import GroundingContext
-from cyberjury.review.detection import Detection, load_detection
+from cyberjury.review.detection import Detection, detection_for
 from cyberjury.review.facts import Facts, FactsReceipt
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.grounding import GroundingReceipt
@@ -69,10 +69,12 @@ class PreparedReview[U: PlannedUnit]:
     skipped_files: tuple[SkippedFile, ...]
 
 
-def extract_facts(snapshot: SourceSnapshot, selection: FileSelection) -> tuple[Facts, FactsReceipt]:
+def extract_facts(
+    snapshot: SourceSnapshot, selection: FileSelection, detection: Detection
+) -> tuple[Facts, FactsReceipt]:
     """Extract syntax facts with loud failure and bind them to the backend identity."""
     try:
-        facts = extract_syntax_facts(snapshot.root, snapshot.files, selection.navigation_files)
+        facts = extract_syntax_facts(snapshot.root, snapshot.files, selection.navigation_files, detection)
     except Exception as exc:
         raise BackendUnavailable(f"facts extraction failed, so this review has no grounding: {exc}") from exc
     return facts, FactsReceipt.create(backend_id=syntax_backend_id(), facts=facts)
@@ -85,9 +87,9 @@ def prepare_review[U: PlannedUnit](
     ground: Callable[[U, SharedGrounding], GroundingContext],
 ) -> PreparedReview[U]:
     """Extract facts, build navigation, plan and ground every unit, and bind their receipts."""
-    detection = load_detection()
+    detection = detection_for(snapshot.root, snapshot.files)
     selection = select_files(snapshot.root, snapshot.files, detection)
-    facts, receipt = extract_facts(snapshot, selection)
+    facts, receipt = extract_facts(snapshot, selection, detection)
     shared = SharedGrounding(
         snapshot=snapshot,
         detection=detection,
@@ -98,11 +100,8 @@ def prepare_review[U: PlannedUnit](
             source_files=selection.navigation_files,
             import_files=facts.import_files,
             relationship_evidence=facts.relationships,
-            documentation_files=(
-                file
-                for file in selection.navigation_files
-                if PurePosixPath(file).suffix.lower() in detection.doc_extensions
-            ),
+            documentation_files=selection.documentation_files,
+            dependency_files=selection.dependency_files,
         ),
     )
     planned = plan(shared)

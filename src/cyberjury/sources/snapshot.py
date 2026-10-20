@@ -51,14 +51,19 @@ def source_snapshot_files(root: str | Path) -> tuple[str, ...]:
 
     A Git work tree contributes its tracked and unignored files, so ignored trees such as
     virtual environments and dependency directories are never walked. A plain directory
-    contributes every file.
+    contributes every file. A symlink is listed only when it resolves to a regular file inside
+    the root.
     """
     base = Path(root).resolve()
     if not base.is_dir():
         raise SourceSnapshotError(f"snapshot root is not a directory: {base}")
     if (base / ".git").exists():
         try:
-            return portable_paths(worktree_files(base))
+            return portable_paths(
+                path
+                for path in worktree_files(base)
+                if not (base / path).is_symlink() or _contained_file(base, base / path)
+            )
         except GitSourceError as exc:
             raise SourceSnapshotError(str(exc)) from exc
     files: list[str] = []
@@ -70,8 +75,7 @@ def source_snapshot_files(root: str | Path) -> tuple[str, ...]:
             if name == ".git":
                 continue
             if path.is_symlink():
-                relative = path.relative_to(base).as_posix()
-                raise SourceSnapshotError(f"source directory symlink is unsupported: {relative}")
+                continue
             kept_directories.append(name)
         directories[:] = kept_directories
         for name in sorted(names):
@@ -79,18 +83,23 @@ def source_snapshot_files(root: str | Path) -> tuple[str, ...]:
             relative = path.relative_to(base)
             if len(relative.parts) == 1 and relative.name == ".git":
                 continue
-            try:
-                resolved = path.resolve(strict=True)
-            except OSError as exc:
-                raise SourceSnapshotError(f"source path cannot be resolved: {relative.as_posix()}: {exc}") from exc
-            if not resolved.is_relative_to(base):
-                raise SourceSnapshotError(f"source path escapes the snapshot root: {relative.as_posix()}")
-            if not resolved.is_file():
+            if path.is_symlink():
+                if not _contained_file(base, path):
+                    continue
+            elif not path.is_file():
                 raise SourceSnapshotError(f"source path is not a regular file: {relative.as_posix()}")
             files.append(relative.as_posix())
             if len(files) > MAX_SOURCE_FILES:
                 raise SourceSnapshotError("source snapshot exceeds the file count limit")
     return portable_paths(files)
+
+
+def _contained_file(base: Path, path: Path) -> bool:
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return False
+    return resolved.is_relative_to(base) and resolved.is_file()
 
 
 @dataclass(frozen=True, kw_only=True)

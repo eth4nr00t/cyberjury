@@ -1,0 +1,502 @@
+id: gogs
+repository:
+  url: https://github.com/gogs/gogs
+  commit: 5dcb6c64bdf61e38dbdbb941c1d69789c560d0fb
+cases:
+  - id: repository-5dcb6c6
+    kind: repository
+    checks:
+      - id: admin-notice-csrf
+        root_cause: The admin notice purge is routed as GET (internal/cmd/web.go:293), which skips the CSRF token check that runs only for POST (internal/context/auth.go:56), so a cross-site request from a site admin's browser deletes all system notices
+        locations:
+          - {file: internal/cmd/web.go, line: 293}
+          - {file: internal/context/auth.go, line: 56}
+          - {file: internal/route/admin/notice.go, line: 62}
+      - id: assigned-issue-api-information-disclosure
+        root_cause: The v1 ListUserIssues queries issues by assignee only (internal/route/api/v1/repo/issue.go:43) and buildIssuesQuery applies no repository access scope in that branch (internal/database/issue.go:929), so collaborators removed from a private repository keep reading their assigned issues
+        locations:
+          - {file: internal/database/issue.go, line: 929}
+          - {file: internal/database/issue.go, line: 933}
+          - {file: internal/route/api/v1/repo/issue.go, line: 43}
+      - id: attachment-download-idor
+        root_cause: The /attachments/:uuid handler serves an attachment looked up by UUID (internal/cmd/web.go:309) without resolving the issue or release repository that owns it and checking the requester's read access, so attachments of private repositories are served to anyone holding the UUID
+        locations:
+          - {file: internal/cmd/web.go, line: 306}
+      - id: attachment-upload-denial-of-service
+        root_cause: The configured attachment size limit only sets the multipart memory threshold (internal/context/context.go:266) and NewAttachment copies the whole upload to disk with no size limit (internal/database/attachment.go:73), so any signed-in user stores uploads of unbounded size
+        locations:
+          - {file: internal/cmd/web.go, line: 335}
+          - {file: internal/context/context.go, line: 266}
+          - {file: internal/database/attachment.go, line: 73}
+      - id: backup-restore-denial-of-service
+        root_cause: The database restore reads each table with a default bufio.Scanner (internal/database/backup.go:270) and never checks scanner.Err() before reporting success (internal/database/backup.go:314), so one user-created record whose JSON line exceeds 64 KiB silently drops it and every later row of its table on restore
+        locations:
+          - {file: internal/database/backup.go, line: 270}
+          - {file: internal/database/backup.go, line: 314}
+      - id: basic-auth-two-factor-authentication-bypass
+        root_cause: authenticatedUser accepts an HTTP Basic username and password for every web route (internal/context/auth.go:246) without the two-factor check that interactive login and Git HTTP apply, so a password alone reaches signed-in web settings including the two-factor disable endpoint
+        locations:
+          - {file: internal/cmd/web.go, line: 227}
+          - {file: internal/context/auth.go, line: 238}
+          - {file: internal/context/auth.go, line: 246}
+      - id: collaboration-access-privilege-escalation
+        root_cause: Repository.ChangeCollaborationAccessMode accepts any mode up to AccessModeOwner (internal/database/repo_collaboration.go:129) and never bounds it by the acting user's own access mode, so a repository admin grants collaborators owner access above their own
+        locations:
+          - {file: internal/database/repo_collaboration.go, symbol: Repository.ChangeCollaborationAccessMode}
+          - {file: internal/route/repo/setting.go, symbol: ChangeCollaborationAccessMode}
+      - id: comment-attachment-idor
+        root_cause: createComment loads each submitted attachment by UUID alone (internal/database/comment.go:226) and overwrites its issue and comment ids (internal/database/comment.go:238) without checking that it is unattached or owned by the actor, so a commenter detaches attachments of other issues and deletes them with the comment
+        locations:
+          - {file: internal/database/comment.go, line: 226}
+          - {file: internal/database/comment.go, line: 238}
+          - {file: internal/database/comment.go, line: 534}
+      - id: commit-reference-missing-permission
+        root_cause: updateCommitReferencesToIssues resolves owner/repo#N references with GetIssueByRef (internal/database/actions.go:341) and creates reference comments (internal/database/actions.go:360) without checking the pusher's access to the target repository, so a push to any repository comments on issues of private repositories
+        locations:
+          - {file: internal/database/actions.go, line: 341}
+          - {file: internal/database/actions.go, line: 360}
+      - id: commits-api-denial-of-service
+        root_cause: The v1 commits API takes pageSize from the query with no upper bound (internal/route/api/v1/repo/commits.go:20) and uses it as a slice capacity (internal/route/api/v1/repo/commits.go:32), so one request with read access to any repository allocates unbounded memory
+        locations:
+          - {file: internal/route/api/v1/repo/commits.go, line: 20}
+          - {file: internal/route/api/v1/repo/commits.go, line: 32}
+      - id: external-login-authentication-bypass
+        root_cause: UsersStore.Authenticate authenticates an existing external user by the submitted login string instead of the stored LoginName (internal/database/users.go:122) and returns the matched Gogs user without comparing the authenticated external identity (internal/database/users.go:128), so another account of the same external source whose login equals a Gogs username signs in as that user
+        locations:
+          - {file: internal/database/users.go, line: 122}
+          - {file: internal/database/users.go, line: 128}
+      - id: fork-list-information-disclosure
+        root_cause: The v1 ListForks returns every fork from GetForks (internal/database/repo.go:2617, internal/route/api/v1/repo/repo.go:371) without filtering by the caller's access, so readers of the base repository see metadata of private forks
+        locations:
+          - {file: internal/database/repo.go, line: 2617}
+          - {file: internal/route/api/v1/repo/repo.go, line: 361}
+          - {file: internal/route/api/v1/repo/repo.go, line: 371}
+      - id: git-http-push-missing-permission
+        root_cause: HTTPContexter treats a request as a read-only pull when the service query is git-upload-pack, the path ends in git-upload-pack, or the method is GET (internal/route/repo/http.go:61), so a git-receive-pack request carrying service=git-upload-pack passes with read access and writes to a repository the user can only read
+        locations:
+          - {file: internal/route/repo/http.go, line: 61}
+      - id: github-auth-authentication-bypass
+        root_cause: The GitHub login source doAuth accepts whichever account the submitted credentials authenticate at /user (internal/auth/github/config.go:34) without comparing it to the submitted login, and UsersStore.Authenticate then returns the local account named by that login (internal/database/users.go:122), so credentials of one GitHub account sign in to another Gogs user bound to the same source
+        locations:
+          - {file: internal/auth/github/config.go, line: 34}
+          - {file: internal/auth/github/provider.go, line: 30}
+          - {file: internal/database/users.go, line: 122}
+      - id: go-get-information-disclosure
+        root_cause: ServeGoGet runs before sign-in and repository assignment (internal/cmd/web.go:626) and looks up the repository without an access check (internal/context/go_get.go:32), placing its real default branch in the response (internal/context/go_get.go:34), so unauthenticated callers confirm private repositories and learn their default branch
+        locations:
+          - {file: internal/cmd/web.go, line: 626}
+          - {file: internal/context/go_get.go, line: 32}
+          - {file: internal/context/go_get.go, line: 34}
+      - id: ipynb-markdown-stored-xss
+        root_cause: The notebook preview script renders markdown cells with marked and inserts the result with jQuery html (templates/repo/view_file.tmpl:68) without sanitizing it or filtering link URL schemes, so markup in a committed .ipynb file runs in the viewer's session
+        locations:
+          - {file: templates/repo/view_file.tmpl, line: 68}
+      - id: ipynb-sanitizer-stored-xss
+        root_cause: ipynbSanitizer allows the data URL scheme without restricting it to safe image MIME types (internal/app/api.go:14), so the /-/api/sanitize_ipynb output keeps data:text/html links from committed notebooks
+        locations:
+          - {file: internal/app/api.go, symbol: ipynbSanitizer}
+          - {file: internal/cmd/web.go, line: 682}
+      - id: issue-attachment-idor
+        root_cause: newIssue selects attachments by UUID only (internal/database/attachment.go:121) and reassigns them to the new issue (internal/database/issue.go:745) without checking ownership or an existing association, so creating an issue anywhere moves attachments off issues of other repositories
+        locations:
+          - {file: internal/database/attachment.go, line: 121}
+          - {file: internal/database/issue.go, line: 745}
+      - id: issue-dashboard-information-disclosure
+        root_cause: The user issue dashboard with the created_by or assigned filter sets only the poster or assignee (internal/route/user/home.go:310), buildIssuesQuery then searches every repository (internal/database/issue.go:929), and the access check runs only for an explicit repository (internal/route/user/home.go:319), so revoked collaborators keep listing private issue metadata
+        locations:
+          - {file: internal/database/issue.go, line: 929}
+          - {file: internal/route/user/home.go, line: 310}
+          - {file: internal/route/user/home.go, line: 319}
+      - id: issue-mail-information-disclosure
+        root_cause: mailIssueCommentToParticipants adds every historical comment poster returned by GetParticipantsByIssueID to the recipients (internal/database/issue_mail.go:145, internal/database/issue.go:1016) without checking current read access, so private issue comments keep being mailed to collaborators whose access was revoked
+        locations:
+          - {file: internal/database/issue.go, line: 1016}
+          - {file: internal/database/issue_mail.go, line: 145}
+      - id: leave-repository-information-disclosure
+        root_cause: SettingsLeaveRepo loads any repository by the submitted id without an access check (internal/route/user/setting.go:544) and its success message includes the repository full name (internal/route/user/setting.go:555), so any signed-in user enumerates private repository names by id
+        locations:
+          - {file: internal/database/repo_collaboration.go, line: 195}
+          - {file: internal/route/user/setting.go, line: 544}
+          - {file: internal/route/user/setting.go, line: 555}
+      - id: lfs-upload-information-disclosure
+        root_cause: LocalStorage.Upload reports success for an OID whose object file already exists after discarding the request body (internal/lfsutil/storage.go:80) without hashing the body against the OID, so a writer of one repository binds another repository's LFS object to their own and downloads its content
+        locations:
+          - {file: internal/lfsutil/storage.go, symbol: LocalStorage.Upload}
+      - id: login-csrf
+        root_cause: The CSRF toggle skips token validation on every sign-out-required route (internal/context/auth.go:56), including POST /user/login (internal/cmd/web.go:196), so a cross-site request logs the victim's browser into another account
+        locations:
+          - {file: internal/cmd/web.go, line: 196}
+          - {file: internal/context/auth.go, line: 56}
+          - {file: internal/route/user/auth.go, line: 129}
+      - id: merge-workspace-denial-of-service
+        root_cause: PullRequest.Merge clones into a per-merge directory under the shared temporary repos path (internal/database/pull.go:220) but its deferred cleanup removes the shared parent directory (internal/database/pull.go:225), so one merge deletes the in-progress merge workspaces of other repositories
+        locations:
+          - {file: internal/database/pull.go, line: 220}
+          - {file: internal/database/pull.go, line: 225}
+      - id: migration-dns-rebinding-ssrf
+        root_cause: ParseRemoteAddr validates the clone hostname with a separate DNS lookup (internal/form/repo.go:71) and returns the hostname unchanged (internal/form/repo.go:82) for git clone to resolve again (internal/database/repo.go:824), so a hostname that resolves differently at clone time reaches internal hosts
+        locations:
+          - {file: internal/database/repo.go, line: 824}
+          - {file: internal/form/repo.go, line: 71}
+          - {file: internal/form/repo.go, line: 82}
+      - id: milestone-status-csrf
+        root_cause: The milestone open and close action is routed as GET (internal/cmd/web.go:527), which skips the CSRF token check that runs only for POST (internal/context/auth.go:56), so a cross-site request from a repository writer's browser changes milestone state
+        locations:
+          - {file: internal/cmd/web.go, line: 527}
+          - {file: internal/context/auth.go, line: 56}
+          - {file: internal/route/repo/issue.go, line: 1238}
+      - id: mirror-address-missing-permission
+        root_cause: SettingsPost saves a submitted mirror address (internal/route/repo/setting.go:124) without the ParseRemoteAddr validation that migration applies, so a repository admin without local import rights points a mirror at a server-local repository path or a blocked local network address
+        locations:
+          - {file: internal/route/repo/setting.go, line: 124}
+      - id: mirror-sync-denial-of-service
+        root_cause: process.Kill signals only when ProcessState is set (internal/process/manager.go:124), which is nil for a still-running command, and ExecDir then waits on it (internal/process/manager.go:101), while mirror syncs run serially (internal/database/mirror.go:350), so one stalled mirror remote blocks every mirror sync indefinitely
+        locations:
+          - {file: internal/database/mirror.go, line: 350}
+          - {file: internal/process/manager.go, line: 101}
+          - {file: internal/process/manager.go, line: 124}
+      - id: notebook-render-stored-xss
+        root_cause: The notebook preview renders the notebook with notebook.js 0.4.2 (templates/base/head.tmpl:47), which assigns raw HTML and markdown cell source to innerHTML of live elements (templates/repo/view_file.tmpl:46), before the result is sent to the sanitizer (templates/repo/view_file.tmpl:48), so markup in a committed .ipynb file runs in the viewer's session
+        locations:
+          - {file: templates/base/head.tmpl, line: 47}
+          - {file: templates/repo/view_file.tmpl, line: 46}
+          - {file: templates/repo/view_file.tmpl, line: 48}
+      - id: org-api-information-disclosure
+        root_cause: The v1 API registers the /orgs/:orgname group, including GET /teams, with orgAssignment and no reqToken (internal/route/api/v1/api.go:392), so unauthenticated callers read organization metadata and team lists
+        locations:
+          - {file: internal/route/api/v1/api.go, line: 392}
+      - id: org-create-api-missing-permission
+        root_cause: POST /api/v1/user/orgs requires only a token (internal/route/api/v1/api.go:382) and CreateOrgForUser creates the organization (internal/route/api/v1/org/org.go:28) without the CanCreateOrganization check the web route enforces, so token holders create organizations when regular-user organization creation is disabled
+        locations:
+          - {file: internal/cmd/web.go, line: 373}
+          - {file: internal/route/api/v1/api.go, line: 382}
+          - {file: internal/route/api/v1/org/org.go, line: 28}
+      - id: org-dashboard-mirror-information-disclosure
+        root_cause: GetUserMirrorRepositories returns every non-private organization mirror (internal/database/org.go:548) without the is_unlisted exclusion that GetUserRepositories applies (internal/database/org.go:506), so the organization dashboard lists unlisted mirrors to members without access to them
+        locations:
+          - {file: internal/database/org.go, line: 506}
+          - {file: internal/database/org.go, line: 548}
+          - {file: internal/route/user/home.go, line: 145}
+      - id: org-issue-dashboard-idor
+        root_cause: The organization issue dashboard takes the repo query as the issue filter (internal/route/user/home.go:289) and checks access for the organization instead of the signed-in member (internal/route/user/home.go:332), so an organization member without team access lists issues of private organization repositories
+        locations:
+          - {file: internal/database/issue.go, line: 920}
+          - {file: internal/route/user/home.go, line: 289}
+          - {file: internal/route/user/home.go, line: 332}
+      - id: org-member-action-csrf
+        root_cause: Organization member and team actions that change membership and team repositories are routed as GET (internal/cmd/web.go:382, internal/cmd/web.go:390, internal/cmd/web.go:391), which skips the CSRF token check that POST forms carry, so a cross-site request from an organization owner's browser performs the action
+        locations:
+          - {file: internal/cmd/web.go, line: 382}
+          - {file: internal/cmd/web.go, line: 390}
+          - {file: internal/cmd/web.go, line: 391}
+      - id: owner-name-path-traversal
+        root_cause: repoutil.UserPath and RepositoryPath join owner and repository names into filesystem paths without cleaning traversal segments (internal/repoutil/repoutil.go:51, internal/repoutil/repoutil.go:57), and the v1 CreateOrgForUser creates organizations without validating name characters, so an organization name places repositories and their git hooks outside the repository root
+        locations:
+          - {file: internal/repoutil/repoutil.go, line: 51}
+          - {file: internal/repoutil/repoutil.go, line: 57}
+          - {file: internal/route/api/v1/org/org.go, symbol: CreateOrgForUser}
+      - id: password-reset-two-factor-authentication-bypass
+        root_cause: Password reset mail carries the account activation code (internal/email/email.go:125), and the public Activate handler accepts it (internal/route/user/auth.go:486) and writes the user into the session (internal/route/user/auth.go:503) with no two-factor check, so control of the mailbox yields a full session without the second factor
+        locations:
+          - {file: internal/cmd/web.go, line: 248}
+          - {file: internal/email/email.go, line: 125}
+          - {file: internal/route/user/auth.go, line: 486}
+          - {file: internal/route/user/auth.go, line: 503}
+      - id: protected-branch-whitelist-privilege-escalation
+        root_cause: Protected branch whitelist rows copy team members only when the whitelisted team ids change (internal/database/repo_branch.go:219) and IsUserInProtectBranchWhitelist trusts the stored rows (internal/database/repo_branch.go:96), so users removed from a whitelisted team keep pushing directly to the protected branch
+        locations:
+          - {file: internal/cmd/hook.go, line: 106}
+          - {file: internal/database/repo_branch.go, line: 96}
+          - {file: internal/database/repo_branch.go, line: 219}
+      - id: pull-request-merge-injection
+        root_cause: PullRequest.Merge passes the head and base branch names to git clone, merge, rebase, and checkout as positional arguments without --end-of-options (internal/database/pull.go:264, internal/database/pull.go:282), so a branch name that begins with a dash is parsed as a git option
+        locations:
+          - {file: internal/database/pull.go, line: 264}
+          - {file: internal/database/pull.go, line: 282}
+          - {file: internal/database/pull.go, symbol: PullRequest.Merge}
+      - id: release-attachment-idor
+        root_cause: NewRelease and UpdateRelease set the release id on attachments selected only by caller-supplied UUIDs (internal/database/release.go:184, internal/database/release.go:327) without checking their current release or repository, so a writer of one repository moves another repository's release attachments
+        locations:
+          - {file: internal/database/release.go, line: 184}
+          - {file: internal/database/release.go, line: 327}
+      - id: repo-avatar-denial-of-service
+        root_cause: The repository avatar upload checks only the content type (internal/route/repo/setting.go:339) and UploadAvatar fully decodes the image (internal/database/repo.go:339) without a DecodeConfig dimension limit, so a small image with huge dimensions exhausts server memory
+        locations:
+          - {file: internal/database/repo.go, line: 339}
+          - {file: internal/database/repo.go, line: 351}
+          - {file: internal/route/repo/setting.go, line: 339}
+      - id: repo-settings-api-missing-permission
+        root_cause: The v1 API registers PATCH issue-tracker, PATCH wiki, and POST mirror-sync with reqRepoWriter (internal/route/api/v1/api.go:372) although the web settings restrict them to repository admins, so write collaborators change admin-only repository settings
+        locations:
+          - {file: internal/route/api/v1/api.go, line: 372}
+          - {file: internal/route/api/v1/api.go, line: 373}
+          - {file: internal/route/api/v1/api.go, line: 374}
+      - id: repository-migration-ssrf
+        root_cause: MigrateRepository clones and Mirror.runSync updates remotes with git following HTTP redirects (internal/database/repo.go:824, internal/database/mirror.go:227), and runSync never rechecks the stored address against the local network blocklist, so a validated public mirror URL leads git to an internal host
+        locations:
+          - {file: internal/database/mirror.go, line: 227}
+          - {file: internal/database/mirror.go, symbol: Mirror.runSync}
+          - {file: internal/database/repo.go, line: 824}
+      - id: reverse-proxy-header-authentication-bypass
+        root_cause: authenticatedUser trusts the configured reverse proxy authentication header whenever reverse proxy authentication is enabled (internal/context/auth.go:201) without checking that the request comes from a trusted proxy address, so a client reaching Gogs directly signs in as any user name
+        locations:
+          - {file: internal/context/auth.go, line: 201}
+      - id: slack-webhook-injection
+        root_cause: SlackLinkFormatter interpolates the URL unescaped into Slack link markup (internal/database/webhook_slack.go:66) and the pushed ref name enters that URL and the delete message unescaped (internal/database/webhook_slack.go:74, internal/database/webhook_slack.go:85), so ref names inject Slack markup into the configured channel
+        locations:
+          - {file: internal/database/webhook_slack.go, line: 66}
+          - {file: internal/database/webhook_slack.go, line: 74}
+          - {file: internal/database/webhook_slack.go, line: 85}
+      - id: smtp-login-information-disclosure
+        root_cause: The mailer uses STARTTLS only when the server advertises it (internal/email/message.go:150) and the custom LoginAuth.Start sends credentials without checking ServerInfo.TLS (internal/email/message.go:77), so SMTP credentials go out in cleartext when STARTTLS is stripped on the path to a non-465 server
+        locations:
+          - {file: internal/email/message.go, line: 77}
+          - {file: internal/email/message.go, line: 150}
+      - id: ssh-handshake-denial-of-service
+        root_cause: The built-in SSH server listen loop runs ssh.NewServerConn on each accepted connection (internal/ssh/ssh.go:128) with no handshake deadline, so unauthenticated connections that stall the handshake hold file descriptors and goroutines indefinitely
+        locations:
+          - {file: internal/ssh/ssh.go, line: 128}
+      - id: totp-login-authentication-bypass
+        root_cause: LoginTwoFactorPost redirects back on an invalid TOTP code while keeping the pending user in the session (internal/route/user/auth.go:220) with no attempt counter or throttling, so the second factor of a user whose password is known can be guessed without limit
+        locations:
+          - {file: internal/cmd/web.go, line: 197}
+          - {file: internal/route/user/auth.go, line: 220}
+          - {file: internal/route/user/auth.go, line: 223}
+      - id: upload-symlink-following
+        root_cause: Repository.UploadRepoFiles rejects only a target whose final path component is a symlink (internal/database/repo_editor.go:605) and does not check its parent directories, so an upload under a committed symlinked directory writes outside the repository working tree
+        locations:
+          - {file: internal/database/repo_editor.go, line: 605}
+      - id: user-avatar-denial-of-service
+        root_cause: The user avatar upload checks only the sniffed content type (internal/route/user/setting.go:154) and fully decodes the image with image.Decode (internal/userutil/userutil.go:86) without a DecodeConfig dimension limit, so a small image with huge dimensions exhausts server memory
+        locations:
+          - {file: internal/route/user/setting.go, line: 154}
+          - {file: internal/userutil/userutil.go, line: 86}
+          - {file: internal/userutil/userutil.go, line: 103}
+      - id: user-search-denial-of-service
+        root_cause: The unauthenticated v1 user search passes the limit query unbounded (internal/route/api/v1/user/user.go:18) to searchUserByName, which allocates a slice of that capacity (internal/database/users.go:875), so one request allocates unbounded memory
+        locations:
+          - {file: internal/database/users.go, line: 875}
+          - {file: internal/route/api/v1/api.go, line: 189}
+          - {file: internal/route/api/v1/user/user.go, line: 18}
+      - id: webhook-dns-rebinding-ssrf
+        root_cause: HookTask.deliver checks the payload host with a separate DNS lookup (internal/database/webhook.go:701, internal/netutil/netutil.go:56) and httplib then dials the hostname again with no address check (internal/httplib/httplib.go:305), so a hostname that resolves differently at delivery time reaches internal addresses
+        locations:
+          - {file: internal/database/webhook.go, line: 701}
+          - {file: internal/httplib/httplib.go, line: 305}
+          - {file: internal/netutil/netutil.go, line: 56}
+      - id: webhook-redirect-ssrf
+        root_cause: HookTask.deliver checks the payload URL host against the local network blocklist (internal/database/webhook.go:701) but sends the request with the HTTP client's default redirect following (internal/database/webhook.go:715), so a redirect from an allowed host reaches internal addresses
+        locations:
+          - {file: internal/database/webhook.go, line: 701}
+          - {file: internal/database/webhook.go, line: 715}
+      - id: webhook-task-idor
+        root_cause: deleteWebhook ignores whether the repository-scoped webhook delete matched a row (internal/database/webhook.go:321) and then deletes hook tasks by the hook id alone (internal/database/webhook.go:323), so a repository admin deletes delivery history and pending deliveries of other repositories' webhooks
+        locations:
+          - {file: internal/database/webhook.go, line: 321}
+          - {file: internal/database/webhook.go, line: 323}
+  - id: diff-b9a3626
+    kind: diff
+    base: b3eb33be0fa343522e1f3ea6397534b40e8dde37
+    commit: b9a3626cad505b1dccd66a0b023263ef59134430
+    checks:
+      - id: commits-api-denial-of-service
+        root_cause: The new v1 commits API takes pageSize from the query with no upper bound (internal/route/api/v1/repo/commits.go:24) and uses it as a slice capacity (internal/route/api/v1/repo/commits.go:36), so one request with read access to any repository allocates unbounded memory
+        locations:
+          - {file: internal/route/api/v1/repo/commits.go, line: 24}
+          - {file: internal/route/api/v1/repo/commits.go, line: 36}
+        change_anchors:
+          - {file: internal/route/api/v1/repo/commits.go, line: 24, side: new}
+          - {file: internal/route/api/v1/repo/commits.go, line: 36, side: new}
+  - id: diff-23da90e
+    kind: diff
+    base: 60ee79363dd813898c0511531aabca892bd3cf5e
+    commit: 23da90e25d610e94a50dd27223baaa8834f61607
+    checks:
+      - id: issue-mail-information-disclosure
+        root_cause: mailIssueCommentToParticipants now mails every historical comment poster returned by GetParticipantsByIssueID (models/issue_mail.go:136, models/issue.go:986) without checking current read access, so private issue comments reach collaborators whose access was revoked
+        locations:
+          - {file: models/issue.go, line: 986}
+          - {file: models/issue_mail.go, line: 136}
+        change_anchors:
+          - {file: models/issue.go, line: 986, side: new}
+          - {file: models/issue_mail.go, line: 136, side: new}
+  - id: diff-6072e9a
+    kind: diff
+    base: b78e03934d057bdb4c628fefb364dda6eb1f260a
+    commit: 6072e9a52cf01723aea2b9a5ca7dfe22b101fbfc
+    checks:
+      - id: protected-branch-uncommitted-privilege-escalation
+        root_cause: The new UpdateOrgProtectBranch, like UpdateProtectBranch, returns after inserting a new ProtectBranch row without committing the transaction (models/repo_branch.go:128, models/repo_branch.go:228), so the protection is rolled back while the settings page reports success and the pre-receive hook enforces nothing for that branch
+        locations:
+          - {file: models/repo_branch.go, line: 128}
+          - {file: models/repo_branch.go, line: 228}
+        change_anchors:
+          - {file: models/repo_branch.go, line: 128, side: new}
+      - id: protected-branch-whitelist-privilege-escalation
+        root_cause: The new protected branch whitelist copies team members into whitelist rows only when the whitelisted user or team ids change (models/repo_branch.go:190) and IsUserInProtectBranchWhitelist trusts the stored rows (models/repo_branch.go:75), so users removed from a whitelisted team keep pushing directly to the protected branch
+        locations:
+          - {file: models/repo_branch.go, line: 75}
+          - {file: models/repo_branch.go, line: 190}
+        change_anchors:
+          - {file: models/repo_branch.go, line: 75, side: new}
+          - {file: models/repo_branch.go, line: 190, side: new}
+  - id: diff-1df54ea
+    kind: diff
+    base: e6df2259abdeb75545f53a5ca4c247491b5c3d7f
+    commit: 1df54ea0cde038e2057d083078f952c072d0dc67
+    checks:
+      - id: release-attachment-idor
+        root_cause: NewRelease and UpdateRelease set the release id on attachments selected only by caller-supplied UUIDs (models/release.go:187, models/release.go:305) without checking their current release or repository, so a writer of one repository moves another repository's release attachments
+        locations:
+          - {file: models/release.go, line: 187}
+          - {file: models/release.go, line: 305}
+        change_anchors:
+          - {file: models/release.go, line: 187, side: new}
+          - {file: models/release.go, line: 305, side: new}
+      - id: release-upload-stored-xss
+        root_cause: The new release attachment upload route accepts any content type under the */* default (conf/app.ini:124, cmd/web.go:350), and /attachments/:uuid serves the stored file inline without forcing a safe type when render=true, so an uploaded HTML file runs on the Gogs origin for a user who opens its link
+        locations:
+          - {file: cmd/web.go, line: 350}
+          - {file: conf/app.ini, line: 124}
+        change_anchors:
+          - {file: cmd/web.go, line: 350, side: new}
+          - {file: conf/app.ini, line: 124, side: new}
+  - id: diff-303fa37
+    kind: diff
+    base: ef02414d7e1d8cc33ece4dc3d6084ba2cd5014cc
+    commit: 303fa37b608a4925f5a0137c89e20a906b3d9fdb
+    checks:
+      - id: repo-avatar-denial-of-service
+        root_cause: The new repository avatar upload fully decodes the submitted image with image.Decode (models/repo.go:321) without a DecodeConfig dimension limit, so a small image with huge dimensions exhausts server memory
+        locations:
+          - {file: models/repo.go, line: 321}
+        change_anchors:
+          - {file: models/repo.go, line: 321, side: new}
+  - id: diff-a43fc9a
+    kind: diff
+    base: c69a38652da09cb10bfe31714b6b39fec3f8ede8
+    commit: a43fc9ad17d4337dd26b9b8d867470ca8c548b41
+    checks:
+      - id: ipynb-markdown-stored-xss
+        root_cause: The notebook preview script renders markdown cells with marked and inserts the result with jQuery html (templates/repo/view_file.tmpl:68) after the server-side sanitization step, so markup in a committed .ipynb file runs in the viewer's session
+        locations:
+          - {file: templates/repo/view_file.tmpl, line: 68}
+        change_anchors:
+          - {file: templates/repo/view_file.tmpl, line: 68, side: new}
+      - id: ipynb-sanitizer-stored-xss
+        root_cause: The new ipynbSanitizer allows the data URL scheme without restricting it to safe image MIME types (internal/app/api.go:20), so the sanitize_ipynb output keeps data:text/html links from committed notebooks
+        locations:
+          - {file: internal/app/api.go, line: 20}
+        change_anchors:
+          - {file: internal/app/api.go, line: 20, side: new}
+      - id: notebook-render-stored-xss
+        root_cause: The notebook preview renders the notebook with notebook.js, which assigns raw HTML and markdown cell source to innerHTML of live elements (templates/repo/view_file.tmpl:46), before the result is sent to the sanitizer (templates/repo/view_file.tmpl:50), so markup in a committed .ipynb file runs in the viewer's session
+        locations:
+          - {file: templates/repo/view_file.tmpl, line: 46}
+          - {file: templates/repo/view_file.tmpl, line: 50}
+        change_anchors:
+          - {file: templates/repo/view_file.tmpl, line: 50, side: new}
+  - id: diff-7555558
+    kind: diff
+    base: 28e0003a9a30292bfde21581f0c49f78b4647883
+    commit: 75555585e8cd8ed21a342b3f729e416da77423ab
+    checks:
+      - id: pull-request-merge-injection
+        root_cause: PullRequest.Merge passes the head and base branch names to git merge and rebase as positional arguments without --end-of-options (models/pull.go:266, models/pull.go:284), so a branch name that begins with a dash is parsed as a git option
+        locations:
+          - {file: models/pull.go, line: 266}
+          - {file: models/pull.go, line: 284}
+        change_anchors:
+          - {file: models/pull.go, line: 266, side: new}
+          - {file: models/pull.go, line: 284, side: new}
+  - id: diff-d720c92
+    kind: diff
+    base: a35911486ffe0cd373662219a8f231b9cf38d84c
+    commit: d720c92d995131c19a5cb2bb55f54b804fda4cc4
+    checks:
+      - id: smtp-login-information-disclosure
+        root_cause: The new LoginAuth.Start sends SMTP LOGIN credentials without checking ServerInfo.TLS (modules/mailer/mailer.go:30), unlike net/smtp PlainAuth, so credentials go out in cleartext when STARTTLS is not negotiated
+        locations:
+          - {file: modules/mailer/mailer.go, line: 30}
+        change_anchors:
+          - {file: modules/mailer/mailer.go, line: 30, side: new}
+  - id: diff-591810e
+    kind: diff
+    base: 3c2112215f868a6cabc0428fdf329c01155115fb
+    commit: 591810e405ddc02fe38023cea1fd28b29ed5b4e6
+    checks:
+      - id: diff-preview-symlink-following
+        root_cause: GetDiffPreview relies on osutil.IsSymlink (internal/database/repo_editor.go:253), which calls os.Stat before Lstat and so returns false for a dangling symlink, and then writes the previewed content through the link (internal/database/repo_editor.go:258), so a committed dangling symlink creates a file outside the repository working tree
+        locations:
+          - {file: internal/database/repo_editor.go, line: 253}
+          - {file: internal/database/repo_editor.go, line: 258}
+          - {file: internal/osutil/osutil.go, line: 39}
+        change_anchors:
+          - {file: internal/database/repo_editor.go, line: 253, side: new}
+      - id: upload-symlink-following
+        root_cause: The new symlink guard in Repository.UploadRepoFiles rejects only a target whose final path component is a symlink (internal/database/repo_editor.go:591) and does not check its parent directories, so an upload under a committed symlinked directory writes outside the repository working tree
+        locations:
+          - {file: internal/database/repo_editor.go, line: 591}
+        change_anchors:
+          - {file: internal/database/repo_editor.go, line: 591, side: new}
+  - id: diff-fe25eff
+    kind: diff
+    base: d05395fe906dad7741201faa69a54fef538deda9
+    commit: fe25effe7c3d3a2b27d450747ae321b9795ebdc6
+    checks:
+      - id: git-http-credential-information-disclosure
+        root_cause: The Git HTTP handler prints the decoded Basic authentication username and password with fmt.Println (routers/repo/http.go:114) before signing the user in, so every Git HTTP login writes plaintext passwords or access tokens to the process output
+        locations:
+          - {file: routers/repo/http.go, line: 114}
+        change_anchors:
+          - {file: routers/repo/http.go, line: 114, side: new}
+  - id: diff-60110ad
+    kind: diff
+    base: 5ff2dfb23eb4f5c436d69cc86945192eb4b3d279
+    commit: 60110adc06ef85e533f48a52a744d43c63a818bc
+    checks:
+      - id: webhook-task-idor
+        root_cause: The new deleteWebhook ignores whether the repository-scoped webhook delete matched a row (models/webhook.go:232) and then deletes hook tasks by the hook id alone (models/webhook.go:234), so a repository admin deletes delivery history and pending deliveries of other repositories' webhooks
+        locations:
+          - {file: models/webhook.go, line: 232}
+          - {file: models/webhook.go, line: 234}
+        change_anchors:
+          - {file: models/webhook.go, line: 232, side: new}
+          - {file: models/webhook.go, line: 234, side: new}
+  - id: diff-e6ef752
+    kind: diff
+    base: d674cb7f20e62f7f1c68465768b3fc7784008897
+    commit: e6ef75204bed1fc5438d1e0aefb62838c29d4829
+    checks:
+      - id: issue-dashboard-information-disclosure
+        root_cause: The dashboard's assigned and created filters now query issues by assignee or poster across every repository (routers/user/home.go:249, routers/user/home.go:260) and check repository access only when a repository is selected (routers/user/home.go:276), so revoked collaborators keep listing private issue metadata
+        locations:
+          - {file: routers/user/home.go, line: 249}
+          - {file: routers/user/home.go, line: 260}
+          - {file: routers/user/home.go, line: 276}
+        change_anchors:
+          - {file: routers/user/home.go, line: 249, side: new}
+          - {file: routers/user/home.go, line: 260, side: new}
+          - {file: routers/user/home.go, line: 276, side: new}
+  - id: diff-de31611
+    kind: diff
+    base: 8938855b40777f04ec1c637ad38ee9d12001d042
+    commit: de3161155b4e14a2e39e079f026ef1fe31d4eec4
+    checks:
+      - id: repo-settings-api-missing-permission
+        root_cause: The new v1 PATCH wiki endpoint is registered with reqRepoWriter (internal/route/api/v1/api.go:358) although the web settings restrict wiki settings to repository admins, so write collaborators change an admin-only repository setting
+        locations:
+          - {file: internal/route/api/v1/api.go, line: 358}
+        change_anchors:
+          - {file: internal/route/api/v1/api.go, line: 358, side: new}
+  - id: diff-594a2dc
+    kind: diff
+    base: 06193ed825094581da4fb5550804d7445fc5ae13
+    commit: 594a2dc41f6e70f0cc535b125316d05e12666fda
+    checks:
+      - id: go-get-information-disclosure
+        root_cause: ServeGoGet now looks up the repository without an access check and places its real default branch in the go-get response (internal/context/go_get.go:33), so unauthenticated callers confirm private repositories and learn their default branch
+        locations:
+          - {file: internal/context/go_get.go, line: 33}
+        change_anchors:
+          - {file: internal/context/go_get.go, line: 33, side: new}

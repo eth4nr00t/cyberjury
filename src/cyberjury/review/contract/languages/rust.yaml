@@ -1,0 +1,28 @@
+extensions: [.rs]
+grammar: [tree_sitter_rust, language]
+files:
+  lockfiles: [Cargo.lock]
+syntax:
+  definitions: |
+    [(function_item name: (identifier) @name)
+     (function_signature_item name: (identifier) @name)
+     (struct_item name: (type_identifier) @name)
+     (enum_item name: (type_identifier) @name)
+     (union_item name: (type_identifier) @name)
+     (trait_item name: (type_identifier) @name)
+     (type_item name: (type_identifier) @name)
+     (mod_item name: (identifier) @name)] @def
+  type_definitions: |
+    [(struct_item name: (type_identifier) @name)
+     (enum_item name: (type_identifier) @name)
+     (union_item name: (type_identifier) @name)
+     (trait_item name: (type_identifier) @name)
+     (type_item name: (type_identifier) @name)] @type
+  calls: |
+    (call_expression function: (identifier) @callee arguments: (arguments) @arguments) @call
+    (call_expression function: (field_expression value: (_) @receiver field: (field_identifier) @member)
+      arguments: (arguments) @arguments) @call
+    (call_expression function: (scoped_identifier path: (_) @receiver name: (identifier) @member)
+      arguments: (arguments) @arguments) @call
+  qualified_uses: |
+    (scoped_identifier path: (identifier) @qualifier name: (identifier) @name)

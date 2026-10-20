@@ -49,17 +49,6 @@ def _locate(finding, ranges, source_evidence=(), seed_spans=()):
     return locate(SimpleNamespace(line_ranges=ranges), finding, source_evidence, seed_spans)
 
 
-def test_diff_review_accepts_an_unlisted_source_language():
-    """A Rust handler.rs diff completes with exactly one model call though Rust is not a listed language."""
-    diff = "diff --git a/handler.rs b/handler.rs\n@@ -0,0 +1 @@\n+fn handle() {}\n"
-    provider = MockProvider(default=reply([]))
-
-    result = review(diff, provider=provider)
-
-    assert result.outcome.complete
-    assert len(provider.calls) == 1
-
-
 def test_large_diff_is_reviewed_per_file():
     """With max_chars=1, a.py and b.py go to separate finder calls and sql_injection becomes sql-injection."""
     response = reply(

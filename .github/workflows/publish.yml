@@ -53,7 +53,7 @@ jobs:
           ContractReceipt.capture()
           assert load_review_brief().render()
           assert load_severity_rubric()
-          assert load_detection().skip_dirs
+          assert load_detection().test_dirs
           assert syntax_backend_id()
           PY
       - uses: actions/upload-artifact@v4
