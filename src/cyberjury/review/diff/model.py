@@ -217,11 +217,7 @@ def _hunkless_reason(chunk: str) -> str:
 
 
 def strip_unreviewable_files(diff: str, detection: Detection) -> tuple[str, tuple[SkippedFile, ...]]:
-    """Remove noise files and file sections without a hunk before they consume review work.
-
-    Binary patches, pure renames, copies, mode changes, and empty new or deleted files carry
-    no hunk. Each skipped file is returned with its reason.
-    """
+    """Remove noise files and file sections without a hunk before they consume review work."""
     kept: list[str] = []
     skipped: list[SkippedFile] = []
     for chunk in split_diff_by_file(diff):

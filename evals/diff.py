@@ -1,10 +1,4 @@
-"""Run benchmark diff cases through the product Diff Review command and record adjudicable attempts.
-
-Each case run is one `cyberjury review diff` of the pinned two-dot range in its own review
-workspace, so acquisition, the canonical patch, the materialized head tree, and every output
-artifact are the product's. The attempt is recorded from those artifacts by the same recorder
-that records Repository Review attempts.
-"""
+"""Run benchmark diff cases through the product Diff Review command and record adjudicable attempts."""
 
 from __future__ import annotations
 
@@ -78,11 +72,7 @@ def run(
     progress: Progress | None = None,
     on_attempt: Callable[[dict[str, object]], None] | None = None,
 ) -> list[dict[str, object]]:
-    """Review each diff case once per run and return one attempt record per case and run.
-
-    `on_attempt` receives each record as soon as its case finishes. Each run keeps its review
-    session, including `model-calls.json`, under `workspace`.
-    """
+    """Review each diff case once per run and return one attempt record per case and run."""
     if runs < 1:
         raise ValueError("diff benchmark runs must be at least 1")
     records = []

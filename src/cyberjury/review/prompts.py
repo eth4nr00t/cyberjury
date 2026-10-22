@@ -12,11 +12,7 @@ from cyberjury.severity import SEVERITIES
 
 @dataclass(frozen=True, kw_only=True)
 class PromptPlan:
-    """One reusable evidence prefix followed by the controls that change between calls.
-
-    `cache_segments` are the leading blocks of the dynamic suffix that every later call of the
-    same judgment repeats verbatim, the evidence exchanges already delivered.
-    """
+    """One reusable evidence prefix followed by the controls that change between calls."""
 
     stable_prefix: str
     dynamic_suffix: str

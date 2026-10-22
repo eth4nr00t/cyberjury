@@ -1,9 +1,4 @@
-"""Line numbering for source and patch evidence shown to a model.
-
-A finding must cite a `file:line`, but code shown without numbers gives the model no way
-to derive one, only to guess at a count. Source blocks use one current line gutter. Diff
-blocks use old and new gutters so the report location and change anchor remain distinct.
-"""
+"""Line numbering for source and patch evidence shown to a model."""
 
 from __future__ import annotations
 
@@ -25,11 +20,7 @@ def _gutter(number: int | None, width: int) -> str:
 
 
 def numbered_source(rel: str, text: str, first_line: int) -> str:
-    """One labeled block whose every line carries its real line number in the file.
-
-    A slice starting mid-file cannot even be counted from the top, and the header's range
-    shows the block is a cut rather than the full file.
-    """
+    """One labeled block whose every line carries its real line number in the file."""
     lines = split_lines(text)
     last = first_line + max(len(lines), 1) - 1
     width = len(str(last))

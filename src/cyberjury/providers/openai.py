@@ -1,9 +1,4 @@
-"""OpenAIProvider: Provider backed by the OpenAI Responses API.
-
-With ``cache`` set, the system prompt and ``cache_prefix`` become one stable routing key so
-every request that repeats that prefix can reuse the provider's automatic prefix cache.
-The client is injectable so the mapping can be tested without the SDK or a key.
-"""
+"""OpenAIProvider: Provider backed by the OpenAI Responses API."""
 
 from __future__ import annotations
 
@@ -65,11 +60,7 @@ class OpenAIProvider(Provider):
         cache_segments: tuple[str, ...] = (),
         response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
-        """Call the Responses API and return one completion with its usage.
-
-        The budget covers reasoning plus output, so it is generous: a budget too small yields
-        empty output, which reads as an unusable reply upstream, never as a clean result.
-        """
+        """Call the Responses API and return one completion with its usage."""
         output_format = (
             {
                 "text": {

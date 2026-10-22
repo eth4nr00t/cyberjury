@@ -1,8 +1,4 @@
-"""Model call context and token accounting across a review run.
-
-Review paths can report where calls and tokens went without threading observability data
-through every finder and issue judge return value.
-"""
+"""Model call context and token accounting across a review run."""
 
 from __future__ import annotations
 
@@ -76,20 +72,13 @@ def record_model_parse(failure_reason: str = "") -> None:
 
 @dataclass
 class UsageMeter:
-    """Per-call model records for one run, with token totals derived from them.
-
-    Guarded by a lock since the fan-out records concurrently.
-    """
+    """Per-call model records for one run, with token totals derived from them."""
 
     calls: list[dict[str, object]] = field(default_factory=list)
     _lock: Lock = field(default_factory=Lock, repr=False)
 
     def snapshot(self) -> dict[str, int]:
-        """Return the token totals of every completed call as plain data.
-
-        `total_input_tokens` is derived because comparing two runs on the uncached count alone
-        reads a cache hit as a saving the request never made.
-        """
+        """Return the token totals of every completed call as plain data."""
         return _usage_from_calls(self.call_snapshot())
 
     def summary(self) -> str:
@@ -133,11 +122,7 @@ class UsageMeter:
 
 
 class MeteringProvider(Provider):
-    """Record each wrapped call's usage into the shared meter.
-
-    A backend that reports no usage adds zeros, so the
-    total reflects the metered seats and never blocks.
-    """
+    """Record each wrapped call's usage into the shared meter."""
 
     def __init__(self, inner: Provider, meter: UsageMeter) -> None:
         """Wrap one provider and share its usage totals with the run meter."""

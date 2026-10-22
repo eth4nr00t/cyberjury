@@ -1,8 +1,4 @@
-"""The single source of truth for severity levels and their order.
-
-Findings, prompts, and results read the same four levels and their rank from here, so the
-level names and their ordering cannot drift apart.
-"""
+"""The single source of truth for severity levels and their order."""
 
 from __future__ import annotations
 

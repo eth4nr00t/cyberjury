@@ -56,11 +56,7 @@ class FactLimitation:
 
 @dataclass(frozen=True, kw_only=True)
 class Facts:
-    """Deterministic syntax facts that ground every review unit.
-
-    ``by_file`` holds prompt-ready syntax hints per analyzed file, ``relationships`` the
-    exact definitions and callsites, and ``import_files`` the files with import declarations.
-    """
+    """Deterministic syntax facts that ground every review unit."""
 
     by_file: Mapping[str, str] = field(default_factory=dict)
     relationships: RelationshipEvidenceBundle = field(default_factory=RelationshipEvidenceBundle)

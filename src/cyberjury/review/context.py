@@ -662,12 +662,7 @@ def with_scoped_fact_limitations(
 
 @dataclass(frozen=True, kw_only=True)
 class GroundingContext:
-    """Prompt context with an explicit source boundary and reviewed files.
-
-    `seed` is the code under review, `text` holds engine notices and call candidates, and
-    `syntax_hints` holds bounded unverified hints. Delivered source follows `text`, and the
-    syntax hints follow the delivered source.
-    """
+    """Prompt context with an explicit source boundary and reviewed files."""
 
     text: str
     seed: str = ""

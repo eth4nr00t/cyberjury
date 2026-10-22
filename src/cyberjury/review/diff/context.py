@@ -132,12 +132,7 @@ def changed_file_sources(
     *,
     budget: int = _SETTINGS.target_repository_context_chars_per_unit,
 ) -> tuple[str, tuple[SourceEvidence, ...]]:
-    """Deliver bounded current source of changed files without seed definitions, centered on their changed lines.
-
-    Each file gets an equal share of the budget. A file with changed lines gets one window per changed
-    region and its leading lines, and a file without them gets its leading lines. Every window is exact
-    source under its own id, so a finding can be located in it.
-    """
+    """Deliver bounded current source of changed files without seed definitions, centered on their changed lines."""
     sources = [
         (rel, source)
         for rel in paths

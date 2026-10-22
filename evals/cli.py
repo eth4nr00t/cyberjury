@@ -1,22 +1,4 @@
-"""Measure review quality on benchmark cases by source-reviewed adjudication.
-
-A runs directory holds one attempt record per case and run, `<project>/<case>/attempt-NN.json`,
-and the source assessment ledger of each attempt beside it as `ledger-NN.json`. Both modes record
-attempts from the product review output, `findings.json` and `outcome.json`, the same way.
-
-Workflow:
-  python -m evals diff --runs 2 --attempts-dir runs --workspace reviews
-  python -m evals repository <project>:<repository-case> <review attempt directory> --attempts-dir runs
-  python -m evals packets runs --out adjudication --groups 3
-  adjudicators get only adjudication/, follow INSTRUCTIONS.md there, and write result-N.json
-  python -m evals ledger adjudication
-  python -m evals report runs --calls reviews
-
-`packets` writes the private label mapping to adjudication.private/mapping.json, outside the
-directory adjudicators read, unless --mapping names another path outside it. `ledger` reads the
-same default or --mapping. Report precision is supported / (supported + not_actionable). Duplicate
-and needs_review reports are counted separately.
-"""
+"""Measure review quality on benchmark cases by source-reviewed adjudication."""
 
 from __future__ import annotations
 

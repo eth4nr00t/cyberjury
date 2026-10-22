@@ -30,11 +30,7 @@ def candidate_identity(
     root_cause: str = "",
     source_operation_id: str = "",
 ) -> str:
-    """Identify one candidate from its location, class, anchors, and normalized root cause.
-
-    `root_cause` is model supplied prose. Callers keep it so distinct findings that share
-    every structured anchor still receive distinct ids.
-    """
+    """Identify one candidate from its location, class, anchors, and normalized root cause."""
     normalized_file = file.strip().replace("\\", "/")
     normalized_category = category.strip().lower().replace("_", "-")
     normalized_cause = " ".join(root_cause.lower().split())

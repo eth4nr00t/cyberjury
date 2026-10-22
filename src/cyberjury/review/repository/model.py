@@ -22,12 +22,7 @@ class RepositorySourceError(RuntimeError):
 
 
 def construct_boundaries(text: str) -> list[int]:
-    """Find lexical window candidates at unindented source lines.
-
-    A nonspace character at the start of a line marks a candidate. The heuristic can include
-    imports, comments, and closing delimiters, so it does not claim to parse language
-    constructs. Window edges prefer these candidates to avoid arbitrary midline splits.
-    """
+    """Find lexical window candidates at unindented source lines."""
     starts: list[int] = []
     decorated = False
     offset = 0
@@ -49,13 +44,7 @@ def construct_boundaries(text: str) -> list[int]:
 
 
 def char_spans(text: str) -> list[tuple[int, int]]:
-    """The char windows that cover `text`.
-
-    Text that fits one window is reviewed intact. Larger text is split at top-level construct
-    boundaries so each class or function lands intact in one window. A single construct
-    longer than a window is hard split with an overlap, so even then no boundary silently
-    drops a construct's tail.
-    """
+    """The char windows that cover `text`."""
     size = len(text)
     if size <= _SETTINGS.max_source_chars_per_unit:
         return [(0, size)]

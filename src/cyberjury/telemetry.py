@@ -1,9 +1,4 @@
-"""Lightweight run telemetry.
-
-A consistent stderr progress line and a stage timer show that a long review is moving.
-No logging framework and no event stream: progress goes to stderr, and stdout stays
-reserved for the report.
-"""
+"""Lightweight run telemetry."""
 
 from __future__ import annotations
 

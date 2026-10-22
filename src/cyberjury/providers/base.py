@@ -1,18 +1,4 @@
-"""Provider ABC and its typed input/output.
-
-Deliberately minimal: one synchronous, non-streaming ``complete``. Streaming and tool-
-calling are intentionally left out until a concrete need appears, so the interface does
-not over-commit early. ``cache`` is a portable hint, not a guarantee, that the system
-prompt repeats across calls. Anthropic maps it to a native ``cache_control`` breakpoint.
-OpenAI maps it to a routing key and relies on automatic prefix caching. ``cache_prefix``,
-when given, is the leading substring of the first user message that stays constant
-across calls, such as one review unit's evidence. A provider with explicit cache controls
-marks a second breakpoint there, and a routing key covers the system prompt plus that
-prefix. ``cache_segments`` are the text blocks that follow the prefix and that later calls
-of the same conversation repeat, such as evidence delivered in earlier exchanges. A
-provider with explicit cache controls marks a breakpoint after the last of them, while the
-routing key stays on the prefix so every call of one conversation reaches the same cache.
-"""
+"""Provider ABC and its typed input/output."""
 
 from __future__ import annotations
 
@@ -36,11 +22,7 @@ class Message:
 
 @dataclass(frozen=True, kw_only=True)
 class Usage:
-    """Token counts for one call, normalized so cache changes are measured.
-
-    `cache_read_tokens` bill cheap, `cache_write_tokens` carry the write premium, and
-    `input_tokens` is the uncached remainder. A field a provider does not report stays 0.
-    """
+    """Token counts for one call, normalized so cache changes are measured."""
 
     input_tokens: int = 0
     output_tokens: int = 0

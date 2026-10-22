@@ -1,8 +1,4 @@
-"""Materialize the pinned git targets of benchmark cases.
-
-A URL target is cloned once into the user cache and fetched up to the exact commits a case pins.
-A source checkout of one commit is a disposable worktree of that clone.
-"""
+"""Materialize the pinned git targets of benchmark cases."""
 
 from __future__ import annotations
 

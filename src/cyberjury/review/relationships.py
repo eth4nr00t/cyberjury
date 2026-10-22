@@ -412,7 +412,7 @@ class RelationshipEvidenceBundle:
         for observation in self.observations:
             if not set(observation.subject_ids) <= subjects:
                 raise ValueError(f"relationship observation {observation.id} contains unknown subjects")
-            if not set(observation.candidate_target_ids) <= set(definitions):
+            if not set(observation.candidate_target_ids) <= definitions.keys():
                 raise ValueError(f"relationship observation {observation.id} contains unknown candidates")
             if not set(observation.provenance_source_ids) <= sources:
                 raise ValueError(f"relationship observation {observation.id} contains unknown source provenance")
@@ -427,7 +427,7 @@ class RelationshipEvidenceBundle:
                     raise ValueError(f"structural relationship {relationship.id} contains an unknown source definition")
                 if not _contains(source_definition.source, relationship.source):
                     raise ValueError(f"structural relationship {relationship.id} is outside its source definition")
-            if not set(relationship.candidate_target_definition_ids) <= set(definitions):
+            if not set(relationship.candidate_target_definition_ids) <= definitions.keys():
                 raise ValueError(f"structural relationship {relationship.id} contains unknown candidates")
             if relationship.source.id not in sources:
                 raise ValueError(f"structural relationship {relationship.id} contains unknown source evidence")

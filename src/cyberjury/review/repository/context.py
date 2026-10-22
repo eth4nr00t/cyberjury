@@ -1,8 +1,4 @@
-"""Assemble source and facts context for repository review units.
-
-`Unit` is the worklist item the reviewer processes. Context assembly preserves source
-locations.
-"""
+"""Assemble source and facts context for repository review units."""
 
 from __future__ import annotations
 
@@ -32,11 +28,7 @@ _EXECUTION = DEFAULT_REVIEW_SETTINGS.execution
 
 @dataclass(frozen=True, kw_only=True)
 class Unit:
-    """One unit of the worklist: one source file, or one char span of it.
-
-    `span`, when set, is the char window of the file this unit reviews, so a file too large
-    for one call is split across sibling units instead of being silently truncated.
-    """
+    """One unit of the worklist: one source file, or one char span of it."""
 
     name: str
     root: str

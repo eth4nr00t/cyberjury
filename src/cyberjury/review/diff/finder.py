@@ -70,10 +70,7 @@ def locate(
     source_evidence: tuple[SourceEvidence, ...],
     seed_spans: tuple[SourceSpan, ...],
 ) -> Finding | None:
-    """Require a post change patch line or a cited source receipt, and one exact change anchor.
-
-    A current patch line is its own receipt. Both paths are returned in their canonical form.
-    """
+    """Require a post change patch line or a cited source receipt, and one exact change anchor."""
     ranges = unit.line_ranges
     current_path = canonical_diff_path(finding.file, ranges.current)
     primary_in_patch = _line_in_ranges(finding.line, ranges.current.get(current_path, ()))

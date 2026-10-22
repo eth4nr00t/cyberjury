@@ -1,15 +1,4 @@
-"""Report reviewed recall, report precision, and model call cost of adjudicated runs.
-
-A runs directory holds attempt records with their ledgers. Every ledger is checked again against
-its attempt bytes, the current case checks, and the pinned commit. Evidence lines were checked
-against the source when the ledger was written. Recall counts checks credited by a
-supported or duplicate report, once per attempt. Precision is supported / (supported +
-not_actionable). Duplicate and needs_review reports are outside that ratio and reported as separate
-counts. Precision stays unknown while any report needs review or when no report is supported or
-not actionable. Issues are measured against the supported and duplicate verdicts: duplicate
-issues count a root cause spread over several issues, and mixed issues hold reports of two root
-causes.
-"""
+"""Report reviewed recall, report precision, and model call cost of adjudicated runs."""
 
 from __future__ import annotations
 

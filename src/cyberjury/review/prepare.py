@@ -1,8 +1,4 @@
-"""Prepare one review target: facts, navigation, bounded units, and their receipts.
-
-Diff Review and Repository Review share this stage. A target supplies only how it plans
-its units and how it grounds one unit.
-"""
+"""Prepare one review target: facts, navigation, bounded units, and their receipts."""
 
 from __future__ import annotations
 

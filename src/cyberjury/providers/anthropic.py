@@ -1,15 +1,4 @@
-"""AnthropicProvider: Provider backed by the Anthropic Messages API.
-
-``cache`` marks an ephemeral cache_control breakpoint on the system prompt, which holds
-the review contract shared by every call of a run. ``cache_prefix`` adds a second
-breakpoint by splitting the first user message after its stable evidence block, so the
-follow ups of one unit reuse that evidence. Each of ``cache_segments`` becomes its own block
-after the prefix and the last one carries a third breakpoint, so a follow up reads the
-evidence of earlier exchanges from the cache entry the previous call wrote at its own last
-segment, found by the API's lookback over earlier block boundaries. The Anthropic client is
-injectable so the mapping and caching logic can be tested without the SDK or an API key.
-Constructed lazily otherwise, reading ANTHROPIC_API_KEY from the environment.
-"""
+"""AnthropicProvider: Provider backed by the Anthropic Messages API."""
 
 from __future__ import annotations
 

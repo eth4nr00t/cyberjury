@@ -1,10 +1,4 @@
-"""Run the Finder over one review unit of any target.
-
-A target supplies only its model contract, its reply checks beyond the shared finding
-fields, and its primary location rule. Every target shares the finding fields, the prompt
-envelope, the grounding guard, the bounded evidence judgment, the finding union, location
-validation, and source operation and cited span binding.
-"""
+"""Run the Finder over one review unit of any target."""
 
 from __future__ import annotations
 
@@ -130,11 +124,7 @@ class GroundedUnit(ReviewUnit, Protocol):
 
 @dataclass(frozen=True, kw_only=True)
 class ReviewTarget[U: GroundedUnit]:
-    """What genuinely differs between review targets around the shared Finder judgment.
-
-    A target that covers all files answers for every facts limitation and needs at least one
-    unit. A diff answers only for the limitations its units scope.
-    """
+    """What genuinely differs between review targets around the shared Finder judgment."""
 
     kind: Literal["diff", "repository"]
     role: str

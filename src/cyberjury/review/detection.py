@@ -20,11 +20,7 @@ _ATTRIBUTES = ("linguist-vendored", "linguist-documentation")
 
 @dataclass(frozen=True)
 class Detection:
-    """File classification rules loaded from the review contract.
-
-    A source tree's `.gitattributes` declarations of linguist-vendored and linguist-documentation
-    override the contract defaults for the paths they match.
-    """
+    """File classification rules loaded from the review contract."""
 
     ignored_dirs: frozenset[str]
     dependency_dirs: frozenset[str]
@@ -72,13 +68,7 @@ class Detection:
         )
 
     def is_noise_path(self, path: str) -> bool:
-        """Return whether a path is excluded from security review.
-
-        Excluded paths cover ignored directories, third-party code, test code, documentation,
-        assets, translation catalogs, and dependency lockfiles. This is a denylist of files known
-        to carry no project logic, not an allowlist of parsed languages, so a security-relevant
-        non-source file such as a `.sql` migration, a shell script, or a Dockerfile is kept.
-        """
+        """Return whether a path is excluded from security review."""
         path = path.replace("\\", "/")
         name = PurePosixPath(path).name
         return (
@@ -123,11 +113,7 @@ def load_detection() -> Detection:
 
 
 def detection_for(root: str | Path, files: Sequence[str]) -> Detection:
-    """Load file classification for one source tree.
-
-    The tree adds the linguist-vendored and linguist-documentation rules of its `.gitattributes`
-    files and the files larger than the review file size limit.
-    """
+    """Load file classification for one source tree."""
     detection = load_detection()
     oversized = frozenset(file for file in files if (Path(root) / file).stat().st_size > MAX_SOURCE_BYTES)
     rules: list[tuple[re.Pattern[str], str, bool]] = []

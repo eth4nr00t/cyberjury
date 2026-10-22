@@ -899,13 +899,7 @@ def run_review_units[U: ReviewUnit, T](
     restore: Callable[[U], ReviewCycle[T] | None] | None = None,
     on_unit: Callable[[U, ReviewCycle[T], float], None] | None = None,
 ) -> ReviewOutcome[T]:
-    """Review every open unit once, continue past failed units, and record each failure.
-
-    `restore` returns a unit's cycle from an earlier run: a clean one is reused without a
-    model call, and a failed unit is reviewed again keeping its earlier findings. `on_unit`
-    receives each executed unit's cycle as soon as it completes. Findings fold in unit order
-    whatever the completion order.
-    """
+    """Review every open unit once, continue past failed units, and record each failure."""
     if not units:
         raise ValueError("at least one review unit is required")
     unit_ids = tuple(unit.id for unit in units)

@@ -1,8 +1,4 @@
-"""Record and load review attempts of benchmark cases.
-
-An attempt is one review of one benchmark case, recorded as `<project>/<case>/attempt-NN.json`
-under a runs directory from the product review output of that case.
-"""
+"""Record and load review attempts of benchmark cases."""
 
 from __future__ import annotations
 
@@ -124,13 +120,7 @@ def collect_attempts(directories: Sequence[str | Path]) -> list[Attempt]:
 
 
 def recorded_attempt(case: BenchmarkCase, directory: Path, number: int, *, error: str = "") -> dict[str, object]:
-    """Record the product output of one review attempt directory as an adjudicable attempt.
-
-    Diff and Repository Review attempts are recorded the same way, from `findings.json` and
-    `outcome.json`. The review must have read exactly the case source, so its findings can be
-    judged against that revision. An attempt without a result is recorded as incomplete with
-    `error`, the failure the review reported.
-    """
+    """Record the product output of one review attempt directory as an adjudicable attempt."""
     findings_path = directory / "findings.json"
     if not findings_path.is_file():
         return {

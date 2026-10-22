@@ -1,9 +1,4 @@
-"""Load the cases of benchmark definitions as review cases.
-
-A case of a project's `benchmark.yaml` is named `<project id>:<case id>` and carries its nested
-checks. Public projects live under `evals/projects/<project-id>`. This module is engine-free so
-listing and adjudication do not import the review runner.
-"""
+"""Load the cases of benchmark definitions as review cases."""
 
 from __future__ import annotations
 

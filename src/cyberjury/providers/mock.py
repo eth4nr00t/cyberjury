@@ -1,9 +1,4 @@
-"""MockProvider: a Provider that returns canned text instead of calling a model.
-
-Used for the end-to-end dry-run and for tests, so the pipeline can run with no API key
-and deterministic output. It holds no parsing or audit logic: it returns whatever text
-it was configured with and records each call for inspection.
-"""
+"""MockProvider: a Provider that returns canned text instead of calling a model."""
 
 from __future__ import annotations
 

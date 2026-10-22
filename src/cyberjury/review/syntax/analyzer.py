@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import sys
 from dataclasses import dataclass
+from functools import cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,9 +14,10 @@ from cyberjury.review.detection import MAX_SOURCE_BYTES
 from cyberjury.review.facts import FactLimitation
 from cyberjury.review.languages import load_languages
 from cyberjury.review.relationships import StructuralRelationKind
+from cyberjury.telemetry import progress
 
 if TYPE_CHECKING:
-    from tree_sitter import Language, Node
+    from tree_sitter import Language, Node, Query
 
 if sys.version_info >= (3, 13):
     from types import CapsuleType
@@ -250,6 +252,20 @@ def grammar_for(spec: LangSpec) -> CapsuleType:
     return getattr(importlib.import_module(spec.module), spec.accessor)()
 
 
+@cache
+def _language(spec: LangSpec) -> Language:
+    from tree_sitter import Language
+
+    return Language(grammar_for(spec))
+
+
+@cache
+def _compiled(spec: LangSpec, text: str) -> Query:
+    from tree_sitter import Query
+
+    return Query(_language(spec), text)
+
+
 def character_offsets(source: bytes) -> dict[int, int] | None:
     """Map Tree-sitter byte offsets to decoded text offsets when they differ."""
     if source.isascii() and b"\r" not in source:
@@ -282,22 +298,32 @@ def _node_range(node: Node, offsets: dict[int, int] | None) -> tuple[int, int]:
     return start, end
 
 
-def _nearest_definition(node: Node, definitions: tuple[tuple[Node, Node], ...]) -> tuple[Node, Node] | None:
-    candidates = [
-        definition
-        for definition in definitions
-        if definition[0].start_byte <= node.start_byte
-        and node.end_byte <= definition[0].end_byte
-        and (definition[0].start_byte, definition[0].end_byte) != (node.start_byte, node.end_byte)
-    ]
-    return min(candidates, key=lambda definition: definition[0].end_byte - definition[0].start_byte, default=None)
+type _DefinitionIndex = dict[tuple[int, int], tuple[Node, Node]]
 
 
-def _definition_nodes(root: Node, language: Language, spec: LangSpec) -> tuple[tuple[Node, Node], ...]:
-    from tree_sitter import Query, QueryCursor
+def _definition_index(definitions: tuple[tuple[Node, Node], ...]) -> _DefinitionIndex:
+    index: _DefinitionIndex = {}
+    for definition in definitions:
+        index.setdefault((definition[0].start_byte, definition[0].end_byte), definition)
+    return index
+
+
+def _nearest_definition(node: Node, index: _DefinitionIndex) -> tuple[Node, Node] | None:
+    own = (node.start_byte, node.end_byte)
+    ancestor = node.parent
+    while ancestor is not None:
+        span = (ancestor.start_byte, ancestor.end_byte)
+        if span != own and span in index:
+            return index[span]
+        ancestor = ancestor.parent
+    return None
+
+
+def _definition_nodes(root: Node, spec: LangSpec) -> tuple[tuple[Node, Node], ...]:
+    from tree_sitter import QueryCursor
 
     by_name_range: dict[tuple[int, int], tuple[Node, Node]] = {}
-    for _, captures in QueryCursor(Query(language, spec.definitions)).matches(root):
+    for _, captures in QueryCursor(_compiled(spec, spec.definitions)).matches(root):
         node = (captures.get("def") or [None])[0]
         identifier = (captures.get("name") or [None])[0]
         if node is None or identifier is None:
@@ -313,16 +339,16 @@ def _definition_nodes(root: Node, language: Language, spec: LangSpec) -> tuple[t
 class _ParsedTree:
     source: bytes
     root: Node
-    language: Language
     spec: LangSpec
     offsets: dict[int, int] | None
     definitions: tuple[tuple[Node, Node], ...]
+    definition_index: _DefinitionIndex
 
 
 def _definition_calls(
     source: bytes,
     node: Node,
-    definitions: tuple[tuple[Node, Node], ...],
+    definition_index: _DefinitionIndex,
     call_query: object,
     offsets: dict[int, int] | None,
     *,
@@ -333,7 +359,7 @@ def _definition_calls(
     callsites: dict[tuple[int, int], AnalyzedCallsite] = {}
     for _, captures in QueryCursor(call_query).matches(node):
         call = (captures.get("call") or [None])[0]
-        owner = _nearest_definition(call, definitions) if call is not None else None
+        owner = _nearest_definition(call, definition_index) if call is not None else None
         belongs = owner is None if file_scope else owner is not None and owner[0] == node
         if call is None or not belongs:
             continue
@@ -380,7 +406,7 @@ def _analyzed_callsite(
 def _lexical_owner(
     source: bytes,
     node: Node,
-    containers: tuple[tuple[Node, Node], ...],
+    containers: _DefinitionIndex,
     offsets: dict[int, int] | None,
 ) -> AnalyzedOwner | None:
     owner_match = _nearest_definition(node, containers)
@@ -392,16 +418,17 @@ def _lexical_owner(
 
 
 def _definitions(tree: _ParsedTree, file: str) -> tuple[AnalyzedDefinition, ...]:
-    from tree_sitter import Query, QueryCursor
+    from tree_sitter import QueryCursor
 
-    source, root, language, spec, offsets = tree.source, tree.root, tree.language, tree.spec, tree.offsets
+    source, root, spec, offsets = tree.source, tree.root, tree.spec, tree.offsets
     definition_nodes = tree.definitions
-    call_query = Query(language, spec.calls)
+    definition_index = tree.definition_index
+    call_query = _compiled(spec, spec.calls)
     type_nodes: tuple[tuple[Node, Node], ...] = ()
     if spec.type_definitions:
         type_nodes = tuple(
             (node, identifier)
-            for _, captures in QueryCursor(Query(language, spec.type_definitions)).matches(root)
+            for _, captures in QueryCursor(_compiled(spec, spec.type_definitions)).matches(root)
             if (node := (captures.get("type") or [None])[0]) is not None
             and (identifier := (captures.get("name") or [None])[0]) is not None
         )
@@ -409,18 +436,19 @@ def _definitions(tree: _ParsedTree, file: str) -> tuple[AnalyzedDefinition, ...]
     if spec.receivers:
         receiver_ranges = {
             (definition.start_byte, definition.end_byte)
-            for _, captures in QueryCursor(Query(language, spec.receivers)).matches(root)
+            for _, captures in QueryCursor(_compiled(spec, spec.receivers)).matches(root)
             if (definition := (captures.get("def") or [None])[0]) is not None
             and (captures.get("receiver") or [None])[0] is not None
         }
     definitions: list[AnalyzedDefinition] = []
+    type_index = _definition_index(type_nodes)
     type_ranges = {(node.start_byte, node.end_byte) for node, _ in type_nodes}
     for node, identifier in definition_nodes:
         name = _text(source, identifier)
         is_type = (node.start_byte, node.end_byte) in type_ranges
-        calls, callsites = _definition_calls(source, node, definition_nodes, call_query, offsets)
+        calls, callsites = _definition_calls(source, node, definition_index, call_query, offsets)
         start, end = _node_range(node, offsets)
-        type_owner = _lexical_owner(source, node, type_nodes, offsets)
+        type_owner = _lexical_owner(source, node, type_index, offsets)
         definitions.append(
             AnalyzedDefinition(
                 name=name,
@@ -429,14 +457,14 @@ def _definitions(tree: _ParsedTree, file: str) -> tuple[AnalyzedDefinition, ...]
                 end=end,
                 calls=calls,
                 is_type=is_type,
-                owner=_lexical_owner(source, node, definition_nodes, offsets),
+                owner=_lexical_owner(source, node, definition_index, offsets),
                 type_owner=type_owner,
                 callsites=callsites,
                 signature=_definition_signature(source, node, identifier),
                 has_receiver=not is_type and (node.start_byte, node.end_byte) in receiver_ranges,
             )
         )
-    file_calls, file_callsites = _definition_calls(source, root, definition_nodes, call_query, offsets, file_scope=True)
+    file_calls, file_callsites = _definition_calls(source, root, definition_index, call_query, offsets, file_scope=True)
     if file_callsites:
         start, end = _node_range(root, offsets)
         definitions.append(
@@ -476,13 +504,13 @@ def _parameters_node(node: Node) -> Node | None:
 
 
 def _imports(tree: _ParsedTree) -> tuple[AnalyzedImport, ...]:
-    from tree_sitter import Query, QueryCursor
+    from tree_sitter import QueryCursor
 
-    source, root, language, spec, offsets = tree.source, tree.root, tree.language, tree.spec, tree.offsets
-    definition_nodes = tree.definitions
+    source, root, spec, offsets = tree.source, tree.root, tree.spec, tree.offsets
+    definition_index = tree.definition_index
     imports: list[AnalyzedImport] = []
     for import_query in spec.imports:
-        for _, captures in QueryCursor(Query(language, import_query.query)).matches(root):
+        for _, captures in QueryCursor(_compiled(spec, import_query.query)).matches(root):
             modules = captures.get("module") or ()
             statements = captures.get("statement") or ()
             imported_nodes = captures.get("imported") or ()
@@ -493,7 +521,7 @@ def _imports(tree: _ParsedTree) -> tuple[AnalyzedImport, ...]:
             if not modules or not statements or not imported_names:
                 continue
             module = _text(source, modules[0])
-            owner = _lexical_owner(source, modules[0], definition_nodes, offsets)
+            owner = _lexical_owner(source, modules[0], definition_index, offsets)
             statement = statements[0]
             start, end = _node_range(statement, offsets)
             for position, imported in enumerate(imported_names):
@@ -524,13 +552,13 @@ def _imports(tree: _ParsedTree) -> tuple[AnalyzedImport, ...]:
 
 
 def _namespaces(tree: _ParsedTree) -> tuple[AnalyzedNamespace, ...]:
-    from tree_sitter import Query, QueryCursor
+    from tree_sitter import QueryCursor
 
-    source, root, language, spec, offsets = tree.source, tree.root, tree.language, tree.spec, tree.offsets
-    definitions = tree.definitions
+    source, root, spec, offsets = tree.source, tree.root, tree.spec, tree.offsets
+    definition_index = tree.definition_index
     namespaces: list[AnalyzedNamespace] = []
     for query_text in spec.namespace_imports:
-        for _, captures in QueryCursor(Query(language, query_text)).matches(root):
+        for _, captures in QueryCursor(_compiled(spec, query_text)).matches(root):
             modules = captures.get("module") or ()
             statements = captures.get("statement") or ()
             if not modules or not statements:
@@ -546,7 +574,7 @@ def _namespaces(tree: _ParsedTree) -> tuple[AnalyzedNamespace, ...]:
                     specifier=specifier,
                     start=start,
                     end=end,
-                    owner=_lexical_owner(source, statement, definitions, offsets),
+                    owner=_lexical_owner(source, statement, definition_index, offsets),
                 )
             )
     return tuple(
@@ -558,14 +586,14 @@ def _namespaces(tree: _ParsedTree) -> tuple[AnalyzedNamespace, ...]:
 
 
 def _qualified_uses(tree: _ParsedTree) -> tuple[AnalyzedQualifiedUse, ...]:
-    from tree_sitter import Query, QueryCursor
+    from tree_sitter import QueryCursor
 
-    source, root, language, spec, offsets = tree.source, tree.root, tree.language, tree.spec, tree.offsets
+    source, root, spec, offsets = tree.source, tree.root, tree.spec, tree.offsets
     if not spec.qualified_uses:
         return ()
-    definitions = tree.definitions
+    definition_index = tree.definition_index
     uses: list[AnalyzedQualifiedUse] = []
-    for _, captures in QueryCursor(Query(language, spec.qualified_uses)).matches(root):
+    for _, captures in QueryCursor(_compiled(spec, spec.qualified_uses)).matches(root):
         qualifiers = captures.get("qualifier") or ()
         names = captures.get("name") or ()
         if qualifiers and names:
@@ -577,7 +605,7 @@ def _qualified_uses(tree: _ParsedTree) -> tuple[AnalyzedQualifiedUse, ...]:
                     name=_text(source, names[0]),
                     start=start,
                     end=end,
-                    owner=_lexical_owner(source, expression, definitions, offsets),
+                    owner=_lexical_owner(source, expression, definition_index, offsets),
                 )
             )
     return tuple(
@@ -589,13 +617,13 @@ def _qualified_uses(tree: _ParsedTree) -> tuple[AnalyzedQualifiedUse, ...]:
 
 
 def _structural_relationships(tree: _ParsedTree) -> tuple[AnalyzedStructuralRelationship, ...]:
-    from tree_sitter import Query, QueryCursor
+    from tree_sitter import QueryCursor
 
-    source, root, language, spec, offsets = tree.source, tree.root, tree.language, tree.spec, tree.offsets
-    definitions = tree.definitions
+    source, root, spec, offsets = tree.source, tree.root, tree.spec, tree.offsets
+    by_identifier = {(identifier.start_byte, identifier.end_byte): node for node, identifier in tree.definitions}
     relationships: list[AnalyzedStructuralRelationship] = []
     for configured in spec.structural_relationships:
-        for _, captures in QueryCursor(Query(language, configured.query)).matches(root):
+        for _, captures in QueryCursor(_compiled(spec, configured.query)).matches(root):
             owners = captures.get("owner") or ()
             owner_names = captures.get("owner_name") or ()
             references = captures.get("reference") or ()
@@ -606,17 +634,14 @@ def _structural_relationships(tree: _ParsedTree) -> tuple[AnalyzedStructuralRela
                 )
             captured_owner = owners[0]
             owner_name = owner_names[0]
-            matching_owners = [
-                node
-                for node, identifier in definitions
-                if identifier.start_byte == owner_name.start_byte
-                and identifier.end_byte == owner_name.end_byte
-                and node.start_byte <= captured_owner.start_byte
-                and captured_owner.end_byte <= node.end_byte
-            ]
-            if len(matching_owners) != 1:
+            owner_node = by_identifier.get((owner_name.start_byte, owner_name.end_byte))
+            if (
+                owner_node is None
+                or owner_node.start_byte > captured_owner.start_byte
+                or captured_owner.end_byte > owner_node.end_byte
+            ):
                 raise AnalyzerConfigurationError(f"{spec.name} structural relationship has no unique definition owner")
-            owner_start, owner_end = _node_range(matching_owners[0], offsets)
+            owner_start, owner_end = _node_range(owner_node, offsets)
             owner = AnalyzedOwner(_text(source, owner_name), owner_start, owner_end)
             for reference, target_name in zip(references, target_names, strict=True):
                 start, end = _node_range(reference, offsets)
@@ -670,7 +695,7 @@ def _source_position(source: bytes, byte_offset: int) -> tuple[int, int]:
 
 def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
     """Parse every configured query family for one reviewable file."""
-    from tree_sitter import Language, Parser
+    from tree_sitter import Parser
 
     try:
         with path.open("rb") as stream:
@@ -683,22 +708,22 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
         source.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise SourceParseError("not valid UTF-8") from exc
-    language = Language(grammar_for(spec))
     try:
-        tree = Parser(language).parse(source)
+        tree = Parser(_language(spec)).parse(source)
     except (ValueError, RuntimeError) as exc:
         raise SourceParseError("unparsable") from exc
     if tree.root_node.has_error:
         line, column = _first_parse_problem(source, tree.root_node)
         raise SourceParseError("unparsable", line=line, column=column)
     try:
+        definitions = _definition_nodes(tree.root_node, spec)
         parsed = _ParsedTree(
             source=source,
             root=tree.root_node,
-            language=language,
             spec=spec,
             offsets=character_offsets(source),
-            definitions=_definition_nodes(tree.root_node, language, spec),
+            definitions=definitions,
+            definition_index=_definition_index(definitions),
         )
         return AnalyzedFile(
             definitions=_definitions(parsed, rel),
@@ -710,6 +735,9 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
         )
     except (ValueError, RuntimeError) as exc:
         raise AnalyzerConfigurationError(f"invalid query for {spec.name}") from exc
+
+
+_PROGRESS_FILES = 500
 
 
 def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
@@ -725,7 +753,7 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
     names = [rel for _path, rel, _spec in ordered_sources]
     if len(names) != len(set(names)):
         raise AnalyzerConfigurationError("analyzer source paths must be unique")
-    for path, rel, spec in ordered_sources:
+    for position, (path, rel, spec) in enumerate(ordered_sources, 1):
         try:
             analyzed = parse_file(path, rel, spec)
         except SourceParseError as exc:
@@ -738,13 +766,17 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
                     column=exc.column,
                 )
             )
-            continue
-        definitions.extend(analyzed.definitions)
-        imports.setdefault(rel, []).extend(analyzed.imports)
-        namespaces.setdefault(rel, []).extend(analyzed.namespaces)
-        qualified_uses.setdefault(rel, []).extend(analyzed.qualified_uses)
-        structural_relationships.setdefault(rel, []).extend(analyzed.structural_relationships)
-        normalized_sources[rel] = analyzed.source
+        else:
+            definitions.extend(analyzed.definitions)
+            imports.setdefault(rel, []).extend(analyzed.imports)
+            namespaces.setdefault(rel, []).extend(analyzed.namespaces)
+            qualified_uses.setdefault(rel, []).extend(analyzed.qualified_uses)
+            structural_relationships.setdefault(rel, []).extend(analyzed.structural_relationships)
+            normalized_sources[rel] = analyzed.source
+        if len(ordered_sources) >= _PROGRESS_FILES and (
+            position % _PROGRESS_FILES == 0 or position == len(ordered_sources)
+        ):
+            progress(f"facts {position}/{len(ordered_sources)}")
     return AnalyzedRepository(
         definitions=tuple(definitions),
         imports=imports,

@@ -20,11 +20,7 @@ def safe_repository_path(root: str | Path, rel: str) -> Path | None:
 
 
 def read_repository_source(root: str | Path, rel: str, *, label: str) -> str | None:
-    """Read one UTF-8 repository file, or None when it is absent.
-
-    A path that escapes the root or a file that cannot be read raises `BackendUnavailable`, so a
-    review never mistakes an unreadable source for an empty one.
-    """
+    """Read one UTF-8 repository file, or None when it is absent."""
     path = safe_repository_path(root, rel)
     if path is None:
         raise BackendUnavailable(f"{label} source path escapes the repository: {rel}")

@@ -1,9 +1,4 @@
-"""Named settings that shape review coverage, cost, and execution.
-
-Fields prefixed with ``max`` are strict bounds. Fields prefixed with ``target`` are
-packing goals that selected evidence may exceed. Defaults remain at their baseline values
-until a backtest supports changing them.
-"""
+"""Named settings that shape review coverage, cost, and execution."""
 
 from __future__ import annotations
 

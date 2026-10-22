@@ -1,12 +1,4 @@
-"""Group reported findings into issues: findings that one code change fixes.
-
-Grouping never removes a finding. Every member is still reported and counted. Findings
-that report the same category at the same primary location, one file and one line, form one
-issue without a model. Findings of different groups become a candidate pair when each cites
-source covering the other's primary location, or when one does and both cite overlapping lines
-of one source file. Each candidate pair receives one closed-schema judgment on the review model,
-and only a `same_fix` answer links the two issues.
-"""
+"""Group reported findings into issues: findings that one code change fixes."""
 
 from __future__ import annotations
 
@@ -60,11 +52,7 @@ def _group_key(finding: Finding) -> tuple[str, int, str]:
 
 
 def group_issues(findings: Sequence[Finding], links: Iterable[tuple[str, str]] = ()) -> tuple[Issue, ...]:
-    """Union findings over equal locations and categories and accepted judgment links, keeping every finding.
-
-    Issues and their members follow the input order, so the first finding of an issue is its
-    representative. Issue ids depend only on member sets.
-    """
+    """Union findings over equal locations and categories and accepted judgment links, keeping every finding."""
     position = {finding.candidate_id: index for index, finding in enumerate(findings)}
     parent = list(range(len(findings)))
     joined: list[tuple[int, LinkKind]] = []
@@ -116,10 +104,7 @@ def _traces_same_source(first: Finding, second: Finding) -> bool:
 
 
 def link_candidates(findings: Sequence[Finding]) -> tuple[tuple[Finding, Finding], ...]:
-    """Select one candidate pair per pair of deterministic groups whose findings trace the same source.
-
-    Pairs are formed in candidate id order, so the selection does not depend on input order.
-    """
+    """Select one candidate pair per pair of deterministic groups whose findings trace the same source."""
     ordered = sorted(findings, key=lambda finding: finding.candidate_id)
     pairs: dict[tuple[tuple[str, int, str], ...], tuple[Finding, Finding]] = {}
     for index, first in enumerate(ordered):
@@ -283,11 +268,7 @@ def link_issues(
     checkpoint: CheckpointStore | None = None,
     concurrency: int = 1,
 ) -> IssueLinks:
-    """Judge every candidate pair once, `concurrency` at a time, and keep the pairs one code change fixes.
-
-    With a checkpoint, each completed decision is saved as soon as it is made and reused for the
-    same prompt and judge. A failed judgment links nothing and is never saved, so a resume retries it.
-    """
+    """Judge every candidate pair once, `concurrency` at a time, and keep the pairs one code change fixes."""
 
     def decide(pair: tuple[Finding, Finding]) -> tuple[tuple[str, str], LinkDecision | None, str]:
         first, second = pair

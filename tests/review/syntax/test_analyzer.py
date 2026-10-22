@@ -9,6 +9,7 @@ from cyberjury.review.detection import load_detection
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.prepare import extract_facts
 from cyberjury.review.selection import FileSelection
+from cyberjury.review.syntax import analyzer as analyzer_module
 from cyberjury.review.syntax.analyzer import (
     MAX_SOURCE_BYTES,
     AnalyzerConfigurationError,
@@ -496,3 +497,18 @@ def test_native_analyzer_output_does_not_depend_on_input_enumeration(tmp_path):
         inputs.append((path, name, spec))
 
     assert analyze_repository(inputs) == analyze_repository(list(reversed(inputs)))
+
+
+def test_analysis_reports_progress_every_batch_of_files(tmp_path, monkeypatch, capsys):
+    """With a batch of 2, five sources report facts 2/5, 4/5, and 5/5 on stderr."""
+    monkeypatch.setattr(analyzer_module, "_PROGRESS_FILES", 2)
+    specs = load_specs()
+    inputs = []
+    for index in range(5):
+        path = tmp_path / f"m{index}.py"
+        path.write_text(f"def f{index}():\n    return {index}\n")
+        inputs.append((path, path.name, specs["python"]))
+
+    analyze_repository(inputs)
+
+    assert capsys.readouterr().err.splitlines() == ["facts 2/5", "facts 4/5", "facts 5/5"]

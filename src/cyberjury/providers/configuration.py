@@ -39,11 +39,7 @@ class ProviderCredentialsError(ValueError):
 
 
 def provider_configuration_from_env() -> ProviderConfiguration:
-    """Resolve the model seat from the environment, which a working directory `.env` fills.
-
-    A reachable OpenAI key selects OpenAI and otherwise Anthropic. An empty setting is unset.
-    Retries and the per call timeout use the fixed defaults.
-    """
+    """Resolve the model seat from the environment, which a working directory `.env` fills."""
     seat_provider = "openai" if _setting("OPENAI_API_KEY") else "anthropic"
     return ProviderConfiguration(
         seat=ProviderSeat(

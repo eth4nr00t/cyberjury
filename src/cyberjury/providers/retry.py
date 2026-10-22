@@ -1,11 +1,4 @@
-"""RetryProvider: wrap any Provider, retrying `complete` on transient failure.
-
-Timeouts, rate limits, blank bodies, and incomplete structured JSON are retried. The last
-error is re-raised once attempts are exhausted. The last non-blank response still reaches the
-strict downstream schema validator, so retry never turns malformed output into a clean review.
-An optional hard deadline bounds each call from outside the SDK. ``sleep`` and ``rand`` are
-injectable so tests stay deterministic.
-"""
+"""RetryProvider: wrap any Provider, retrying `complete` on transient failure."""
 
 from __future__ import annotations
 

@@ -25,11 +25,7 @@ class ChangeAnchor:
 
 @dataclass(frozen=True, kw_only=True)
 class Finding:
-    """One reported vulnerability before cross-unit accumulation and issue grouping.
-
-    Every target fills the same fields, and only a Diff finding carries a change anchor. The cited
-    spans are bound after location validation and never enter the identity.
-    """
+    """One reported vulnerability before cross-unit accumulation and issue grouping."""
 
     title: str
     category: str

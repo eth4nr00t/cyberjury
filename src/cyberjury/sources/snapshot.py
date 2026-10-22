@@ -47,13 +47,7 @@ def capture_source_snapshot(root: str | Path) -> SourceSnapshot:
 
 
 def source_snapshot_files(root: str | Path) -> tuple[str, ...]:
-    """Enumerate the source tree denominator.
-
-    A Git work tree contributes its tracked and unignored files, so ignored trees such as
-    virtual environments and dependency directories are never walked. A plain directory
-    contributes every file. A symlink is listed only when it resolves to a regular file inside
-    the root.
-    """
+    """List the files a review covers: Git-visible files of a work tree, or every file of a plain directory."""
     base = Path(root).resolve()
     if not base.is_dir():
         raise SourceSnapshotError(f"snapshot root is not a directory: {base}")
@@ -245,7 +239,7 @@ class SourceSnapshot:
 
     @property
     def files(self) -> tuple[str, ...]:
-        """Return the canonical relative path denominator."""
+        """Return the manifest's repository-relative file paths in order."""
         return tuple(entry.path for entry in self.entries)
 
     def to_dict(self) -> dict[str, object]:

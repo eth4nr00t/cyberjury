@@ -1,10 +1,4 @@
-"""Strict extraction of the JSON object a schema-bound model reply must contain.
-
-Every model call carries a strict response schema, so a usable reply is one JSON object. A reply
-that repeats that same object verbatim is the same reply. Prose, code fences, truncated output,
-and several different objects are rejected rather than recovered, so malformed output can never
-become a decision.
-"""
+"""Strict extraction of the JSON object a schema-bound model reply must contain."""
 
 from __future__ import annotations
 

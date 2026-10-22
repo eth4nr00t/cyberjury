@@ -10,11 +10,7 @@ from cyberjury.sources.snapshot import SourceSnapshot
 
 
 def prepare_diff_review(diff: str, snapshot: SourceSnapshot) -> PreparedReview[DiffUnit]:
-    """Plan and ground the reviewable part of one diff against the snapshot of its head source.
-
-    Noise files and file sections without a hunk, such as pure renames, mode changes, and
-    empty new or deleted files, are skipped before planning and recorded with their reasons.
-    """
+    """Plan and ground the reviewable part of one diff against the snapshot of its head source."""
     review_diff, skipped = strip_unreviewable_files(diff, detection_for(snapshot.root, snapshot.files))
     if review_diff.strip() and not has_diff_hunk(review_diff):
         raise ValueError("diff review input is nonempty but contains no unified diff hunk")

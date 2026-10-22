@@ -1,13 +1,4 @@
-"""Build blind adjudication packets from attempts and turn adjudicator results into ledgers.
-
-`build_packets` writes `packet-N.json` and the versioned rubric as `INSTRUCTIONS.md` into the
-adjudicator directory, and the private `mapping.json` outside it. Every report is adjudicated on
-its own and without its issue, so issue grouping never changes check credit. The mapping resolves
-each anonymous report label to its attempt and candidate and names the adjudication round.
-Adjudicators write `result-N.json` for each packet. `write_ledgers` checks the results against the
-mapping, validates each ledger at a fresh checkout of the pinned commit, and writes `ledger-NN.json`
-beside each attempt, bound to the round, the rubric sha256, and the case checks.
-"""
+"""Build blind adjudication packets from attempts and turn adjudicator results into ledgers."""
 
 from __future__ import annotations
 
@@ -84,17 +75,7 @@ def build_packets(
     mapping_path: Path | None = None,
     references: Sequence[Path] = (),
 ) -> dict[str, object]:
-    """Write anonymized packets for every complete attempt under the runs directories.
-
-    Run letters within a case follow the attempt sha256, so they do not reveal which runs directory
-    or configuration produced an attempt. An attempt reached through overlapping runs directories is
-    packaged once. Earlier verdicts are included only from `references`, which are runs directories
-    or private mappings of earlier rounds. The mapping is written to `mapping_path`, outside `out`.
-    Reports are ordered by file and line, then label, so reports of the same place from every run sit
-    together. With `max_reports`, a case with more reports is split into entries of at most that many
-    reports, and each entry lists the case's other reports under `other_reports`, so a duplicate can
-    name a canonical report in another entry.
-    """
+    """Write anonymized packets for every complete attempt under the runs directories."""
     if groups < 1:
         raise ValueError("adjudication packets need at least one group")
     if max_reports is not None and max_reports < 1:
@@ -181,13 +162,7 @@ def write_ledgers(
     mapping_path: Path | None = None,
     supersede: bool = False,
 ) -> tuple[int, list[str]]:
-    """Convert adjudicator results into ledgers, writing each one only after it validates.
-
-    A ledger written by another adjudication round is never mixed in silently. Unless `supersede`
-    is set, an existing ledger of another round for any attempt of this round stops the command.
-    With `supersede`, those ledgers are removed first, so an attempt rejected in this round keeps
-    no ledger at all.
-    """
+    """Convert adjudicator results into ledgers, writing each one only after it validates."""
     mapping = read_json(mapping_path or default_mapping_path(packets))
     rubric_sha256 = hashlib.sha256(RUBRIC.read_bytes()).hexdigest()
     if rubric_sha256 != mapping["rubric_sha256"]:

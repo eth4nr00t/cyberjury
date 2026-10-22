@@ -1,12 +1,4 @@
-"""Bind source assessment ledgers to recorded review attempts.
-
-A ledger, `ledger-NN.json` beside its attempt, assesses every report exactly once at the case's
-pinned source commit and is bound to the attempt bytes, the current case checks, the adjudication
-round that produced it, and the rubric that round used. The attempt's issues are measured against
-the supported and duplicate verdicts: an issue that holds reports of two root causes is mixed, and
-a root cause spread over several issues leaves duplicate issues. An attempt recorded without
-issues has one issue per report.
-"""
+"""Bind source assessment ledgers to recorded review attempts."""
 
 from __future__ import annotations
 
@@ -40,11 +32,7 @@ class Adjudication:
 
 
 def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Path | None) -> Adjudication:
-    """Validate one ledger against its attempt and case, and count reviewed credit and verdicts.
-
-    `source` is the root of a checkout at the pinned commit. When given, every
-    evidence location must name an existing line there.
-    """
+    """Validate one ledger against its attempt and case, and count reviewed credit and verdicts."""
     validate_document(ledger, "ledger-v1.schema.json", attempt.ledger_path)
     if (
         ledger["case"] != case.name

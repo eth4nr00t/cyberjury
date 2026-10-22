@@ -1,8 +1,4 @@
-"""Entry point for `python -m cyberjury`, mirroring the `cyberjury` console script.
-
-Lets the tool run without the console script on PATH, for example from a fresh shell
-that has not activated the project venv: `python -m cyberjury ...`.
-"""
+"""Entry point for `python -m cyberjury`, mirroring the `cyberjury` console script."""
 
 from cyberjury.cli import main
 

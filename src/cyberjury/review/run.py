@@ -1,8 +1,4 @@
-"""Review prepared units, group their union into issues, and build the result artifacts.
-
-With a work directory, each completed unit and issue link decision is saved as soon as it
-finishes, so a resume, even after a crash, repeats only open work.
-"""
+"""Review prepared units, group their union into issues, and build the result artifacts."""
 
 from __future__ import annotations
 
@@ -77,12 +73,7 @@ def run_review[U: GroundedUnit](
     work: Path | None = None,
     on_unit: Progress | None = None,
 ) -> ReviewRun:
-    """Review every open unit once, group the union into issues, and build the result.
-
-    Issues group the findings without removing any. The issue link judgment runs only
-    when the review has an issue judge. A failed link judgment leaves its findings in separate
-    issues and is reported, not counted as an incomplete review.
-    """
+    """Review every open unit once, group the union into issues, and build the result."""
     shared = prepared.shared
     units = list(prepared.units)
     if not units and target.covers_all_files:

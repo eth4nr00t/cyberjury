@@ -22,11 +22,7 @@ class FileSelection:
 
 
 def select_files(root: str | Path, files: Sequence[str], detection: Detection) -> FileSelection:
-    """Keep every readable non-noise text file for review and record the ones that cannot be read.
-
-    Navigation also publishes readable documentation and third-party code, which no review unit
-    covers, and keeps empty source files that no review unit covers.
-    """
+    """Keep every readable non-noise text file for review and record the ones that cannot be read."""
     base = Path(root)
     sources: list[str] = []
     documentation: list[str] = []
