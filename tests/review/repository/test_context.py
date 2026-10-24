@@ -86,7 +86,7 @@ def test_repository_grounding_exposes_the_same_candidate_call_clues(tmp_path):
 
 
 def test_repository_candidate_file_limitations_follow_the_published_source(tmp_path):
-    """An incomplete parse of candidate service.py marks coverage incomplete and appears in the prompt."""
+    """An incomplete parse of candidate service.py is recorded as an advisory limitation and appears in the prompt."""
     caller, navigator, snapshot = _route_load_navigator(tmp_path)
     unit = source_unit(
         tmp_path,
@@ -106,7 +106,7 @@ def test_repository_candidate_file_limitations_follow_the_published_source(tmp_p
     assert grounded is not None
     assert "service.py" in grounded.snapshot_files
     assert limitation.identity in grounded.coverage.limitations
-    assert grounded.coverage.complete is False
+    assert grounded.coverage.complete is True
     assert "incomplete parse" in grounded.prompt.source
 
 

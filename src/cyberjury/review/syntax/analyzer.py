@@ -17,6 +17,8 @@ from cyberjury.review.relationships import StructuralRelationKind
 from cyberjury.telemetry import progress
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from tree_sitter import Language, Node, Query
 
 if sys.version_info >= (3, 13):
@@ -164,7 +166,7 @@ class AnalyzedStructuralRelationship:
 
 @dataclass(frozen=True, kw_only=True)
 class AnalyzedFile:
-    """Syntax facts extracted from one complete source file."""
+    """Syntax facts extracted from one source file, and the first syntax error when the tree is partial."""
 
     definitions: tuple[AnalyzedDefinition, ...]
     imports: tuple[AnalyzedImport, ...]
@@ -172,6 +174,7 @@ class AnalyzedFile:
     qualified_uses: tuple[AnalyzedQualifiedUse, ...]
     structural_relationships: tuple[AnalyzedStructuralRelationship, ...]
     source: str
+    syntax_error: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -266,6 +269,45 @@ def _compiled(spec: LangSpec, text: str) -> Query:
     return Query(_language(spec), text)
 
 
+_STRUCTURAL_CAPTURES = frozenset({"owner", "owner_name", "reference", "target_name"})
+
+
+def _check_queries(spec: LangSpec) -> None:
+    texts = (
+        spec.definitions,
+        spec.type_definitions,
+        spec.calls,
+        spec.receivers,
+        spec.qualified_uses,
+        *spec.namespace_imports,
+        *(item.query for item in spec.imports),
+        *(item.query for item in spec.structural_relationships),
+    )
+    try:
+        for text in texts:
+            if text:
+                _compiled(spec, text)
+    except (ValueError, RuntimeError) as exc:
+        raise AnalyzerConfigurationError(f"invalid query for {spec.name}") from exc
+    for item in spec.structural_relationships:
+        query = _compiled(spec, item.query)
+        names = {query.capture_name(index) for index in range(query.capture_count)}
+        if not names >= _STRUCTURAL_CAPTURES:
+            raise AnalyzerConfigurationError(f"{spec.name} structural relationship query lacks required captures")
+
+
+def _matches(query: Query, node: Node) -> Iterator[tuple[int, dict[str, list[Node]]]]:
+    from tree_sitter import QueryCursor
+
+    for pattern, captures in QueryCursor(query).matches(node):
+        present = {
+            name: kept
+            for name, nodes in captures.items()
+            if (kept := [item for item in nodes if item.start_byte < item.end_byte])
+        }
+        yield pattern, present
+
+
 def character_offsets(source: bytes) -> dict[int, int] | None:
     """Map Tree-sitter byte offsets to decoded text offsets when they differ."""
     if source.isascii() and b"\r" not in source:
@@ -320,10 +362,8 @@ def _nearest_definition(node: Node, index: _DefinitionIndex) -> tuple[Node, Node
 
 
 def _definition_nodes(root: Node, spec: LangSpec) -> tuple[tuple[Node, Node], ...]:
-    from tree_sitter import QueryCursor
-
     by_name_range: dict[tuple[int, int], tuple[Node, Node]] = {}
-    for _, captures in QueryCursor(_compiled(spec, spec.definitions)).matches(root):
+    for _, captures in _matches(_compiled(spec, spec.definitions), root):
         node = (captures.get("def") or [None])[0]
         identifier = (captures.get("name") or [None])[0]
         if node is None or identifier is None:
@@ -354,10 +394,8 @@ def _definition_calls(
     *,
     file_scope: bool = False,
 ) -> tuple[tuple[str, ...], tuple[AnalyzedCallsite, ...]]:
-    from tree_sitter import QueryCursor
-
     callsites: dict[tuple[int, int], AnalyzedCallsite] = {}
-    for _, captures in QueryCursor(call_query).matches(node):
+    for _, captures in _matches(call_query, node):
         call = (captures.get("call") or [None])[0]
         owner = _nearest_definition(call, definition_index) if call is not None else None
         belongs = owner is None if file_scope else owner is not None and owner[0] == node
@@ -418,8 +456,6 @@ def _lexical_owner(
 
 
 def _definitions(tree: _ParsedTree, file: str) -> tuple[AnalyzedDefinition, ...]:
-    from tree_sitter import QueryCursor
-
     source, root, spec, offsets = tree.source, tree.root, tree.spec, tree.offsets
     definition_nodes = tree.definitions
     definition_index = tree.definition_index
@@ -428,7 +464,7 @@ def _definitions(tree: _ParsedTree, file: str) -> tuple[AnalyzedDefinition, ...]
     if spec.type_definitions:
         type_nodes = tuple(
             (node, identifier)
-            for _, captures in QueryCursor(_compiled(spec, spec.type_definitions)).matches(root)
+            for _, captures in _matches(_compiled(spec, spec.type_definitions), root)
             if (node := (captures.get("type") or [None])[0]) is not None
             and (identifier := (captures.get("name") or [None])[0]) is not None
         )
@@ -436,7 +472,7 @@ def _definitions(tree: _ParsedTree, file: str) -> tuple[AnalyzedDefinition, ...]
     if spec.receivers:
         receiver_ranges = {
             (definition.start_byte, definition.end_byte)
-            for _, captures in QueryCursor(_compiled(spec, spec.receivers)).matches(root)
+            for _, captures in _matches(_compiled(spec, spec.receivers), root)
             if (definition := (captures.get("def") or [None])[0]) is not None
             and (captures.get("receiver") or [None])[0] is not None
         }
@@ -504,13 +540,11 @@ def _parameters_node(node: Node) -> Node | None:
 
 
 def _imports(tree: _ParsedTree) -> tuple[AnalyzedImport, ...]:
-    from tree_sitter import QueryCursor
-
     source, root, spec, offsets = tree.source, tree.root, tree.spec, tree.offsets
     definition_index = tree.definition_index
     imports: list[AnalyzedImport] = []
     for import_query in spec.imports:
-        for _, captures in QueryCursor(_compiled(spec, import_query.query)).matches(root):
+        for _, captures in _matches(_compiled(spec, import_query.query), root):
             modules = captures.get("module") or ()
             statements = captures.get("statement") or ()
             imported_nodes = captures.get("imported") or ()
@@ -552,13 +586,11 @@ def _imports(tree: _ParsedTree) -> tuple[AnalyzedImport, ...]:
 
 
 def _namespaces(tree: _ParsedTree) -> tuple[AnalyzedNamespace, ...]:
-    from tree_sitter import QueryCursor
-
     source, root, spec, offsets = tree.source, tree.root, tree.spec, tree.offsets
     definition_index = tree.definition_index
     namespaces: list[AnalyzedNamespace] = []
     for query_text in spec.namespace_imports:
-        for _, captures in QueryCursor(_compiled(spec, query_text)).matches(root):
+        for _, captures in _matches(_compiled(spec, query_text), root):
             modules = captures.get("module") or ()
             statements = captures.get("statement") or ()
             if not modules or not statements:
@@ -586,14 +618,12 @@ def _namespaces(tree: _ParsedTree) -> tuple[AnalyzedNamespace, ...]:
 
 
 def _qualified_uses(tree: _ParsedTree) -> tuple[AnalyzedQualifiedUse, ...]:
-    from tree_sitter import QueryCursor
-
     source, root, spec, offsets = tree.source, tree.root, tree.spec, tree.offsets
     if not spec.qualified_uses:
         return ()
     definition_index = tree.definition_index
     uses: list[AnalyzedQualifiedUse] = []
-    for _, captures in QueryCursor(_compiled(spec, spec.qualified_uses)).matches(root):
+    for _, captures in _matches(_compiled(spec, spec.qualified_uses), root):
         qualifiers = captures.get("qualifier") or ()
         names = captures.get("name") or ()
         if qualifiers and names:
@@ -617,21 +647,17 @@ def _qualified_uses(tree: _ParsedTree) -> tuple[AnalyzedQualifiedUse, ...]:
 
 
 def _structural_relationships(tree: _ParsedTree) -> tuple[AnalyzedStructuralRelationship, ...]:
-    from tree_sitter import QueryCursor
-
     source, root, spec, offsets = tree.source, tree.root, tree.spec, tree.offsets
     by_identifier = {(identifier.start_byte, identifier.end_byte): node for node, identifier in tree.definitions}
     relationships: list[AnalyzedStructuralRelationship] = []
     for configured in spec.structural_relationships:
-        for _, captures in QueryCursor(_compiled(spec, configured.query)).matches(root):
+        for _, captures in _matches(_compiled(spec, configured.query), root):
             owners = captures.get("owner") or ()
             owner_names = captures.get("owner_name") or ()
             references = captures.get("reference") or ()
             target_names = captures.get("target_name") or ()
             if len(owners) != 1 or len(owner_names) != 1 or not references or len(references) != len(target_names):
-                raise AnalyzerConfigurationError(
-                    f"{spec.name} structural relationship query returned incomplete captures"
-                )
+                raise SourceParseError("structural relationship captures are incomplete")
             captured_owner = owners[0]
             owner_name = owner_names[0]
             owner_node = by_identifier.get((owner_name.start_byte, owner_name.end_byte))
@@ -640,13 +666,13 @@ def _structural_relationships(tree: _ParsedTree) -> tuple[AnalyzedStructuralRela
                 or owner_node.start_byte > captured_owner.start_byte
                 or captured_owner.end_byte > owner_node.end_byte
             ):
-                raise AnalyzerConfigurationError(f"{spec.name} structural relationship has no unique definition owner")
+                raise SourceParseError("structural relationship has no unique definition owner")
             owner_start, owner_end = _node_range(owner_node, offsets)
             owner = AnalyzedOwner(_text(source, owner_name), owner_start, owner_end)
             for reference, target_name in zip(references, target_names, strict=True):
                 start, end = _node_range(reference, offsets)
                 if start < owner_start or end > owner_end:
-                    raise AnalyzerConfigurationError(f"{spec.name} structural relationship source is outside its owner")
+                    raise SourceParseError("structural relationship source is outside its owner")
                 relationships.append(
                     AnalyzedStructuralRelationship(
                         kind=configured.kind,
@@ -712,29 +738,33 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
         tree = Parser(_language(spec)).parse(source)
     except (ValueError, RuntimeError) as exc:
         raise SourceParseError("unparsable") from exc
-    if tree.root_node.has_error:
-        line, column = _first_parse_problem(source, tree.root_node)
-        raise SourceParseError("unparsable", line=line, column=column)
+    syntax_error = _first_parse_problem(source, tree.root_node) if tree.root_node.has_error else None
+    definitions = _definition_nodes(tree.root_node, spec)
+    parsed = _ParsedTree(
+        source=source,
+        root=tree.root_node,
+        spec=spec,
+        offsets=character_offsets(source),
+        definitions=definitions,
+        definition_index=_definition_index(definitions),
+    )
     try:
-        definitions = _definition_nodes(tree.root_node, spec)
-        parsed = _ParsedTree(
-            source=source,
-            root=tree.root_node,
-            spec=spec,
-            offsets=character_offsets(source),
-            definitions=definitions,
-            definition_index=_definition_index(definitions),
-        )
-        return AnalyzedFile(
-            definitions=_definitions(parsed, rel),
-            imports=_imports(parsed),
-            namespaces=_namespaces(parsed),
-            qualified_uses=_qualified_uses(parsed),
-            structural_relationships=_structural_relationships(parsed),
-            source=source.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n"),
-        )
-    except (ValueError, RuntimeError) as exc:
-        raise AnalyzerConfigurationError(f"invalid query for {spec.name}") from exc
+        structural_relationships = _structural_relationships(parsed)
+    except SourceParseError as exc:
+        if syntax_error is None:
+            raise
+        raise SourceParseError(
+            "analysis failed after a syntax error", line=syntax_error[0], column=syntax_error[1]
+        ) from exc
+    return AnalyzedFile(
+        definitions=_definitions(parsed, rel),
+        imports=_imports(parsed),
+        namespaces=_namespaces(parsed),
+        qualified_uses=_qualified_uses(parsed),
+        structural_relationships=structural_relationships,
+        source=source.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n"),
+        syntax_error=syntax_error,
+    )
 
 
 _PROGRESS_FILES = 500
@@ -753,6 +783,8 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
     names = [rel for _path, rel, _spec in ordered_sources]
     if len(names) != len(set(names)):
         raise AnalyzerConfigurationError("analyzer source paths must be unique")
+    for spec in {spec.name: spec for _path, _rel, spec in ordered_sources}.values():
+        _check_queries(spec)
     for position, (path, rel, spec) in enumerate(ordered_sources, 1):
         try:
             analyzed = parse_file(path, rel, spec)
@@ -766,7 +798,18 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
                     column=exc.column,
                 )
             )
+        except SourceReadError:
+            raise
+        except Exception as exc:
+            limitations.append(
+                FactLimitation(source=rel, analyzer=spec.name, reason=f"analysis failed ({type(exc).__name__})")
+            )
         else:
+            if analyzed.syntax_error is not None:
+                line, column = analyzed.syntax_error
+                limitations.append(
+                    FactLimitation(source=rel, analyzer=spec.name, reason="partially parsed", line=line, column=column)
+                )
             definitions.extend(analyzed.definitions)
             imports.setdefault(rel, []).extend(analyzed.imports)
             namespaces.setdefault(rel, []).extend(analyzed.namespaces)

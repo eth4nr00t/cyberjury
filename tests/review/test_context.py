@@ -274,7 +274,7 @@ def test_evidence_request_ids_reject_oversized_model_batches():
 
 
 def test_grounding_coverage_delivery_resolves_a_prior_omission():
-    """An app.py:a omission in one coverage is cleared by its inclusion in another, leaving it reviewable."""
+    """An app.py:a omission in one coverage is cleared by its inclusion in another, leaving it complete."""
     merged = merge_grounding_coverage(
         (
             GroundingCoverage(required=("app.py:a",), omitted=("app.py:a",)),
@@ -284,7 +284,7 @@ def test_grounding_coverage_delivery_resolves_a_prior_omission():
 
     assert merged.omitted == ()
     assert merged.missing == ()
-    assert merged.reviewable is True
+    assert merged.complete is True
 
 
 def test_source_span_rejects_unsafe_paths_and_invalid_lines():
@@ -352,13 +352,12 @@ def test_source_evidence_rejects_aliases_with_different_source():
         GroundingContext(text="seed", source_evidence=(source, alias))
 
 
-def test_structured_fact_limitations_allow_judgment_but_block_completion():
-    """A facts limitation keeps coverage reviewable but incomplete, citing structured facts unavailable."""
+def test_structured_fact_limitations_allow_judgment_and_completion():
+    """A facts limitation keeps coverage complete with no failure reason."""
     coverage = GroundingCoverage(limitations=("facts:app.py:2:4",))
 
-    assert coverage.reviewable is True
-    assert coverage.complete is False
-    assert "structured facts unavailable" in coverage.failure_reason
+    assert coverage.complete is True
+    assert coverage.failure_reason == ""
 
 
 def test_fact_limitations_are_scoped_to_sources_published_by_the_unit():

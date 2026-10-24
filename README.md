@@ -36,7 +36,7 @@ Re-running a repository review resumes open work. Use `--fresh` to start a new r
 ## Output and Exit Codes
 
 Review commands print a JSON result and return a process style exit code. `0` means the requested
-action completed. Exit code `1` means the run was degraded or incomplete. Every finding the finder
+action completed. Exit code `1` means the review did not complete. Every finding the finder
 reports is kept, and the review does not run a second model to delete findings.
 
 Diff and repository reviews write `findings.json` and `outcome.json` in the review

@@ -99,7 +99,7 @@ def render_fact_limitations(limitations: tuple[FactLimitation, ...]) -> str:
     if not limitations:
         return ""
     lines = [
-        "Structured facts are unavailable for these sources. Review their raw source, and do not "
+        "Structured facts are unavailable or partial for these sources. Review their raw source, and do not "
         "treat missing graph edges as evidence that no relationship exists:",
     ]
     lines.extend(f"- {limitation.message}" for limitation in limitations)

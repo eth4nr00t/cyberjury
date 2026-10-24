@@ -199,7 +199,7 @@ def test_planned_diff_unit_fails_before_model_call_when_grounding_is_incomplete(
 
 
 def test_planned_diff_unit_reviews_raw_source_when_only_structured_facts_are_limited():
-    """A fact limitation still sends one call but leaves the outcome incomplete and reports the limitation."""
+    """A fact limitation still sends one call, completes the outcome, and reports the limitation."""
     provider = MockProvider(default=reply([]))
     context = GroundingContext(
         text="raw source",
@@ -219,7 +219,7 @@ def test_planned_diff_unit_reviews_raw_source_when_only_structured_facts_are_lim
 
     assert len(provider.calls) == 1
     assert result.outcome.errors == 0
-    assert result.outcome.complete is False
+    assert result.outcome.complete is True
     assert result.outcome.grounding.limitations == ("facts:app.py:1:1",)
 
 

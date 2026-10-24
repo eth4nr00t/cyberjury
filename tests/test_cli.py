@@ -357,8 +357,19 @@ def test_incomplete_diff_review_exits_nonzero_and_surfaces_the_error(monkeypatch
     assert json.loads((attempt / "attempt.json").read_text())["state"] == "incomplete"
 
 
-def test_incomplete_diff_review_surfaces_grounding_limitations(monkeypatch, capsys, diff_target):
-    """A facts grounding limitation exits 1 and prints 'structured facts unavailable: facts:app.ts:3:8'."""
+def test_incomplete_diff_review_asks_to_review_the_whole_diff_again(monkeypatch, capsys, diff_target, tmp_path):
+    """An incomplete diff review says a re-run reviews the whole diff again, not that it retries open work."""
+    monkeypatch.setattr(climod, "run_review", lambda prepared, **k: _fake_run(prepared, k, errors=1))
+
+    assert main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"]) == 1
+
+    err = capsys.readouterr().err
+    assert "Re-run to review the whole diff again" in err
+    assert "retry open work" not in err
+
+
+def test_diff_review_with_fact_limitations_completes_and_notes_them(monkeypatch, capsys, diff_target):
+    """A facts grounding limitation exits 0 and notes that facts:app.ts:3:8 was reviewed from raw source."""
     grounding = GroundingCoverage(limitations=("facts:app.ts:3:8",))
     monkeypatch.setattr(
         climod,
@@ -367,8 +378,20 @@ def test_incomplete_diff_review_surfaces_grounding_limitations(monkeypatch, caps
     )
     rc = main(["review", "diff", *diff_target.args, "--dry-run"])
 
-    assert rc == 1
-    assert "structured facts unavailable: facts:app.ts:3:8" in capsys.readouterr().err
+    assert rc == 0
+    assert "NOTE: structured facts are unavailable or partial for facts:app.ts:3:8" in capsys.readouterr().err
+
+
+def test_a_long_fact_limitation_note_names_five_and_counts_the_rest(monkeypatch, capsys, diff_target):
+    """Seven facts limitations print the first five and 'and 2 more' in the NOTE."""
+    grounding = GroundingCoverage(limitations=tuple(f"facts:app{index}.ts" for index in range(7)))
+    monkeypatch.setattr(climod, "run_review", lambda prepared, **k: _fake_run(prepared, k, grounding=grounding))
+
+    assert main(["review", "diff", *diff_target.args, "--dry-run"]) == 0
+
+    err = capsys.readouterr().err
+    assert "facts:app4.ts, and 2 more, so those sources" in err
+    assert "facts:app5.ts" not in err
 
 
 def test_incomplete_diff_review_surfaces_failed_batch_details(monkeypatch, capsys, diff_target):

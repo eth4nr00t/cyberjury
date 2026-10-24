@@ -356,10 +356,18 @@ def _report_review(run: _AttemptContext, result: ReviewRun) -> int:
         )
     if outcome.failure_reason:
         print(f"{ERROR_PREFIX}{outcome.failure_reason}", file=sys.stderr)
+    if limitations := outcome.grounding.limitations:
+        more = f", and {len(limitations) - 5} more" if len(limitations) > 5 else ""
+        print(
+            f"NOTE: structured facts are unavailable or partial for {', '.join(limitations[:5])}{more}, "
+            "so those sources were reviewed from raw source",
+            file=sys.stderr,
+        )
     if not outcome.complete:
+        retry = "Re-run to review the whole diff again" if run.target.kind == "diff" else "Re-run to retry open work"
         print(
             f"{ERROR_PREFIX}the review is incomplete because grounding or judgment did not complete, "
-            "so the result is not a clean pass. Re-run to retry open work",
+            f"so the result is not a clean pass. {retry}",
             file=sys.stderr,
         )
     print(f"Findings written to {run.attempt.workspace.path}/findings.json", file=sys.stderr)

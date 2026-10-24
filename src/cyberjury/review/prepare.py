@@ -81,24 +81,31 @@ def prepare_review[U: PlannedUnit](
     *,
     plan: Callable[[SharedGrounding], ReviewPlan[U]],
     ground: Callable[[U, SharedGrounding], GroundingContext],
+    has_reviewable_source: bool = True,
 ) -> PreparedReview[U]:
-    """Extract facts, build navigation, plan and ground every unit, and bind their receipts."""
+    """Extract facts and navigation when the target has reviewable source, then plan, ground, and bind receipts."""
     detection = detection_for(snapshot.root, snapshot.files)
     selection = select_files(snapshot.root, snapshot.files, detection)
-    facts, receipt = extract_facts(snapshot, selection, detection)
-    shared = SharedGrounding(
-        snapshot=snapshot,
-        detection=detection,
-        selection=selection,
-        facts=facts,
-        navigator=SourceNavigator.from_facts(
+    if has_reviewable_source:
+        facts, receipt = extract_facts(snapshot, selection, detection)
+        navigator = SourceNavigator.from_facts(
             snapshot.root,
             source_files=selection.navigation_files,
             import_files=facts.import_files,
             relationship_evidence=facts.relationships,
             documentation_files=selection.documentation_files,
             dependency_files=selection.dependency_files,
-        ),
+        )
+    else:
+        facts = Facts()
+        receipt = FactsReceipt.create(backend_id=syntax_backend_id(), facts=facts)
+        navigator = None
+    shared = SharedGrounding(
+        snapshot=snapshot,
+        detection=detection,
+        selection=selection,
+        facts=facts,
+        navigator=navigator,
     )
     planned = plan(shared)
     unit_plan = UnitPlanReceipt.create(

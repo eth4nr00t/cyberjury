@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 
 _EVIDENCE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
-_MAX_EVIDENCE_REQUESTS_PER_BATCH = 64
+MAX_EVIDENCE_REQUESTS_PER_BATCH = 64
 _MAX_EVIDENCE_ID_CHARS = 128
 
 
@@ -82,12 +82,7 @@ class GroundingCoverage:
 
     @property
     def complete(self) -> bool:
-        """Require every known obligation to be resolved and included."""
-        return self.reviewable and not self.limitations
-
-    @property
-    def reviewable(self) -> bool:
-        """Allow judgment when limitations are visible but required evidence is present."""
+        """Require every known obligation to be resolved and included, while fact limitations stay advisory."""
         return not self.missing and not self.unresolved
 
     @property
@@ -98,8 +93,6 @@ class GroundingCoverage:
             reasons.append(f"omitted required evidence: {', '.join(self.missing)}")
         if self.unresolved:
             reasons.append(f"unresolved required evidence: {', '.join(self.unresolved)}")
-        if self.limitations:
-            reasons.append(f"structured facts unavailable: {', '.join(self.limitations)}")
         return f"grounding incomplete, {'; '.join(reasons)}" if reasons else ""
 
 
@@ -566,7 +559,7 @@ def evidence_request_ids(requested: object) -> tuple[str, ...]:
     """Validate one exact request batch and collapse semantically identical ids."""
     if not isinstance(requested, list) or not all(isinstance(item, str) for item in requested):
         raise EvidenceRequestError("evidence_requests must be a list of evidence ids")
-    if len(requested) > _MAX_EVIDENCE_REQUESTS_PER_BATCH:
+    if len(requested) > MAX_EVIDENCE_REQUESTS_PER_BATCH:
         raise EvidenceRequestError("evidence_requests cannot contain more than 64 ids")
     if any(not item or item != item.strip() for item in requested):
         raise EvidenceRequestError("evidence_requests must contain nonempty exact evidence ids")

@@ -168,7 +168,7 @@ class UnitFinder[U: GroundedUnit]:
     def review_unit(self, unit: U) -> ReviewCycle[Finding]:
         """Judge one grounded unit, keep only located findings, and bind their source operations and cited spans."""
         grounding = unit.grounding
-        if not grounding.coverage.reviewable:
+        if not grounding.coverage.complete:
             return ReviewCycle(
                 findings=[],
                 errors=1,

@@ -6,6 +6,9 @@ from dataclasses import dataclass
 
 import pytest
 
+from cyberjury.providers.base import Message
+from cyberjury.providers.metering import MeteringProvider, UsageMeter
+from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import (
     EvidenceItem,
     EvidenceRequestError,
@@ -957,8 +960,8 @@ def test_evidence_selection_rejects_repaired_or_duplicate_ids(requested):
         select_evidence((evidence,), requested, target_chars=100)
 
 
-def test_one_exchange_over_the_shared_budget_is_corrected_not_failed(tmp_path):
-    """Evidence plus source reads exceeding the 500-character target get a correction and complete grounding."""
+def test_one_exchange_over_the_shared_budget_delivers_what_fits_and_names_the_rest(tmp_path):
+    """Evidence plus a source read over the 500-character target delivers the evidence and names the held read."""
     source = "def Record():\n" + "    value = 1\n" * 18
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
     navigator = navigator_from_callgraph(
@@ -986,6 +989,7 @@ def test_one_exchange_over_the_shared_budget_is_corrected_not_failed(tmp_path):
         if calls == 2:
             target = re.search(r"`(src-[0-9a-f]+)`", prompt.followup)
             assert target is not None
+            held.append(target.group(1))
             return {
                 "findings": [],
                 "evidence_requests": [evidence.id, target.group(1)],
@@ -993,10 +997,11 @@ def test_one_exchange_over_the_shared_budget_is_corrected_not_failed(tmp_path):
             }
         prompts.append(prompt)
         if calls == 3:
-            return {"findings": [], "evidence_requests": [evidence.id], "source_queries": []}
+            return {"findings": [], "evidence_requests": held, "source_queries": []}
         return {"findings": [], "evidence_requests": [], "source_queries": []}
 
     prompts = []
+    held = []
     result = _judge(
         GroundingContext(text="seed", evidence=(evidence,), navigator=navigator),
         ask=ask,
@@ -1005,20 +1010,22 @@ def test_one_exchange_over_the_shared_budget_is_corrected_not_failed(tmp_path):
         max_followups=3,
     )
 
-    assert "evidence exchange exceeds the 500 character target" in prompts[0].controls
+    assert f"Not delivered in this exchange because the batch exceeds the 500 character target: `{held[0]}`" in (
+        prompts[0].controls
+    )
+    assert "Return a smaller batch" not in prompts[0].controls
     assert result.failure_reason == ""
     assert result.grounding.complete is True
 
 
-def test_oversized_evidence_batch_can_be_split_across_bounded_corrections():
-    """Two 300-character items over a 500 target are corrected, then read one per exchange."""
+def test_oversized_evidence_batch_delivers_the_first_item_and_holds_the_rest():
+    """Two 300-character items over a 500 target deliver the first, name the second, and read it next exchange."""
     first = EvidenceItem.create(identity="a.py:first:0:300", label="first", text="a" * 300)
     second = EvidenceItem.create(identity="b.py:second:0:300", label="second", text="b" * 300)
     prompts = []
     replies = iter(
         (
             {"findings": [], "evidence_requests": [first.id, second.id], "source_queries": []},
-            {"findings": [], "evidence_requests": [first.id], "source_queries": []},
             {"findings": [], "evidence_requests": [second.id], "source_queries": []},
             {"findings": [], "evidence_requests": [], "source_queries": []},
         )
@@ -1039,7 +1046,165 @@ def test_oversized_evidence_batch_can_be_split_across_bounded_corrections():
     assert result.failure_reason == ""
     assert result.grounding.references == (first.id, second.id)
     assert result.grounding.complete is True
-    assert "Return a smaller batch" in prompts[1].controls
+    assert f"Read evidence `{first.id}`" in prompts[1].controls
+    assert f"Read evidence `{second.id}`" not in prompts[1].controls
+    assert f"exceeds the 500 character target: `{second.id}`" in prompts[1].controls
+
+
+def test_a_held_citation_is_requested_again_even_when_the_model_stops_asking():
+    """A finding citing two 300-character items over a 500 target gets the held second item read before finishing."""
+    first = EvidenceItem.create(identity="a.py:first:0:300", label="first", text="a" * 300)
+    second = EvidenceItem.create(identity="b.py:second:0:300", label="second", text="b" * 300)
+    finding = _Finding("guard missing", "a.py:1", evidence_refs=(first.id, second.id))
+    prompts = []
+    replies = iter(
+        (
+            {"findings": [finding], "evidence_requests": [], "source_queries": []},
+            {"findings": [], "evidence_requests": [], "source_queries": []},
+            {"findings": [], "evidence_requests": [], "source_queries": []},
+        )
+    )
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    result = _judge(
+        GroundingContext(text="seed", evidence=(first, second)),
+        ask=ask,
+        target_chars=500,
+        max_followups=3,
+    )
+
+    assert len(prompts) == 3
+    assert f"Read evidence `{second.id}`" in prompts[2].controls
+    assert result.grounding.references == (first.id, second.id)
+    assert [item.title for item in result.findings] == ["guard missing"]
+
+
+def test_cited_evidence_is_delivered_before_other_requested_evidence():
+    """With room for one 300-character item, the item a finding cites is delivered and the other request is held."""
+    cited = EvidenceItem.create(identity="a.py:cited:0:300", label="cited", text="a" * 300)
+    other = EvidenceItem.create(identity="b.py:other:0:300", label="other", text="b" * 300)
+    finding = _Finding("guard missing", "a.py:1", evidence_refs=(cited.id,))
+    prompts = []
+    replies = iter(
+        (
+            {"findings": [finding], "evidence_requests": [other.id], "source_queries": []},
+            {"findings": [], "evidence_requests": [], "source_queries": []},
+        )
+    )
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    _judge(GroundingContext(text="seed", evidence=(cited, other)), ask=ask, target_chars=500, max_followups=1)
+
+    assert f"Read evidence `{cited.id}`" in prompts[1].controls
+    assert f"character target: `{other.id}`." in prompts[1].controls
+
+
+def test_cited_evidence_that_cannot_be_delivered_on_the_last_round_is_reported_as_such():
+    """A held citation with no follow up left ends with that id unresolved and a budget reason, not a request limit."""
+    first = EvidenceItem.create(identity="a.py:first:0:300", label="first", text="a" * 300)
+    second = EvidenceItem.create(identity="b.py:second:0:300", label="second", text="b" * 300)
+    finding = _Finding("guard missing", "a.py:1", evidence_refs=(first.id, second.id))
+    replies = iter(
+        (
+            {"findings": [finding], "evidence_requests": [], "source_queries": []},
+            {"findings": [], "evidence_requests": [], "source_queries": []},
+        )
+    )
+
+    result = _judge(
+        GroundingContext(text="seed", evidence=(first, second)),
+        ask=lambda _prompt: next(replies),
+        target_chars=500,
+        max_followups=1,
+    )
+
+    assert result.grounding.unresolved == (second.id,)
+    assert "did not fit in the evidence budget" in result.failure_reason
+
+
+def test_a_held_citation_plus_a_full_request_batch_stays_within_the_batch_cap():
+    """A held cited item re-requested beside 64 new ids is delivered first and the overflow is held, not failed."""
+    first = EvidenceItem.create(identity="a.py:first:0:300", label="first", text="a" * 300)
+    second = EvidenceItem.create(identity="b.py:second:0:300", label="second", text="b" * 300)
+    extra = tuple(EvidenceItem.create(identity=f"c.py:item{index}:0:10", label="item", text="c") for index in range(64))
+    finding = _Finding("guard missing", "a.py:1", evidence_refs=(first.id, second.id))
+    prompts = []
+    replies = iter(
+        (
+            {"findings": [finding], "evidence_requests": [], "source_queries": []},
+            {"findings": [], "evidence_requests": [item.id for item in extra], "source_queries": []},
+            {"findings": [], "evidence_requests": [], "source_queries": []},
+        )
+    )
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    result = _judge(
+        GroundingContext(text="seed", evidence=(first, second, *extra)), ask=ask, target_chars=500, max_followups=3
+    )
+
+    assert result.failure_reason == ""
+    assert f"Read evidence `{second.id}`" in prompts[2].controls
+
+
+def test_a_held_notice_on_the_last_exchange_does_not_promise_a_later_exchange():
+    """With no follow-up left, the held notice names the held item without inviting a later request."""
+    first = EvidenceItem.create(identity="a.py:first:0:300", label="first", text="a" * 300)
+    second = EvidenceItem.create(identity="b.py:second:0:300", label="second", text="b" * 300)
+    prompts = []
+    replies = iter(
+        (
+            {"findings": [], "evidence_requests": [first.id, second.id], "source_queries": []},
+            {"findings": [], "evidence_requests": [], "source_queries": []},
+        )
+    )
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    _judge(GroundingContext(text="seed", evidence=(first, second)), ask=ask, target_chars=500, max_followups=1)
+
+    assert f"character target: `{second.id}`." in prompts[1].controls
+    assert "later exchange" not in prompts[1].controls
+
+
+def test_each_finder_call_records_what_the_engine_did_with_its_reply():
+    """A request for two 300-character items over a 500 target records the delivered and held ids, then a judgment."""
+    first = EvidenceItem.create(identity="a.py:first:0:300", label="first", text="a" * 300)
+    second = EvidenceItem.create(identity="b.py:second:0:300", label="second", text="b" * 300)
+    meter = UsageMeter()
+    provider = MeteringProvider(MockProvider(default="{}"), meter)
+    replies = iter(
+        (
+            {"findings": [], "evidence_requests": [first.id, second.id], "source_queries": []},
+            {"findings": [], "evidence_requests": [], "source_queries": []},
+        )
+    )
+
+    def ask(_prompt):
+        provider.complete(system="system", messages=[Message(role="user", content="prompt")], model="m", max_tokens=8)
+        return next(replies)
+
+    _judge(GroundingContext(text="seed", evidence=(first, second)), ask=ask, target_chars=500, max_followups=2)
+
+    exchanges = [call["exchange"] for call in meter.call_snapshot()]
+    assert [item["outcome"] for item in exchanges] == ["evidence", "judgment"]
+    assert (exchanges[0]["requested"], exchanges[0]["delivered"], exchanges[0]["held"]) == (
+        [first.id, second.id],
+        [first.id],
+        [second.id],
+    )
+    assert exchanges[0]["delivered_chars"] > 300
+    assert exchanges[1]["delivered"] == []
 
 
 def test_oversized_navigation_read_uses_the_same_bounded_correction():
@@ -1117,12 +1282,12 @@ def test_review_units_rejects_an_empty_worklist():
 
 
 def test_review_units_report_one_merged_grounding_failure():
-    """Two units sharing the facts:a.ts:1:1 limitation mention it only once in the failure reason."""
-    coverage = GroundingCoverage(limitations=("facts:a.ts:1:1",))
+    """Two units sharing the unresolved a.ts:helper evidence mention it only once in the failure reason."""
+    coverage = GroundingCoverage(unresolved=("a.ts:helper",))
 
     outcome = _units(["one", "two"], lambda _unit: ReviewCycle(findings=[], grounding=coverage))
 
-    assert outcome.failure_reason.count("facts:a.ts:1:1") == 1
+    assert outcome.failure_reason.count("a.ts:helper") == 1
 
 
 def test_review_outcome_rejects_every_incomplete_state():

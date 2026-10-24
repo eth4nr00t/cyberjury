@@ -77,3 +77,19 @@ def test_nonempty_input_without_a_diff_hunk_fails_before_facts_extraction(tmp_pa
 
     with pytest.raises(ValueError, match="no unified diff hunk"):
         prepare_diff_review("ordinary text", capture_source_snapshot(tmp_path))
+
+
+def test_a_diff_of_only_skipped_files_plans_no_units_without_facts_extraction(tmp_path, monkeypatch):
+    """A diff touching only README.md records it as noise and plans no units without extracting syntax facts."""
+    (tmp_path / "app.py").write_text("def run():\n    return True\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("After\n", encoding="utf-8")
+
+    def unexpected_facts(*args, **kwargs):
+        raise AssertionError("facts extraction must not run when no file is reviewable")
+
+    monkeypatch.setattr(prepare, "extract_syntax_facts", unexpected_facts)
+
+    prepared = prepare_diff_review(_patch("README.md", "Before", "After"), capture_source_snapshot(tmp_path))
+
+    assert [item.to_dict() for item in prepared.skipped_files] == [{"path": "README.md", "reason": "noise"}]
+    assert prepared.units == ()

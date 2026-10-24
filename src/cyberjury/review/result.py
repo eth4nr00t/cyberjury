@@ -454,7 +454,6 @@ class OutcomeArtifact:
                 self.incomplete,
                 self.grounding_missing,
                 self.grounding_unresolved,
-                self.limitations,
                 self.failure_reason,
             )
         )

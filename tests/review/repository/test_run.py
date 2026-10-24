@@ -93,16 +93,16 @@ def test_repository_unit_grounding_is_materialized_once(tmp_path, monkeypatch):
 
 
 def test_a_unit_limitation_is_attached_to_its_rendered_source(tmp_path):
-    """An unparsable broken.py limitation at 1:11 appears in the prompt and marks the outcome incomplete."""
+    """A partially parsed broken.py limitation at 1:11 appears in the prompt and leaves the outcome complete."""
     (tmp_path / "broken.py").write_text("def broken(:\n", encoding="utf-8")
     provider = MockProvider(default=EMPTY_REPLY)
-    limitation = FactLimitation(source="broken.py", analyzer="python", reason="unparsable", line=1, column=11)
+    limitation = FactLimitation(source="broken.py", analyzer="python", reason="partially parsed", line=1, column=11)
 
     outcome = _run(ground([source_unit(tmp_path, "broken.py")], limitations=(limitation,)), provider)
 
     assert "broken.py at 1:11" in provider.calls[0]["messages"][0].content
     assert outcome.grounding.limitations == ("facts:broken.py:1:11",)
-    assert outcome.complete is False
+    assert outcome.complete is True
 
 
 def test_one_source_operation_keeps_reports_at_different_lines_separate(tmp_path):
@@ -193,8 +193,8 @@ def test_repository_run_completes_and_checkpoints_each_unit(custody_repository, 
     assert sorted(len(record["findings"]) for record in records) == [0, 1]
 
 
-def test_repository_reviews_raw_source_and_stays_incomplete_when_facts_are_limited(tmp_path):
-    """An unparsable app.py is still reviewed, stays incomplete, and resume makes no provider calls."""
+def test_repository_reviews_raw_source_and_completes_when_facts_are_limited(tmp_path):
+    """A partially parsed app.py is reviewed, completes with its limitation, and resume makes no provider calls."""
     target = tmp_path / "opaque"
     target.mkdir()
     (target / "app.py").write_text("from flask import Flask\napp = Flask(__name__)\ndef broken(:\n")
@@ -204,7 +204,7 @@ def test_repository_reviews_raw_source_and_stays_incomplete_when_facts_are_limit
 
     assert provider.calls
     assert result.outcome.errors == 0
-    assert result.outcome.complete is False
+    assert result.outcome.complete is True
     assert result.outcome.grounding.limitations
     assert result.outcome_artifact.limitations == 1
 
@@ -212,7 +212,7 @@ def test_repository_reviews_raw_source_and_stays_incomplete_when_facts_are_limit
     resumed = run_repository_review(target, tmp_path / "ws", provider=resumed_provider)
 
     assert resumed_provider.calls == []
-    assert resumed.outcome.complete is False
+    assert resumed.outcome.complete is True
     assert resumed.outcome.grounding.limitations == result.outcome.grounding.limitations
 
 

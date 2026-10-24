@@ -10,6 +10,7 @@ from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.prepare import extract_facts
 from cyberjury.review.selection import FileSelection
 from cyberjury.review.syntax import analyzer as analyzer_module
+from cyberjury.review.syntax import facts as facts_module
 from cyberjury.review.syntax.analyzer import (
     MAX_SOURCE_BYTES,
     AnalyzerConfigurationError,
@@ -69,8 +70,8 @@ def test_python_and_javascript_family_ship_imports_queries():
     assert specs["go"].imports == ()
 
 
-def test_nul_parse_failure_becomes_a_source_limitation(tmp_path):
-    """A NUL byte inside a TS template literal marks render.ts unparsable while ok.ts keeps its graph."""
+def test_a_syntax_error_keeps_the_partial_graph_and_records_a_limitation(tmp_path):
+    """A NUL byte inside a TS template literal keeps render.ts in the graph with a partially parsed limitation."""
     source = b"export function render(value: string) {\n  return `${value}\x00${value}`;\n}\n"
     path = tmp_path / "render.ts"
     path.write_bytes(source)
@@ -78,20 +79,169 @@ def test_nul_parse_failure_becomes_a_source_limitation(tmp_path):
 
     facts = syntax_facts(tmp_path)
 
-    assert set(callgraph(tmp_path)) == {"ok.ts"}
+    assert set(callgraph(tmp_path)) == {"ok.ts", "render.ts"}
     assert [(item.source, item.analyzer, item.reason) for item in facts.limitations] == [
-        ("render.ts", "typescript", "unparsable")
+        ("render.ts", "typescript", "partially parsed")
+    ]
+
+
+def test_an_unexpected_error_in_one_file_becomes_its_limitation(tmp_path, monkeypatch):
+    """A KeyError while analyzing bad.py becomes its limitation, and ok.py keeps its graph."""
+    (tmp_path / "bad.py").write_text("def bad():\n    return 1\n")
+    (tmp_path / "ok.py").write_text("def ok():\n    return True\n")
+    parse_file = analyzer_module.parse_file
+
+    def failing_parse(path, rel, spec):
+        if rel == "bad.py":
+            raise KeyError("unexpected")
+        return parse_file(path, rel, spec)
+
+    monkeypatch.setattr(analyzer_module, "parse_file", failing_parse)
+
+    facts = syntax_facts(tmp_path)
+
+    assert set(callgraph(tmp_path)) == {"ok.py"}
+    assert [(item.source, item.reason) for item in facts.limitations] == [("bad.py", "analysis failed (KeyError)")]
+
+
+def test_a_syntax_error_placeholder_never_becomes_an_empty_name(tmp_path):
+    """A Python call typo `x.(1)` yields a partially parsed limitation, and facts extraction still succeeds."""
+    (tmp_path / "app.py").write_text("def run(x):\n    y = x.(1)\n    return y\n")
+
+    facts = syntax_facts(tmp_path)
+
+    assert [(item.source, item.reason) for item in facts.limitations] == [("app.py", "partially parsed")]
+    assert [item["name"] for item in facts.relationships.to_data()["definitions"]] == ["run"]
+
+
+def test_a_file_that_breaks_the_relationship_graph_is_excluded_as_a_limitation(tmp_path, monkeypatch):
+    """When the graph cannot be built with bad.py, bad.py becomes a limitation and ok.py keeps its facts."""
+    (tmp_path / "bad.py").write_text("def bad():\n    return 1\n")
+    (tmp_path / "ok.py").write_text("def ok():\n    return True\n")
+    build = facts_module.facts_from_repository
+
+    def failing_build(repository):
+        if any(definition.file == "bad.py" for definition in repository.definitions):
+            raise ValueError("definition evidence name must not be empty")
+        return build(repository)
+
+    monkeypatch.setattr(facts_module, "facts_from_repository", failing_build)
+
+    facts = syntax_facts(tmp_path)
+
+    assert [item["name"] for item in facts.relationships.to_data()["definitions"]] == ["ok"]
+    assert [(item.source, item.analyzer, item.reason) for item in facts.limitations] == [
+        ("bad.py", "syntax graph", "analysis failed (ValueError)")
+    ]
+
+
+def test_a_graph_failure_no_single_file_explains_still_fails_extraction(tmp_path, monkeypatch):
+    """A graph error that appears only with both files together is not hidden as a file limitation."""
+    (tmp_path / "one.py").write_text("def one():\n    return 1\n")
+    (tmp_path / "two.py").write_text("def two():\n    return 2\n")
+    build = facts_module.facts_from_repository
+
+    def failing_build(repository):
+        if len({definition.file for definition in repository.definitions}) > 1:
+            raise ValueError("cross file evidence conflict")
+        return build(repository)
+
+    monkeypatch.setattr(facts_module, "facts_from_repository", failing_build)
+
+    with pytest.raises(BackendUnavailable, match="cross file evidence conflict"):
+        syntax_facts(tmp_path)
+
+
+def test_a_structural_query_missing_a_capture_is_a_configuration_error(tmp_path):
+    """A Python inheritance query without @owner_name raises AnalyzerConfigurationError before any file is parsed."""
+    specs = load_specs()
+    configured = specs["python"].structural_relationships[0]
+    specs["python"] = replace(
+        specs["python"],
+        structural_relationships=(replace(configured, query=configured.query.replace(" @owner_name", "")),),
+    )
+    (tmp_path / "app.py").write_text("class Child(Base):\n    pass\n")
+
+    with pytest.raises(AnalyzerConfigurationError, match="lacks required captures"):
+        analyze_repository([(tmp_path / "app.py", "app.py", specs["python"])])
+
+
+def _functions_only_python(tmp_path, files):
+    specs = load_specs()
+    python = replace(specs["python"], definitions="(function_definition name: (identifier) @name) @def\n")
+    inputs = []
+    for name, source in files.items():
+        (tmp_path / name).write_text(source)
+        inputs.append((tmp_path / name, name, python))
+    return analyze_repository(inputs)
+
+
+def test_an_unexpected_structural_capture_in_one_file_becomes_its_limitation(tmp_path):
+    """A class base whose owner is not a definition limits models.py only, and ok.py keeps its facts."""
+    analyzed = _functions_only_python(
+        tmp_path, {"models.py": "class Child(Base):\n    pass\n", "ok.py": "def ok():\n    return 1\n"}
+    )
+
+    assert {definition.file for definition in analyzed.definitions} == {"ok.py"}
+    assert [(item.source, item.reason) for item in analyzed.limitations] == [
+        ("models.py", "structural relationship has no unique definition owner")
+    ]
+
+
+def test_an_unexpected_structural_capture_in_a_broken_file_is_reported_at_its_syntax_error(tmp_path):
+    """The same capture problem in a file with a syntax error drops models.py as analysis failed at line 3."""
+    analyzed = _functions_only_python(tmp_path, {"models.py": "class Child(Base):\n    pass\ndef broken(:\n"})
+
+    assert "models.py" not in analyzed.sources
+    assert [(item.source, item.reason, item.line) for item in analyzed.limitations] == [
+        ("models.py", "analysis failed after a syntax error", 3)
+    ]
+
+
+def _python_with_structural_query(query):
+    specs = load_specs()
+    configured = specs["python"].structural_relationships[0]
+    return replace(specs["python"], structural_relationships=(replace(configured, query=query),))
+
+
+def test_a_structural_match_missing_a_capture_becomes_a_file_limitation(tmp_path):
+    """An attribute base matched without @target_name limits models.py with incomplete captures."""
+    spec = _python_with_structural_query(
+        "(class_definition name: (identifier) @owner_name superclasses: (argument_list"
+        " [(identifier) @reference @target_name (attribute) @reference])) @owner"
+    )
+    (tmp_path / "models.py").write_text("class Child(base.Base):\n    pass\n")
+
+    analyzed = analyze_repository([(tmp_path / "models.py", "models.py", spec)])
+
+    assert [(item.source, item.reason) for item in analyzed.limitations] == [
+        ("models.py", "structural relationship captures are incomplete")
+    ]
+
+
+def test_a_structural_reference_outside_its_owner_becomes_a_file_limitation(tmp_path):
+    """A reference captured after its owning class limits models.py with a reference outside its owner."""
+    spec = _python_with_structural_query(
+        "(module (class_definition name: (identifier) @owner_name) @owner"
+        " (expression_statement (identifier) @reference @target_name))"
+    )
+    (tmp_path / "models.py").write_text("class Child:\n    pass\nBase\n")
+
+    analyzed = analyze_repository([(tmp_path / "models.py", "models.py", spec)])
+
+    assert [(item.source, item.reason) for item in analyzed.limitations] == [
+        ("models.py", "structural relationship source is outside its owner")
     ]
 
 
 def test_nul_in_code_uses_the_same_source_limitation_contract(tmp_path):
-    """A NUL byte inside a TS function name yields an unparsable limitation for render.ts."""
+    """A NUL byte inside a TS function name yields a partially parsed limitation for render.ts."""
     (tmp_path / "render.ts").write_bytes(b"export function \x00render() { return true; }\n")
 
     facts = syntax_facts(tmp_path)
 
     assert facts.limitations[0].source == "render.ts"
-    assert facts.limitations[0].reason == "unparsable"
+    assert facts.limitations[0].reason == "partially parsed"
 
 
 def test_definition_target_query_rejects_an_unknown_grammar_node(tmp_path):
@@ -392,12 +542,12 @@ def test_parse_limitation_column_uses_characters_after_non_ascii_text(tmp_path):
     ],
 )
 def test_every_tree_sitter_language_uses_one_parse_limitation_contract(tmp_path, name, source, analyzer):
-    """A broken file in each language yields the same (source, analyzer, "unparsable") limitation."""
+    """A broken file in each language yields the same (source, analyzer, "partially parsed") limitation."""
     (tmp_path / name).write_text(source)
 
     limitation = syntax_facts(tmp_path).limitations[0]
 
-    assert (limitation.source, limitation.analyzer, limitation.reason) == (name, analyzer, "unparsable")
+    assert (limitation.source, limitation.analyzer, limitation.reason) == (name, analyzer, "partially parsed")
 
 
 def test_go_receiver_function_is_a_method(tmp_path):

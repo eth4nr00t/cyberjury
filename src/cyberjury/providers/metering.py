@@ -15,6 +15,7 @@ from cyberjury.providers.base import CompletionResult, Message, Provider, Respon
 MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v1"
 
 type ParseUpdate = Callable[[str], None]
+type ExchangeUpdate = Callable[[dict[str, object]], None]
 
 
 @dataclass(kw_only=True)
@@ -24,6 +25,7 @@ class _ModelCallContext:
     unit_id: str = ""
     candidate_id: str = ""
     record_parse: ParseUpdate | None = None
+    record_exchange: ExchangeUpdate | None = None
 
 
 _CURRENT_CALL: ContextVar[_ModelCallContext | None] = ContextVar("model_call_context", default=None)
@@ -70,6 +72,13 @@ def record_model_parse(failure_reason: str = "") -> None:
         context.record_parse(failure_reason)
 
 
+def record_model_exchange(exchange: dict[str, object]) -> None:
+    """Attach what the engine did with the current call's reply to its metered record."""
+    context = _CURRENT_CALL.get()
+    if context is not None and context.record_exchange is not None:
+        context.record_exchange(exchange)
+
+
 @dataclass
 class UsageMeter:
     """Per-call model records for one run, with token totals derived from them."""
@@ -108,8 +117,8 @@ class UsageMeter:
         semantic: dict[str, object] = {"calls": calls, "usage": _usage_from_calls(records)}
         return {"schema": MODEL_CALLS_SCHEMA, **semantic, "content_sha256": canonical_sha256(semantic)}
 
-    def record_call(self, record: dict[str, object]) -> ParseUpdate:
-        """Persist one call and return its validation updater."""
+    def record_call(self, record: dict[str, object]) -> tuple[ParseUpdate, ExchangeUpdate]:
+        """Persist one call and return its validation and exchange updaters."""
         with self._lock:
             index = len(self.calls)
             self.calls.append(record)
@@ -118,7 +127,11 @@ class UsageMeter:
             with self._lock:
                 self.calls[index].update(status="failed" if failure_reason else "ok", failure_reason=failure_reason)
 
-        return update
+        def exchange(value: dict[str, object]) -> None:
+            with self._lock:
+                self.calls[index]["exchange"] = dict(value)
+
+        return update, exchange
 
 
 class MeteringProvider(Provider):
@@ -186,9 +199,10 @@ class MeteringProvider(Provider):
 
     def _record(self, record: dict[str, object], started: float, context: _ModelCallContext | None) -> None:
         record["duration_seconds"] = round(perf_counter() - started, 3)
-        parse_update = self._meter.record_call(record)
+        parse_update, exchange_update = self._meter.record_call(record)
         if context is not None:
             context.record_parse = parse_update
+            context.record_exchange = exchange_update
 
 
 def _usage_from_calls(calls: list[dict[str, object]]) -> dict[str, int]:

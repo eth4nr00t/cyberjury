@@ -18,4 +18,5 @@ def prepare_diff_review(diff: str, snapshot: SourceSnapshot) -> PreparedReview[D
         snapshot,
         plan=lambda shared: plan_diff_units(review_diff, shared, skipped),
         ground=ground_diff_unit,
+        has_reviewable_source=bool(review_diff.strip()),
     )
