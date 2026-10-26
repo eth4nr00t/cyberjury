@@ -10,7 +10,7 @@ from evals.attempts import Attempt
 from evals.benchmarks.cases import BenchmarkCase, checks_sha256
 from evals.benchmarks.validate import validate_document
 
-LEDGER_SCHEMA = "cyberjury.eval-ledger/v1"
+EVAL_LEDGER_SCHEMA = "cyberjury.eval-ledger/v1"
 VERDICTS = ("duplicate", "needs_review", "not_actionable", "supported")
 
 
@@ -33,7 +33,7 @@ class Adjudication:
 
 def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Path | None) -> Adjudication:
     """Validate one ledger against its attempt and case, and count reviewed credit and verdicts."""
-    validate_document(ledger, "ledger-v1.schema.json", attempt.ledger_path)
+    validate_document(ledger, "eval-ledger-v1.schema.json", attempt.ledger_path)
     if (
         ledger["case"] != case.name
         or attempt.case != case.name

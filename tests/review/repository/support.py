@@ -119,6 +119,6 @@ def run_repository_review(
             issue_judge=issue_judge,
         ),
         concurrency=concurrency,
-        work=Path(workspace) / prepared.shared.root.name,
+        review=Path(workspace),
         **values,
     )

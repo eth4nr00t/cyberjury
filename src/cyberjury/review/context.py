@@ -262,7 +262,7 @@ def evidence_request_ids(requested: object) -> tuple[str, ...]:
     if not isinstance(requested, list) or not all(isinstance(item, str) for item in requested):
         raise EvidenceRequestError("evidence_requests must be a list of evidence ids")
     if len(requested) > MAX_EVIDENCE_REQUESTS_PER_BATCH:
-        raise EvidenceRequestError("evidence_requests cannot contain more than 64 ids")
+        raise EvidenceRequestError(f"evidence_requests cannot contain more than {MAX_EVIDENCE_REQUESTS_PER_BATCH} ids")
     if any(not item or item != item.strip() for item in requested):
         raise EvidenceRequestError("evidence_requests must contain nonempty exact evidence ids")
     if any(len(item) > _MAX_EVIDENCE_ID_CHARS for item in requested):

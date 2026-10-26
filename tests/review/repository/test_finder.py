@@ -1,21 +1,23 @@
 """Repository Finder parsing, prompting, location, and evidence tests."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
+from cyberjury.providers.openai import OpenAIProvider
 from cyberjury.review.context import (
     EvidenceItem,
     GroundingContext,
     SourceEvidence,
     SourceSpan,
 )
-from cyberjury.review.engine import CorrectableRoleResponseError
 from cyberjury.review.finder import findings_from_reply
 from cyberjury.review.finding import Finding
 from cyberjury.review.navigation import navigation_instructions
+from cyberjury.review.replies import CorrectableRoleResponseError
 from cyberjury.review.repository.context import Unit
 from cyberjury.review.repository.finder import locate
 from cyberjury.review.repository.prompts import (
@@ -475,23 +477,17 @@ def test_model_reviewer_empty_findings_is_not_an_error():
 
 class _SequencedOpenAIClient:
     def __init__(self, replies):
-        from types import SimpleNamespace
-
         self.requests = []
         self._replies = list(replies)
         self.responses = SimpleNamespace(create=self._create)
 
     def _create(self, **kwargs):
-        from types import SimpleNamespace
-
         self.requests.append(kwargs)
         return SimpleNamespace(output_text=self._replies.pop(0), status="completed")
 
 
 def test_initial_and_followup_calls_of_one_unit_share_one_openai_cache_key(tmp_path):
     """OpenAI prompt_cache_key matches across one unit's initial and follow-up calls but not other units."""
-    from cyberjury.providers.openai import OpenAIProvider
-
     source = "class ModelWithOwner:\n    owner_scope = True\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
     navigator = navigator_from_callgraph(

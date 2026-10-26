@@ -6,7 +6,7 @@ from typing import ClassVar
 import pytest
 
 from cyberjury.providers.base import CompletionResult, Message, Provider, ResponseSchema, Usage
-from cyberjury.providers.retry import EmptyResponseError, RetryProvider
+from cyberjury.providers.retry import EmptyResponseError, RetryProvider, _is_rate_limit, _retry_after
 
 
 class _Flaky(Provider):
@@ -229,7 +229,6 @@ def test_non_rate_limit_keeps_linear_backoff():
 
 def test_is_rate_limit_matches_by_status_class_name_and_message():
     """Rate limit detection checks status, class name, and message."""
-    from cyberjury.providers.retry import _is_rate_limit
 
     class RateLimitError(Exception):
         pass
@@ -242,8 +241,6 @@ def test_is_rate_limit_matches_by_status_class_name_and_message():
 
 def test_retry_after_reads_the_exception_attribute_and_tolerates_garbage():
     """A retry_after attribute of "7" parses to 7.0, while "soon" or a missing attribute yield None."""
-    from cyberjury.providers.retry import _retry_after
-
     exc = RuntimeError("x")
     exc.retry_after = "7"
     assert _retry_after(exc) == 7.0
@@ -255,8 +252,6 @@ def test_retry_after_reads_the_exception_attribute_and_tolerates_garbage():
 
 def test_retry_after_reads_a_structured_provider_error_body():
     """An overloaded gateway can put its required delay in the error body."""
-    from cyberjury.providers.retry import _retry_after
-
     exc = RuntimeError("origin overloaded")
     exc.body = {"retryable": True, "retry_after": 60}
 

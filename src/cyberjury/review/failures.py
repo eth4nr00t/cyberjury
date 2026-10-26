@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+def exception_reason(exc: BaseException) -> str:
+    """Return the failure reason an exception records: its type name and message."""
+    return f"{type(exc).__name__}: {exc}"
+
+
 class BackendUnavailable(RuntimeError):
     """A required facts or source backend cannot run."""
 

@@ -18,6 +18,7 @@ from cyberjury.review.context import (
     with_source_evidence,
 )
 from cyberjury.review.facts import FactLimitation
+from cyberjury.review.navigation import SourceTarget
 from cyberjury.sources.snapshot import SourceSnapshot
 
 
@@ -39,8 +40,6 @@ def test_evidence_index_keeps_untrusted_labels_and_previews_on_one_line():
 
 def test_one_source_range_has_one_id_whoever_publishes_it():
     """A published evidence item and a navigation target over app.py:a:0:10 share one src- prefixed id."""
-    from cyberjury.review.navigation import SourceTarget
-
     published = EvidenceItem.create(identity="app.py:a:0:10", label="a", text="first")
     navigated = SourceTarget.create(file="app.py", name="a", start=0, end=10, preview="")
 

@@ -63,6 +63,7 @@ cyberjury = [
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
 testpaths = ["tests", "evals/tests"]
+filterwarnings = ["error::DeprecationWarning"]
 pythonpath = ["src", "."]
 
 [tool.ruff]

@@ -1,4 +1,4 @@
-"""OpenAIProvider: Provider backed by the OpenAI Responses API."""
+"""A provider backed by the OpenAI Responses API."""
 
 from __future__ import annotations
 

@@ -57,7 +57,7 @@ class Finding:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """Return the complete checkpoint form."""
+        """Return the complete form a unit findings record stores."""
         data = asdict(self)
         data["evidence_refs"] = list(self.evidence_refs)
         data["found_by"] = list(self.found_by)
@@ -68,7 +68,7 @@ class Finding:
 
     @classmethod
     def from_dict(cls, value: object) -> Finding:
-        """Parse one checkpointed finding written by `to_dict`."""
+        """Parse one finding restored from a unit findings record written by `to_dict`."""
         names = {item.name for item in fields(cls)}
         if not isinstance(value, dict) or set(value) != names:
             raise ValueError("finding fields are invalid")

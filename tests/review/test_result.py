@@ -4,7 +4,6 @@ from dataclasses import replace
 
 import pytest
 
-from cyberjury.review.engine import ReviewOutcome
 from cyberjury.review.finding import ChangeAnchor, Finding
 from cyberjury.review.issues import Issue, issue_id
 from cyberjury.review.result import (
@@ -12,8 +11,6 @@ from cyberjury.review.result import (
     FindingRecord,
     FindingsArtifact,
     IssueRecord,
-    OutcomeArtifact,
-    ReviewResultArtifact,
     findings_artifact,
 )
 
@@ -67,60 +64,6 @@ def test_findings_reject_tampered_content():
 
     with pytest.raises(ValueError, match="content hash"):
         FindingsArtifact.from_dict(document)
-
-
-def test_outcome_derives_completion_from_every_controlling_counter():
-    """An outcome with no incomplete items is complete, and one incomplete item makes it incomplete."""
-    findings = single(finding())
-    complete = OutcomeArtifact.create(
-        target="diff",
-        source_revision="a" * 64,
-        findings=findings,
-        outcome=ReviewOutcome(findings=(object(),)),
-    )
-    incomplete = OutcomeArtifact.create(
-        target="diff",
-        source_revision="a" * 64,
-        findings=findings,
-        outcome=ReviewOutcome(findings=(object(),), incomplete=(object(),)),
-    )
-
-    assert complete.complete is True
-    assert incomplete.complete is False
-
-
-def test_outcome_rejects_a_forged_complete_state():
-    """Replacing complete=True on an outcome that has incomplete items raises "completion contradicts"."""
-    findings = single(finding())
-    artifact = OutcomeArtifact.create(
-        target="repository",
-        source_revision="b" * 64,
-        findings=findings,
-        outcome=ReviewOutcome(findings=(), incomplete=(object(),)),
-    )
-
-    with pytest.raises(ValueError, match="completion contradicts"):
-        replace(artifact, complete=True, content_sha256="0" * 64)
-
-
-def test_cli_result_rejects_an_outcome_for_other_findings():
-    """Pairing a one-finding artifact with an outcome built for empty findings raises "does not identify"."""
-    findings = single(finding())
-    empty = FindingsArtifact.create((), ())
-    outcome = OutcomeArtifact.create(
-        target="diff",
-        source_revision="d" * 64,
-        findings=empty,
-        outcome=ReviewOutcome(findings=()),
-    )
-
-    with pytest.raises(ValueError, match="does not identify"):
-        ReviewResultArtifact(
-            review_id="review-" + "1" * 32,
-            attempt_id="attempt-" + "2" * 32,
-            findings=findings,
-            outcome=outcome,
-        )
 
 
 def test_findings_artifact_maps_every_target_onto_the_same_fields():

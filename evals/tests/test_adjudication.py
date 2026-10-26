@@ -100,7 +100,7 @@ def test_ledger_rejects_a_check_outside_the_case(case, attempt, write_ledger):
 
 
 def test_ledger_rejects_check_credit_on_an_unsupported_report(case, attempt, write_ledger):
-    """A not_actionable report crediting a check fails ledger-v1 schema validation."""
+    """A not_actionable report crediting a check fails eval-ledger-v1 schema validation."""
     write_ledger(attempt, {A: ("not_actionable", ("create-missing-owner",)), B: ("not_actionable", ())})
 
     with pytest.raises(ValueError, match=r"ledger-v1\.schema"):

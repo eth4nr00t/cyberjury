@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import importlib
 import sys
 from dataclasses import dataclass
@@ -14,7 +15,6 @@ from cyberjury.review.detection import MAX_SOURCE_BYTES
 from cyberjury.review.facts import FactLimitation
 from cyberjury.review.languages import load_languages
 from cyberjury.review.relationships import StructuralRelationKind
-from cyberjury.telemetry import progress
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -250,9 +250,17 @@ def spec_for(specs: dict[str, LangSpec], rel: str) -> LangSpec | None:
     return next((spec for spec in specs.values() if suffix in spec.extensions), None)
 
 
-def grammar_for(spec: LangSpec) -> CapsuleType | int:
-    """Return the installed grammar object for one language specification."""
-    return getattr(importlib.import_module(spec.module), spec.accessor)()
+def grammar_for(spec: LangSpec) -> CapsuleType:
+    """Return the installed grammar of one language specification as the capsule tree-sitter loads."""
+    grammar = getattr(importlib.import_module(spec.module), spec.accessor)()
+    return _language_capsule(grammar) if isinstance(grammar, int) else grammar
+
+
+def _language_capsule(address: int) -> CapsuleType:
+    new_capsule = ctypes.pythonapi.PyCapsule_New
+    new_capsule.restype = ctypes.py_object
+    new_capsule.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p)
+    return new_capsule(address, b"tree_sitter.Language", None)
 
 
 @cache
@@ -767,9 +775,6 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
     )
 
 
-_PROGRESS_FILES = 500
-
-
 def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
     """Analyze every reviewable source and retain file level limitations."""
     definitions: list[AnalyzedDefinition] = []
@@ -785,7 +790,7 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
         raise AnalyzerConfigurationError("analyzer source paths must be unique")
     for spec in {spec.name: spec for _path, _rel, spec in ordered_sources}.values():
         _check_queries(spec)
-    for position, (path, rel, spec) in enumerate(ordered_sources, 1):
+    for path, rel, spec in ordered_sources:
         try:
             analyzed = parse_file(path, rel, spec)
         except SourceParseError as exc:
@@ -816,10 +821,6 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
             qualified_uses.setdefault(rel, []).extend(analyzed.qualified_uses)
             structural_relationships.setdefault(rel, []).extend(analyzed.structural_relationships)
             normalized_sources[rel] = analyzed.source
-        if len(ordered_sources) >= _PROGRESS_FILES and (
-            position % _PROGRESS_FILES == 0 or position == len(ordered_sources)
-        ):
-            progress(f"facts {position}/{len(ordered_sources)}")
     return AnalyzedRepository(
         definitions=tuple(definitions),
         imports=imports,

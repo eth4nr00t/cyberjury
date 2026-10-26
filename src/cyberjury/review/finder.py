@@ -14,21 +14,14 @@ from cyberjury.review.context import (
     SourceSpan,
     cited_source_spans,
 )
-from cyberjury.review.engine import (
-    CorrectableRoleResponseError,
-    EvidenceJudgment,
-    ReviewCycle,
-    ReviewUnit,
-    RoleReply,
-    parse_role_response,
-    run_evidence_judgment,
-    run_grounded_judgment,
-)
+from cyberjury.review.engine import ReviewCycle, ReviewUnit, run_grounded_judgment
+from cyberjury.review.exchange import EvidenceJudgment, run_evidence_judgment
 from cyberjury.review.finding import ChangeAnchor, Finding
 from cyberjury.review.identity import canonical_category
 from cyberjury.review.knowledge import load_review_brief, load_severity_rubric
 from cyberjury.review.navigation import SourceNavigationSession, bind_source_operation, navigation_instructions
 from cyberjury.review.paths import is_unsafe_rel
+from cyberjury.review.replies import CorrectableRoleResponseError, RoleReply, parse_role_response
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.union import MERGE_RULE, finding_accumulator
 

@@ -12,6 +12,7 @@ import pytest
 from cyberjury import cli as climod
 from cyberjury.providers import configuration as configuration_module
 from cyberjury.providers.mock import MockProvider
+from cyberjury.review import command as commandmod
 from evals import diff
 from evals.benchmarks.cases import find_case
 from evals.benchmarks.contract import ChangeAnchor
@@ -27,7 +28,7 @@ def scripted_model(monkeypatch):
     for name in list(os.environ):
         if name.startswith(("CYBERJURY_", "ANTHROPIC_", "OPENAI_")):
             monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(climod, "load_env_file", lambda: [])
+    monkeypatch.setattr(commandmod, "load_env_file", lambda: [])
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
 
     def install(findings=(), *, error: BaseException | None = None) -> MockProvider:
@@ -146,6 +147,17 @@ def test_run_aborts_on_missing_provider_credentials(tmp_path, case, scripted_mod
     records = []
 
     with pytest.raises(SystemExit):
+        diff.run([case], workspace=tmp_path / "reviews", on_attempt=records.append)
+    assert records == []
+
+
+def test_an_interrupted_review_stops_the_run(tmp_path, case, scripted_model, monkeypatch):
+    """A review that exits 130 raises KeyboardInterrupt instead of recording the case and moving on."""
+    scripted_model()
+    monkeypatch.setattr(climod, "main", lambda argv: climod.INTERRUPTED_EXIT)
+    records = []
+
+    with pytest.raises(KeyboardInterrupt):
         diff.run([case], workspace=tmp_path / "reviews", on_attempt=records.append)
     assert records == []
 

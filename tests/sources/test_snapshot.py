@@ -175,7 +175,7 @@ def test_snapshot_rejects_unsupported_file_type(tmp_path):
         SourceSnapshot.capture(tmp_path, ("events.pipe",))
 
 
-def test_snapshot_policy_is_profile_independent_and_includes_all_source_inputs(tmp_path):
+def test_snapshot_includes_dependency_and_vendored_source_inputs(tmp_path):
     """Files under lib/, dependencies/, and node_modules/ are captured, and editing lib/dependency.py changes the id."""
     (tmp_path / "src").mkdir()
     (tmp_path / "lib").mkdir()

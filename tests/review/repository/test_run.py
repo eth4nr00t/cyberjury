@@ -7,10 +7,13 @@ import pytest
 
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.facts import FactLimitation
+from cyberjury.review.recorder import Recorder
 from cyberjury.review.relationships import RelationshipEvidenceBundle
+from cyberjury.review.repository import context as context_module
 from cyberjury.review.repository.finder import REPOSITORY_TARGET
 from cyberjury.review.run import run_review
 from cyberjury.review.seats import ReviewSeats
+from cyberjury.workspace import WorkspaceCorruptionError, read_record
 from tests.review.repository.support import (
     EMPTY_REPLY,
     finder_reply,
@@ -72,8 +75,6 @@ def test_unit_failures_are_counted_not_silent(tmp_path):
 
 def test_repository_unit_grounding_is_materialized_once(tmp_path, monkeypatch):
     """Reviewing unit.py reads its text once and sends value = 1 in the finder prompt."""
-    from cyberjury.review.repository import context as context_module
-
     (tmp_path / "unit.py").write_text("value = 1\n", encoding="utf-8")
     reads = 0
     original = context_module._read_unit_text
@@ -178,17 +179,24 @@ def _reviewed_units(provider: MockProvider) -> list[str]:
     return [prompt_unit(call["messages"]) for call in provider.calls]
 
 
-def _unit_records(work: Path) -> list[dict]:
-    return [json.loads(path.read_text())["value"] for path in sorted((work / "units").glob("*.json"))]
+def _unit_records(review: Path) -> list[dict]:
+    items = review / "review" / "items"
+    return [
+        {
+            "clean": read_record(path).status == "ok",
+            "findings": json.loads((review / "review" / "findings" / path.name).read_text())["findings"],
+        }
+        for path in sorted(items.glob("*.json"))
+    ]
 
 
-def test_repository_run_completes_and_checkpoints_each_unit(custody_repository, tmp_path):
-    """The custody app run is complete with one wallet finding and two clean unit checkpoints."""
+def test_repository_run_completes_and_records_each_unit(custody_repository, tmp_path):
+    """The custody app run is complete with one wallet finding and two ok unit item records."""
     result = run_repository_review(custody_repository, tmp_path / "ws", provider=_wallet_provider())
 
     assert result.outcome.complete is True
     assert [f.entrypoint for f in result.findings.findings] == ["GET /wallets/<wallet_id>"]
-    records = _unit_records(tmp_path / "ws" / "custody")
+    records = _unit_records(tmp_path / "ws")
     assert [record["clean"] for record in records] == [True, True]
     assert sorted(len(record["findings"]) for record in records) == [0, 1]
 
@@ -206,7 +214,7 @@ def test_repository_reviews_raw_source_and_completes_when_facts_are_limited(tmp_
     assert result.outcome.errors == 0
     assert result.outcome.complete is True
     assert result.outcome.grounding.limitations
-    assert result.outcome_artifact.limitations == 1
+    assert len(result.outcome.grounding.limitations) == 1
 
     resumed_provider = MockProvider(default=EMPTY_REPLY)
     resumed = run_repository_review(target, tmp_path / "ws", provider=resumed_provider)
@@ -267,14 +275,14 @@ def test_failed_unit_stays_open_and_is_retried_on_resume_keeping_its_findings(tm
     assert first.outcome.complete is False
     assert first.outcome.failures[0].paths == ("beta/routes.py",)
     assert "provider rate limited" in first.outcome.failures[0].reason
-    assert sorted(record["clean"] for record in _unit_records(ws / "twop")) == [False, True]
+    assert sorted(record["clean"] for record in _unit_records(ws)) == [False, True]
 
     resumed = _raising_provider("")
     retried = run_repository_review(repository, ws, provider=resumed)
 
     assert _reviewed_units(resumed) == ["beta/routes.py"]
     assert retried.outcome.complete is True
-    assert [record["clean"] for record in _unit_records(ws / "twop")] == [True, True]
+    assert [record["clean"] for record in _unit_records(ws)] == [True, True]
     assert sorted(f.file for f in retried.findings.findings) == ["alpha/routes.py", "beta/routes.py"]
 
 
@@ -299,22 +307,22 @@ def test_an_interrupted_run_resumes_only_open_units(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "record",
-    ["{ this is not valid json", "{}", '{"schema": "cyberjury.unit-review/v0", "value": {}}', None],
+    "payload",
+    ["{ this is not valid json", "{}", '{"schema": "cyberjury.unit-findings/v0", "findings": []}', None],
 )
-def test_a_corrupt_unit_checkpoint_on_resume_raises_loud(custody_repository, tmp_path, record):
-    """Invalid JSON, wrong schema, or malformed findings in a checkpoint raise before any provider call."""
+def test_a_corrupt_unit_payload_on_resume_raises_loud(custody_repository, tmp_path, payload):
+    """Invalid JSON, wrong schema, or malformed findings in a unit payload raise before any provider call."""
     ws = tmp_path / "ws"
     run_repository_review(custody_repository, ws, provider=_wallet_provider())
-    path = sorted((ws / "custody" / "units").glob("*.json"))[0]
-    if record is None:
+    path = sorted((ws / "review" / "findings").glob("*.json"))[0]
+    if payload is None:
         document = json.loads(path.read_text())
-        document["value"]["findings"] = [{"title": "missing fields"}]
-        record = json.dumps(document)
-    path.write_text(record, encoding="utf-8")
+        document["findings"] = [{"title": "missing fields"}]
+        payload = json.dumps(document)
+    path.write_text(payload, encoding="utf-8")
     resumed = _wallet_provider()
 
-    with pytest.raises(ValueError, match=r"corrupt.*Remove the workspace"):
+    with pytest.raises(WorkspaceCorruptionError, match=r"corrupt.*--fresh"):
         run_repository_review(custody_repository, ws, provider=resumed)
 
     assert resumed.calls == []
@@ -330,8 +338,8 @@ def test_repository_run_counts_an_unreceipted_finder_candidate_as_incomplete(tmp
     result = run_repository_review(repo, tmp_path / "ws", provider=provider)
 
     assert not result.outcome.complete
-    assert result.outcome_artifact.incomplete == 1
-    assert [record["clean"] for record in _unit_records(tmp_path / "ws" / "svc")] == [False]
+    assert len(result.outcome.incomplete) == 1
+    assert [record["clean"] for record in _unit_records(tmp_path / "ws")] == [False]
 
 
 _RECORDS = (
@@ -374,11 +382,11 @@ def test_repository_review_folds_one_line_and_links_judged_issues(tmp_path, same
     assert len(judge.pairs) == 1
     assert resumed_judge.pairs == []
     assert resumed.findings == artifact
-    assert (tmp_path / "ws" / "svc" / "issue-links").is_dir()
+    assert (tmp_path / "ws" / "link" / "items").is_dir()
 
 
-def test_a_failed_issue_link_judgment_keeps_the_review_complete_and_is_reported(tmp_path):
-    """A judge raising down leaves two separate issues, a complete run, and the error in issue_link_errors."""
+def test_a_failed_issue_link_judgment_leaves_the_link_stage_incomplete(tmp_path):
+    """A judge raising down keeps two separate issues and a complete review, and the link stage is incomplete."""
     target = tmp_path / "svc"
     target.mkdir()
     (target / "records.py").write_text(_RECORDS, encoding="utf-8")
@@ -386,10 +394,21 @@ def test_a_failed_issue_link_judgment_keeps_the_review_complete_and_is_reported(
         lambda file: [finding(file, 5, title="save drops the owner"), finding(file, 9, title="load skips the check")]
     )
 
+    recorder = Recorder()
+
     result = run_repository_review(
-        target, tmp_path / "ws", provider=provider, issue_judge=StubIssueJudge(error=RuntimeError("down"))
+        target,
+        tmp_path / "ws",
+        provider=provider,
+        issue_judge=StubIssueJudge(error=RuntimeError("down")),
+        recorder=recorder,
     )
 
+    link = next(record for record in recorder.stages if record.id == "link")
     assert result.outcome.complete is True
     assert len(result.findings.issues) == 2
-    assert "down" in result.issue_link_errors[0]
+    assert link.status == "incomplete"
+    assert "down" in link.error.message
+    [item] = [read_record(path) for path in (tmp_path / "ws" / "link" / "items").glob("*.json")]
+    assert list(item.attributes) == ["pair", "same_fix", "rationale"]
+    assert (item.attributes["same_fix"], item.attributes["rationale"]) == (None, None)

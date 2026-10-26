@@ -1,4 +1,4 @@
-"""Provider factory: build a provider from a name, credentials, and client policy."""
+"""Build a provider from a name, credentials, and client policy."""
 
 from __future__ import annotations
 

@@ -79,7 +79,7 @@
       "maxLength": 80
     },
     "rootCause": {
-      "description": "Exactly one present-tense sentence without a trailing period: the code element that holds the defect, then the missing or broken control, then what it fails to protect. Code positions use the repository-relative form src/documents/views.py:LINE. No attacker narrative or severity words.",
+      "description": "Exactly one present-tense sentence without a trailing period: the code element that holds the defect, then the missing or broken control, then what it fails to protect. Code positions use the repository-relative form src/documents/views.py:LINE, or src/documents/views.py:START-END for a span of consecutive lines. No attacker narrative or severity words.",
       "type": "string",
       "pattern": "^\\S(?:[^\\n\\r]*\\S)?$",
       "not": {"anyOf": [{"pattern": "\\.$"}, {"pattern": "[\\n\\r]"}]}

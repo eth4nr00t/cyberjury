@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -10,12 +11,14 @@ from typing import Literal, Protocol
 from cyberjury.canonical import canonical_sha256
 from cyberjury.numbering import numbered_source, split_lines
 from cyberjury.providers.base import Message, Provider, ResponseSchema
-from cyberjury.providers.metering import model_call_context
-from cyberjury.review.checkpoint import CheckpointStore
-from cyberjury.review.engine import parse_role_response
+from cyberjury.providers.metering import model_call_context, model_call_scope
+from cyberjury.record import Record, RecordError, error_message, utc_timestamp
 from cyberjury.review.finding import Finding
+from cyberjury.review.items import ItemStore
 from cyberjury.review.paths import normalized_location_path, resolve_source_path
 from cyberjury.review.prompts import CLAIM_FIELDS, UNTRUSTED_SOURCE_RULE, fenced_source, finding_claim
+from cyberjury.review.recorder import Recorder
+from cyberjury.review.replies import parse_role_response
 from cyberjury.review.schemas import closed_object
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -129,14 +132,14 @@ _SYSTEM = (
     "# Output Fields\n\n"
     "The provider enforces the response schema. Field meanings:\n"
     "- `same_fix`: true only when one code change fixes both findings.\n"
-    "- `reason`: the one change that fixes both findings, or why each finding needs its own change."
+    "- `rationale`: the one change that fixes both findings, or why each finding needs its own change."
 )
 _PROMPT_TEMPLATE = (
     "{first}\n\n{second}\n\nCode at finding A's location:\n{first_code}\n\nCode at finding B's location:\n{second_code}"
 )
 _RESPONSE_SCHEMA = ResponseSchema(
     name="issue_link",
-    schema=closed_object({"same_fix": {"type": "boolean"}, "reason": {"type": "string"}}),
+    schema=closed_object({"same_fix": {"type": "boolean"}, "rationale": {"type": "string"}}),
 )
 
 
@@ -172,23 +175,19 @@ def link_prompt(first: Finding, second: Finding, root: str) -> str:
 
 @dataclass(frozen=True, kw_only=True)
 class LinkDecision:
-    """One same-fix answer for a candidate pair and the reason behind it."""
+    """One same-fix answer for a candidate pair and the rationale behind it."""
 
     same_fix: bool
-    reason: str
-
-    def to_dict(self) -> dict[str, object]:
-        """Return the checkpoint form."""
-        return {"same_fix": self.same_fix, "reason": self.reason}
+    rationale: str
 
     @classmethod
     def from_dict(cls, value: object) -> LinkDecision:
-        """Parse one checkpointed decision written by `to_dict`."""
-        if not isinstance(value, dict) or set(value) != {"same_fix", "reason"}:
+        """Parse one decision restored from the attributes of its link item record."""
+        if not isinstance(value, dict) or set(value) != {"same_fix", "rationale"}:
             raise ValueError("issue link decision fields are invalid")
-        if not isinstance(value["same_fix"], bool) or not isinstance(value["reason"], str) or not value["reason"]:
+        if not isinstance(value["same_fix"], bool) or not isinstance(value["rationale"], str) or not value["rationale"]:
             raise ValueError("issue link decision values are invalid")
-        return cls(same_fix=value["same_fix"], reason=value["reason"])
+        return cls(same_fix=value["same_fix"], rationale=value["rationale"])
 
 
 class IssueJudge(Protocol):
@@ -196,7 +195,7 @@ class IssueJudge(Protocol):
 
     @property
     def fingerprint(self) -> str:
-        """Identify the seat, model, and prompt contract for checkpoint reuse."""
+        """Identify the seat, model, and prompt contract that a recorded decision was made under."""
 
     def judge(self, prompt: str, *, pair: tuple[str, str]) -> LinkDecision:
         """Answer whether one code change fixes both findings of the prompt."""
@@ -235,7 +234,7 @@ class ModelIssueJudge:
         )
 
     def judge(self, prompt: str, *, pair: tuple[str, str]) -> LinkDecision:
-        """Ask the seat once and require a nonempty reason."""
+        """Ask the seat once and require a nonempty rationale."""
         with model_call_context(role="issue linker", trigger="issue_link", candidate_id=pair[0]):
             result = self._provider.complete(
                 system=_SYSTEM,
@@ -246,18 +245,28 @@ class ModelIssueJudge:
                 response_schema=_RESPONSE_SCHEMA,
             )
             reply = parse_role_response(result.text, role="issue linker", response_schema=_RESPONSE_SCHEMA)
-        reason = reply["reason"].strip()
-        if not reason:
-            raise IssueLinkError("issue link reply requires a nonempty reason")
-        return LinkDecision(same_fix=reply["same_fix"], reason=reason)
+        rationale = reply["rationale"].strip()
+        if not rationale:
+            raise IssueLinkError("issue link reply requires a nonempty rationale")
+        return LinkDecision(same_fix=reply["same_fix"], rationale=rationale)
 
 
 @dataclass(frozen=True, kw_only=True)
 class IssueLinks:
-    """Accepted judgment links and the candidate pairs whose judgment failed."""
+    """Accepted judgment links, how many pairs were judged or restored, and the pairs whose judgment failed."""
 
     links: tuple[tuple[str, str], ...] = ()
+    judged: int = 0
+    restored: int = 0
     errors: tuple[str, ...] = ()
+
+
+def _restored_decision(record: Record, _payload: object) -> LinkDecision | None:
+    if record.status != "ok":
+        return None
+    return LinkDecision.from_dict(
+        {"same_fix": record.attributes.get("same_fix"), "rationale": record.attributes.get("rationale")}
+    )
 
 
 def link_issues(
@@ -265,32 +274,54 @@ def link_issues(
     judge: IssueJudge,
     root: str,
     *,
-    checkpoint: CheckpointStore | None = None,
+    store: ItemStore | None = None,
     concurrency: int = 1,
+    recorder: Recorder | None = None,
 ) -> IssueLinks:
     """Judge every candidate pair once, `concurrency` at a time, and keep the pairs one code change fixes."""
+    recorder = recorder or Recorder()
 
-    def decide(pair: tuple[Finding, Finding]) -> tuple[tuple[str, str], LinkDecision | None, str]:
+    def decide(pair: tuple[Finding, Finding]) -> tuple[tuple[str, str], LinkDecision | None, str, bool]:
         first, second = pair
         ids = (first.candidate_id, second.candidate_id)
         try:
             prompt = link_prompt(first, second, root)
         except IssueLinkError as exc:
-            return ids, None, f"issue link {ids[0]} {ids[1]}: {exc}"
-        key = canonical_sha256({"prompt": prompt, "judge": judge.fingerprint})
-        decision = checkpoint.restore(key, LinkDecision.from_dict) if checkpoint is not None else None
-        if decision is None:
-            try:
+            return ids, None, f"issue link {ids[0]} {ids[1]}: {exc}", False
+        name = f"pair-{canonical_sha256({'prompt': prompt, 'judge': judge.fingerprint})[:20]}"
+        decision = store.restore(name, _restored_decision) if store is not None else None
+        if decision is not None:
+            return ids, decision, "", True
+        started_at, started = utc_timestamp(), time.monotonic()
+        error = ""
+        try:
+            with model_call_scope(unit_id=name):
                 decision = judge.judge(prompt, pair=ids)
-            except Exception as exc:
-                return ids, None, f"issue link {ids[0]} {ids[1]}: {type(exc).__name__}: {exc}"
-            if checkpoint is not None:
-                checkpoint.save(key, decision.to_dict())
-        return ids, decision, ""
+        except Exception as exc:
+            error = f"issue link {ids[0]} {ids[1]}: {type(exc).__name__}: {exc}"
+        item = Record(
+            id=f"link/{name}",
+            status="ok" if decision is not None else "failed",
+            started_at=started_at,
+            duration_seconds=round(time.monotonic() - started, 3),
+            metrics=recorder.unit_usage(name),
+            attributes={
+                "pair": f"{ids[0]} {ids[1]}",
+                "same_fix": decision.same_fix if decision is not None else None,
+                "rationale": decision.rationale if decision is not None else None,
+            },
+            error=RecordError(code="model", message=error_message(error)) if error else None,
+        )
+        if store is not None:
+            store.save(item)
+        recorder.item(item)
+        return ids, decision, error, False
 
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
         results = list(pool.map(decide, link_candidates(findings)))
     return IssueLinks(
-        links=tuple(ids for ids, decision, _error in results if decision is not None and decision.same_fix),
-        errors=tuple(error for _ids, _decision, error in results if error),
+        links=tuple(ids for ids, decision, _error, _restored in results if decision is not None and decision.same_fix),
+        judged=sum(1 for _ids, decision, _error, restored in results if decision is not None and not restored),
+        restored=sum(1 for _ids, _decision, _error, restored in results if restored),
+        errors=tuple(error for _ids, _decision, error, _restored in results if error),
     )

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from collections.abc import Callable, Hashable, Iterable
+from dataclasses import dataclass, field, replace
 
-from cyberjury.review.engine import FindingAccumulator
 from cyberjury.review.finding import Finding
 from cyberjury.review.provenance import found_by_tuple
 
@@ -13,6 +13,33 @@ MERGE_RULE = (
     "of an accepted finding is merged into it: its `attack_path` and `evidence_refs` are added, and its other fields "
     "are discarded."
 )
+
+
+@dataclass
+class FindingAccumulator[T]:
+    """A monotonic finding union configured by one target policy."""
+
+    key: Callable[[T], Hashable]
+    fold: Callable[[T, T], T]
+    pool: dict[Hashable, T] = field(default_factory=dict)
+
+    def add(self, findings: Iterable[T]) -> int:
+        """Fold one set into the union and return its new identity count."""
+        new = 0
+        for finding in findings:
+            identity = self.key(finding)
+            existing = self.pool.get(identity)
+            if existing is None:
+                self.pool[identity] = finding
+                new += 1
+            else:
+                self.pool[identity] = self.fold(existing, finding)
+        return new
+
+    @property
+    def findings(self) -> list[T]:
+        """Return the stable insertion ordered union."""
+        return list(self.pool.values())
 
 
 def _normalized(text: str) -> str:

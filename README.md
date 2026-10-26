@@ -18,11 +18,11 @@ The review contract is data. One language-independent security reasoning kernel,
 rubric, and the file classification rules live in `src/cyberjury/review/contract/`. Language
 support is one file per language in `src/cyberjury/review/contract/languages/`. A language
 without a file is still reviewed from its raw source. Each review records a hash of these files
-in `contract.json`.
+in `source/contract.json`.
 
 A Repository Review of a Git work tree covers the tracked files and the untracked files Git does not
 ignore, but not the contents of Git submodules. A plain directory is covered completely. Files that
-are not UTF-8 text, binary, or empty are listed as skipped in `outcome.json`.
+are not UTF-8 text, binary, or empty are listed as skipped in `plan/skipped-files.json`.
 
 ## Quick Review
 
@@ -35,12 +35,31 @@ Re-running a repository review resumes open work. Use `--fresh` to start a new r
 
 ## Output and Exit Codes
 
-Review commands print a JSON result and return a process style exit code. `0` means the requested
-action completed. Exit code `1` means the review did not complete. Every finding the finder
-reports is kept, and the review does not run a second model to delete findings.
+Each review runs the stages `config`, `target`, `session`, `source`, `facts`, `plan`, `grounding`,
+`review`, `link`, and `result`. Every stage, every review unit and issue link judgment, and the
+attempt itself is one `cyberjury.record/v1` record with the fields `schema`, `id`, `status`,
+`started_at`, `duration_seconds`, `metrics`, `attributes`, `artifacts`, and `error`. The status is
+`ok`, `incomplete`, `failed`, `skipped`, `interrupted`, or `running`. A `failed` or `incomplete`
+record has an `error` with a `code` (`config`, `input`, `model`, or `internal`) and a `message`. A
+`skipped` or `interrupted` record names why in its `reason` attribute.
 
-Diff and repository reviews write `findings.json` and `outcome.json` in the review
-attempt workspace.
+Records are written under the review directory: the stages of an attempt in
+`attempts/<attempt>/stages/<stage>.json`, the attempt in `attempts/<attempt>/record.json`, and the
+review units and issue links in `review/items/` and `link/items/`. `artifacts` lists the files that
+hold a record's output, relative to the review directory. The findings of an attempt are in
+`attempts/<attempt>/findings.json`. Stderr prints one line per record as it is written. When the
+review ends, stdout prints the stage records and then the attempt record, each exactly as stored. A
+review that fails before its review directory exists prints the same records without storing them.
+
+| Exit code | Meaning |
+| :--- | :--- |
+| `0` | The review finished `ok`. |
+| `1` | The review is `incomplete`, or it failed with a `model` or `internal` error. |
+| `2` | Invalid arguments, or the review failed with a `config` or `input` error. |
+| `130` | The review was interrupted. |
+
+Every finding the finder reports is kept, and the review does not run a second model to delete
+findings.
 
 `findings.json` also groups findings into `issues`: findings that one code change fixes. Grouping
 never removes a finding, and each finding names its `issue_id`. Findings of one category at the same

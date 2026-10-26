@@ -14,6 +14,8 @@ _TARGET_MODULES = ("cyberjury.review.diff", "cyberjury.review.repository")
 
 _REVIEW_CALLERS = {"cli.py"}
 
+_REVIEW_COMPOSITION_ROOT = "command.py"
+
 
 def _imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -73,13 +75,13 @@ def test_native_tool_imports_stop_at_the_analyzer_boundary():
 
 
 def test_shared_review_modules_do_not_depend_on_target_implementations():
-    """A shared primitive cannot acquire a Diff Review or Repository Review dependency."""
+    """Only the review command composes target implementations, and no shared primitive depends on one."""
     violations = {
         str(path.relative_to(_REVIEW_ROOT)): sorted(
             module for module in _imports(path) if module.startswith(_TARGET_MODULES)
         )
         for path in _REVIEW_ROOT.rglob("*.py")
-        if path.relative_to(_REVIEW_ROOT).parts[0] not in {"diff", "repository"}
+        if path.relative_to(_REVIEW_ROOT).parts[0] not in {"diff", "repository", _REVIEW_COMPOSITION_ROOT}
     }
 
     assert not {path: modules for path, modules in violations.items() if modules}

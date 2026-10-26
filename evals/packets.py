@@ -9,7 +9,7 @@ import string
 from collections.abc import Sequence
 from pathlib import Path
 
-from evals.adjudication import LEDGER_SCHEMA, adjudicate
+from evals.adjudication import EVAL_LEDGER_SCHEMA, adjudicate
 from evals.attempts import Attempt, collect_attempts, find_attempts, load_attempt, read_json, unique_attempts
 from evals.benchmarks.cases import BenchmarkCase, checks_sha256, expected_checks
 from evals.benchmarks.targets import source_root, target_repository
@@ -273,7 +273,7 @@ def _ledger(attempt: Attempt, commit: str, attempt_labels: list[str], labels: di
             }
         )
     return {
-        "schema": LEDGER_SCHEMA,
+        "schema": EVAL_LEDGER_SCHEMA,
         "case": attempt.case,
         "attempt": attempt.number,
         "source_commit": commit,

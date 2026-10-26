@@ -6,15 +6,23 @@ import json
 
 import pytest
 
-from cyberjury.review.engine import ReviewOutcome
+from cyberjury.record import Record
 from cyberjury.review.issues import issue_id
-from cyberjury.review.result import FindingRecord, FindingsArtifact, IssueRecord, OutcomeArtifact
+from cyberjury.review.result import FindingRecord, FindingsArtifact, IssueRecord
 from cyberjury.sources.snapshot import capture_source_snapshot
+from cyberjury.workspace import write_record
 from evals.attempts import recorded_attempt
 from evals.benchmarks.cases import find_case
 from tests.support import git
 
 A = "candidate-" + "a" * 20
+_ATTEMPT = "attempt-20260101-000000-11111111"
+
+
+def _ok(record_id, **attributes):
+    return Record(
+        id=record_id, status="ok", started_at="2026-01-01T00:00:00Z", duration_seconds=1.0, attributes=attributes
+    )
 
 
 @pytest.fixture
@@ -25,12 +33,15 @@ def case(benchmark_project):
 
 def _review_attempt(directory, reviewed_root, *, target=None):
     snapshot = capture_source_snapshot(reviewed_root)
-    attempt = directory / "session" / "attempts" / ("attempt-" + "1" * 32)
-    attempt.mkdir(parents=True)
+    attempt = directory / "session" / "attempts" / _ATTEMPT
+    (attempt / "stages").mkdir(parents=True)
     session = attempt.parent.parent
     target = target or {"kind": "repository", "repository_root": str(reviewed_root.resolve())}
-    (session / "target.json").write_text(json.dumps(target), encoding="utf-8")
-    (session / "snapshot.json").write_text(json.dumps(snapshot.to_dict()), encoding="utf-8")
+    for name, value in (("target/target.json", target), ("source/snapshot.json", snapshot.to_dict())):
+        (session / name).parent.mkdir(exist_ok=True)
+        (session / name).write_text(json.dumps(value), encoding="utf-8")
+    write_record(attempt / "stages" / "source.json", _ok("source", snapshot=snapshot.snapshot_id))
+    write_record(attempt / "record.json", _ok(_ATTEMPT))
     record = FindingRecord(
         id=A,
         title="Create saves without an owner check",
@@ -52,14 +63,7 @@ def _review_attempt(directory, reviewed_root, *, target=None):
         linked_by=(),
     )
     findings = FindingsArtifact.create((record,), (issue,))
-    outcome = OutcomeArtifact.create(
-        target=target["kind"],
-        source_revision=snapshot.snapshot_id,
-        findings=findings,
-        outcome=ReviewOutcome(findings=()),
-    )
     (attempt / "findings.json").write_text(json.dumps(findings.to_dict()), encoding="utf-8")
-    (attempt / "outcome.json").write_text(json.dumps(outcome.to_dict()), encoding="utf-8")
     return attempt
 
 
@@ -111,9 +115,11 @@ def test_recorded_repository_attempt_rejects_a_review_of_another_commit(tmp_path
 
 
 def test_recorded_repository_attempt_requires_the_review_session_snapshot(tmp_path, benchmark_project, repository_case):
-    """A session snapshot.json with an all-zero snapshot_id raises "does not identify the reviewed source"."""
+    """A session source/snapshot.json with an all-zero snapshot_id raises "does not identify the reviewed source"."""
     attempt = _review_attempt(tmp_path, benchmark_project.repo)
-    (attempt.parent.parent / "snapshot.json").write_text(json.dumps({"snapshot_id": "0" * 64}), encoding="utf-8")
+    (attempt.parent.parent / "source" / "snapshot.json").write_text(
+        json.dumps({"snapshot_id": "0" * 64}), encoding="utf-8"
+    )
 
     with pytest.raises(ValueError, match="does not identify the reviewed source"):
         recorded_attempt(repository_case, attempt, 1)

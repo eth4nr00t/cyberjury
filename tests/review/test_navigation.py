@@ -4,13 +4,14 @@ import re
 
 import pytest
 
-from cyberjury.review.context import SourceSpan
+from cyberjury.review.context import SourceEvidence, SourceSpan
 from cyberjury.review.navigation import SourceNavigationError, SourceNavigator, navigation_instructions
 from cyberjury.review.relationships import (
     CallsiteEvidence,
     DefinitionEvidence,
     RelationshipEvidenceBundle,
     SourceReference,
+    StructuralRelationshipEvidence,
 )
 from tests.review.support import navigator_from_callgraph
 from tests.review.syntax.support import syntax_facts
@@ -740,8 +741,6 @@ def test_inheritance_without_a_local_target_stays_an_unbound_source_clue(tmp_pat
 
 def test_structural_candidate_navigation_pages_expanded_same_name_candidates(tmp_path):
     """Inheritance from 21 same-named Base classes pages as 20 candidates on page 0 and 1 on page 1."""
-    from cyberjury.review.relationships import StructuralRelationshipEvidence
-
     child_source = "class Child(Base):\n    pass\n"
     (tmp_path / "child.py").write_text(child_source, encoding="utf-8")
     child_reference = SourceReference.create(
@@ -862,8 +861,6 @@ def test_navigation_lists_source_inside_the_seed_as_delivered_with_its_own_recei
 
 def test_navigation_never_delivers_initial_or_earlier_source_again(tmp_path):
     """Text found in initial evidence src-000000000001 is marked delivered and not re-read."""
-    from cyberjury.review.context import SourceEvidence
-
     session = _target_navigator(tmp_path).session()
     initial = SourceEvidence(
         id="src-000000000001",

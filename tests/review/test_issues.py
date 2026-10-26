@@ -7,7 +7,6 @@ import pytest
 
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review import issues as issues_module
-from cyberjury.review.checkpoint import CheckpointStore
 from cyberjury.review.context import SourceSpan
 from cyberjury.review.finding import Finding
 from cyberjury.review.issues import (
@@ -18,6 +17,7 @@ from cyberjury.review.issues import (
     link_issues,
     link_prompt,
 )
+from cyberjury.review.items import ItemStore
 from tests.review.support import StubIssueJudge
 
 
@@ -165,9 +165,9 @@ def test_a_judgment_links_two_issues_only_when_one_change_fixes_both(tmp_path):
 
 
 def test_the_model_judge_asks_one_closed_schema_question_from_structured_fields_and_cited_source(tmp_path):
-    """One mock call carries both locations and numbered cited lines with a strict same_fix/reason schema."""
+    """One mock call carries both locations and numbered cited lines with a strict same_fix/rationale schema."""
     view, model = _linked_pair(tmp_path)
-    provider = MockProvider(default=json.dumps({"same_fix": True, "reason": "the save owner check fixes both"}))
+    provider = MockProvider(default=json.dumps({"same_fix": True, "rationale": "the save owner check fixes both"}))
     judge = ModelIssueJudge(provider=provider, model="mock", seat_id="seat-test")
 
     links = link_issues([view, model], judge, str(tmp_path))
@@ -181,7 +181,7 @@ def test_the_model_judge_asks_one_closed_schema_question_from_structured_fields_
     assert "- location: views.py:5" in prompt
     assert "12 | line_12 = 12" in prompt
     assert " 5 | line_5 = 5" in prompt
-    assert call["response_schema"].schema["required"] == ["same_fix", "reason"]
+    assert call["response_schema"].schema["required"] == ["same_fix", "rationale"]
     assert call["response_schema"].schema["additionalProperties"] is False
     assert "one code change fixes both findings" in call["system"]
     assert links.links == ((first.candidate_id, second.candidate_id),)
@@ -198,31 +198,31 @@ def test_the_same_fix_contract_counts_containment_but_not_shared_context():
 
 
 def test_decisions_under_an_earlier_judge_contract_are_asked_again(tmp_path, monkeypatch):
-    """A checkpoint written under a patched system prompt is re-asked once, then reused on the third run."""
+    """A decision recorded under a patched system prompt is re-asked once, then reused on the third run."""
     findings = list(_linked_pair(tmp_path))
-    store = CheckpointStore(tmp_path / "work" / "issue-links", "cyberjury.issue-link-decision/v1")
-    provider = MockProvider(default=json.dumps({"same_fix": False, "reason": "each needs its own change"}))
+    store = ItemStore(tmp_path / "review", "link")
+    provider = MockProvider(default=json.dumps({"same_fix": False, "rationale": "each needs its own change"}))
     judge = ModelIssueJudge(provider=provider, model="mock", seat_id="seat-test")
 
     with monkeypatch.context() as patch:
         patch.setattr(issues_module, "_SYSTEM", "an earlier same-fix contract")
-        link_issues(findings, judge, str(tmp_path), checkpoint=store)
-    link_issues(findings, judge, str(tmp_path), checkpoint=store)
-    link_issues(findings, judge, str(tmp_path), checkpoint=store)
+        link_issues(findings, judge, str(tmp_path), store=store)
+    link_issues(findings, judge, str(tmp_path), store=store)
+    link_issues(findings, judge, str(tmp_path), store=store)
 
     assert len(provider.calls) == 2
     assert provider.calls[0]["system"] == "an earlier same-fix contract"
     assert provider.calls[1]["system"] == issues_module._SYSTEM
 
 
-def test_link_decisions_are_reused_from_their_checkpoint(tmp_path):
-    """A second run with a never-linking judge makes no calls and returns the checkpointed links."""
+def test_link_decisions_are_reused_from_their_item_records(tmp_path):
+    """A second run with a never-linking judge makes no calls and returns the recorded links."""
     findings = list(_linked_pair(tmp_path))
-    store = CheckpointStore(tmp_path / "work" / "issue-links", "cyberjury.issue-link-decision/v1")
+    store = ItemStore(tmp_path / "review", "link")
     first, resumed = StubIssueJudge(), StubIssueJudge(lambda pair: False)
 
-    linked = link_issues(findings, first, str(tmp_path), checkpoint=store)
-    reused = link_issues(findings, resumed, str(tmp_path), checkpoint=store)
+    linked = link_issues(findings, first, str(tmp_path), store=store)
+    reused = link_issues(findings, resumed, str(tmp_path), store=store)
 
     assert (len(first.pairs), len(resumed.pairs)) == (1, 0)
     assert reused.links == linked.links != ()
@@ -231,11 +231,11 @@ def test_link_decisions_are_reused_from_their_checkpoint(tmp_path):
 def test_a_failed_judgment_links_nothing_and_is_retried_on_resume(tmp_path):
     """A rate-limited judge yields no links and an error, and the resumed run asks again and links the pair."""
     findings = list(_linked_pair(tmp_path))
-    store = CheckpointStore(tmp_path / "work" / "issue-links", "cyberjury.issue-link-decision/v1")
+    store = ItemStore(tmp_path / "review", "link")
 
-    failed = link_issues(findings, StubIssueJudge(error=RuntimeError("rate limited")), str(tmp_path), checkpoint=store)
+    failed = link_issues(findings, StubIssueJudge(error=RuntimeError("rate limited")), str(tmp_path), store=store)
     retried = StubIssueJudge()
-    linked = link_issues(findings, retried, str(tmp_path), checkpoint=store)
+    linked = link_issues(findings, retried, str(tmp_path), store=store)
 
     assert failed.links == ()
     assert "rate limited" in failed.errors[0]
@@ -245,10 +245,10 @@ def test_a_failed_judgment_links_nothing_and_is_retried_on_resume(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "value", [{"same_fix": "yes", "reason": "r"}, {"same_fix": True}, {"same_fix": True, "reason": ""}]
+    "value", [{"same_fix": "yes", "rationale": "r"}, {"same_fix": True}, {"same_fix": True, "rationale": ""}]
 )
-def test_a_checkpointed_decision_must_keep_its_closed_shape(value):
-    """A non-boolean same_fix, a missing reason, or an empty reason makes LinkDecision.from_dict raise."""
+def test_a_recorded_decision_must_keep_its_closed_shape(value):
+    """A non-boolean same_fix, a missing rationale, or an empty rationale makes LinkDecision.from_dict raise."""
     with pytest.raises(ValueError, match="issue link decision"):
         LinkDecision.from_dict(value)
 

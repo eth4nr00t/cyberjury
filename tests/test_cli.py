@@ -1,30 +1,25 @@
-"""CLI tests cover command parsing, provider configuration, and dispatch."""
+"""CLI tests cover argument handling, the stage records each review writes and prints, and exit codes."""
 
 from __future__ import annotations
 
 import contextlib
 import json
 import os
+import re
 import signal
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-import cyberjury.cli as climod
-from cyberjury.cli import main
+import cyberjury.review.command as commandmod
+from cyberjury.cli import _default_workspace, main
 from cyberjury.envfile import load_env_file
 from cyberjury.providers import configuration as provider_configuration_module
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.context import GroundingCoverage
-from cyberjury.review.engine import ReviewOutcome
-from cyberjury.review.facts import Facts, FactsReceipt
-from cyberjury.review.failures import ReviewUnitFailure
-from cyberjury.review.grounding import GroundingReceipt
-from cyberjury.review.request import ReviewIntent, TargetInput
-from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
-from cyberjury.review.run import ReviewRun
-from cyberjury.review.unit_plans import UnitPlanReceipt
+from cyberjury.record import STAGES, Record
+from cyberjury.review.result import FindingsArtifact
+from cyberjury.review.target import materialize_diff_target, resolve_diff_target
 from tests.support import git
 
 
@@ -32,7 +27,99 @@ from tests.support import git
 def _private_state_home(monkeypatch, tmp_path_factory):
     home = tmp_path_factory.mktemp("home")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-    monkeypatch.setattr(climod, "load_env_file", lambda: [])
+    monkeypatch.setattr(commandmod, "load_env_file", lambda: [])
+
+
+def _records(output: str) -> list[dict]:
+    decoder, position, records = json.JSONDecoder(), 0, []
+    while position < len(output):
+        record, position = decoder.raw_decode(output, position)
+        records.append(record)
+        while position < len(output) and output[position].isspace():
+            position += 1
+    return records
+
+
+def _stage(records: list[dict], name: str) -> dict:
+    return next(record for record in records if record["id"] == name)
+
+
+def _review_dir(state: Path) -> Path:
+    [review] = (state / "reviews").iterdir()
+    return review
+
+
+def _attempt_dir(state: Path) -> Path:
+    [attempt] = (_review_dir(state) / "attempts").iterdir()
+    return attempt
+
+
+def _attempt_record(attempt: Path) -> dict:
+    return json.loads((attempt / "record.json").read_text())
+
+
+def _stub_review(*, incomplete: str = "", seen: dict | None = None):
+    def review(prepared, *, recorder, **kwargs):
+        if seen is not None:
+            seen.update(kwargs, units=list(prepared.units), root=prepared.shared.root)
+        with recorder.stage("review") as measure:
+            measure.metrics.update(items=len(prepared.units))
+            if incomplete:
+                measure.incomplete(incomplete)
+        recorder.skip("link", "stub review")
+        with recorder.stage("result") as measure:
+            measure.bind(FindingsArtifact.create((), ()))
+
+    return review
+
+
+def _seed_source(repository: Path) -> None:
+    repository.mkdir(parents=True, exist_ok=True)
+    source = repository / "app.py"
+    if not source.exists():
+        source.write_text("value = 1\n")
+
+
+def _git_change(repo: Path, base: dict[str, str], head: dict[str, str]) -> SimpleNamespace:
+    repo.mkdir()
+    git(repo, "init", "--quiet")
+    for files, message in ((base, "base"), (head, "head")):
+        for relative, text in files.items():
+            path = repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        git(repo, "add", ".")
+        git(repo, "commit", "--quiet", "--allow-empty", "-m", message)
+        if message == "base":
+            base_revision = git(repo, "rev-parse", "HEAD")
+    return SimpleNamespace(
+        args=("--repository", str(repo), "--git-range", f"{base_revision}..HEAD"),
+        repository=repo,
+        base=base_revision,
+    )
+
+
+@pytest.fixture
+def diff_target(tmp_path):
+    """Commit one added file over an empty base and return its two-dot range arguments."""
+    return _git_change(tmp_path / "repo", {}, {"a.py": "x = 1\n"})
+
+
+def _flask_repository(root):
+    root.mkdir()
+    (root / "app.py").write_text(
+        "from flask import Flask, request\napp = Flask(__name__)\n"
+        '@app.route("/x/<i>")\ndef h(i):\n    return request.args.get("y", "")\n'
+    )
+    (root / "requirements.txt").write_text("Flask==3.0\n")
+    return root
+
+
+def _graphable(root):
+    root.mkdir()
+    (root / "app.py").write_text("def handle(req):\n    return lookup(req)\n")
+    (root / "store.py").write_text("def lookup(key):\n    return key\n")
+    return root
 
 
 def test_install_slash_command_writes_the_file(tmp_path):
@@ -72,103 +159,163 @@ def test_install_slash_command_writes_both_agent_dirs(monkeypatch, tmp_path):
 
 def test_default_workspace_is_user_private(monkeypatch, tmp_path):
     """The default state workspace resolves to ~/.cyberjury under the user's home directory."""
-    from cyberjury.cli import _default_workspace
-
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     assert _default_workspace() == str(tmp_path / "home" / ".cyberjury")
 
 
-def _fake_run(prepared, kwargs, *, failures=(), grounding=None, errors=0, failure_reason=""):
-    outcome = ReviewOutcome(
-        findings=(),
-        failures=tuple(failures),
-        errors=errors,
-        failure_reason=failure_reason or (grounding.failure_reason if grounding is not None else ""),
-        grounding=grounding if grounding is not None else GroundingCoverage(),
-    )
-    findings = FindingsArtifact.create((), ())
-    return ReviewRun(
-        outcome=outcome,
-        findings=findings,
-        outcome_artifact=OutcomeArtifact.create(
-            target=kwargs["target"].kind,
-            source_revision=prepared.shared.snapshot.snapshot_id,
-            findings=findings,
-            outcome=outcome,
-        ),
-    )
+def test_no_command_prints_help_on_stderr_and_exits_with_the_usage_code(capsys):
+    """Running without a command prints usage to stderr, nothing to stdout, and exits 2."""
+    assert main([]) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "usage: cyberjury" in captured.err
 
 
-def _repository_project(state_root: Path, repository: Path) -> Path:
-    intent = ReviewIntent(target=TargetInput(kind="repository", repository=str(repository.resolve())))
-    locator = json.loads((state_root / "locators" / "reviews" / f"{intent.intent_sha256}.json").read_text())
-    return state_root / "reviews" / locator["session_id"] / "work" / repository.name
+def test_abbreviated_live_flag_is_rejected(tmp_path):
+    """Argparse prefix matching is disabled, so --conc 2 exits with usage code 2."""
+    with pytest.raises(SystemExit) as exc:
+        main(["review", "repository", str(tmp_path), "--conc", "2"])
+    assert exc.value.code == 2
 
 
-def _complete_stage_one_only(run) -> int:
-    facts = FactsReceipt.create(backend_id="test", facts=Facts())
-    run.attempt.bind_facts(facts)
-    unit_plan = UnitPlanReceipt.create(facts=facts, units=())
-    run.attempt.bind_unit_plan(unit_plan)
-    grounding = GroundingReceipt.create(unit_plan=unit_plan, contexts=())
-    run.attempt.bind_grounding(grounding)
-    if run.attempt.request.providers is not None:
-        findings = FindingsArtifact.create((), ())
-        outcome = OutcomeArtifact.create(
-            target=run.attempt.intent.target.kind,
-            source_revision=run.snapshot.snapshot_id,
-            findings=findings,
-            outcome=ReviewOutcome(findings=()),
-        )
-        run.attempt.bind_result(findings, outcome)
-    return 0
+@pytest.mark.parametrize("flag", [("--concurrency", "0"), ("--concurrency", "two")])
+def test_diff_rejects_invalid_cli_values(flag, capsys):
+    """A --concurrency of 0 or 'two' exits with usage code 2 and names the flag on stderr."""
+    with pytest.raises(SystemExit) as exc:
+        main(["review", "diff", "--repository", "repo", "--git-range", "base..HEAD", "--dry-run", *flag])
+    assert exc.value.code == 2
+    assert flag[0] in capsys.readouterr().err
 
 
-def _seed_source(repository: Path) -> None:
-    repository.mkdir(parents=True, exist_ok=True)
-    source = repository / "app.py"
-    if not source.exists():
-        source.write_text("value = 1\n")
+def test_a_dry_run_prints_every_stage_record_file_and_then_the_attempt_record(diff_target, tmp_path, capsys):
+    """Stdout is the stage record files in stage order and then record.json, byte for byte."""
+    state = tmp_path / "state"
+
+    assert main(["review", "diff", *diff_target.args, "--workspace", str(state), "--dry-run"]) == 0
+
+    attempt = _attempt_dir(state)
+    output = capsys.readouterr().out
+    records = _records(output)
+    assert output == commandmod.attempt_output(attempt)
+    assert [record["id"] for record in records] == [*STAGES, attempt.name]
+    assert [record["status"] for record in records] == ["ok"] * 8 + ["skipped", "ok", "ok"]
 
 
-def test_diff_without_key_errors_loud(monkeypatch, diff_target):
-    """With ANTHROPIC_API_KEY and OPENAI_API_KEY unset, a diff review exits with 'no reachable API key'."""
+def test_stderr_prints_the_line_of_every_record_it_writes(diff_target, tmp_path, capsys):
+    """Each stage and the attempt record print their one-line view, and each review unit prints its item line."""
+    state = tmp_path / "state"
+
+    assert main(["review", "diff", *diff_target.args, "--workspace", str(state), "--dry-run"]) == 0
+
+    captured = capsys.readouterr()
+    lines = captured.err.splitlines()
+    review = _review_dir(state)
+    paths = sorted(review.glob("review/items/*.json"))
+    items = [Record.from_dict(json.loads(path.read_text())) for path in paths]
+    expected = [Record.from_dict(record).line() for record in _records(captured.out)]
+    assert [line for line in lines if not line.startswith("review/")] == expected
+    assert sorted(line for line in lines if line.startswith("review/")) == sorted(item.line() for item in items)
+
+
+def test_every_record_kind_carries_its_fixed_metrics_and_attributes(diff_target, tmp_path, capsys):
+    """Stages, review items, and the attempt each carry one fixed metric set in vocabulary order and attribute set."""
+    state = tmp_path / "state"
+    usage = ["calls", "input_tokens", "cached_tokens", "output_tokens"]
+
+    assert main(["review", "diff", *diff_target.args, "--workspace", str(state), "--dry-run"]) == 0
+
+    records = _records(capsys.readouterr().out)
+    item = next((_review_dir(state) / "review" / "items").glob("*.json"))
+    assert {record["id"]: list(record["metrics"]) for record in records[:-1]} == {
+        "config": [],
+        "target": [],
+        "session": [],
+        "source": ["files", "bytes"],
+        "facts": ["limitations"],
+        "plan": ["skipped_files", "items"],
+        "grounding": ["items"],
+        "review": ["items", "restored", "failed", "findings", "unlocated", *usage],
+        "link": [],
+        "result": ["findings", "issues", "critical", "high", "medium", "low"],
+    }
+    assert {record["id"]: list(record["attributes"]) for record in records[:-1]} == {
+        "config": ["provider", "model", "version"],
+        "target": ["kind", "repository", "range"],
+        "session": ["path"],
+        "source": ["snapshot"],
+        "facts": [],
+        "plan": [],
+        "grounding": [],
+        "review": [],
+        "link": ["reason"],
+        "result": [],
+    }
+    item_record = json.loads(item.read_text())
+    assert list(item_record["metrics"]) == ["findings", "unlocated", *usage]
+    assert list(item_record["attributes"]) == ["paths"]
+    assert list(records[-1]["metrics"]) == ["failed", *usage]
+    assert records[-1]["attributes"] == {"source_changed": False}
+
+
+def test_the_attempt_record_sums_failures_and_the_usage_of_every_call(diff_target, tmp_path, capsys):
+    """The attempt metrics carry the summed failed count and the model usage of every recorded call."""
+    state = tmp_path / "state"
+
+    assert main(["review", "diff", *diff_target.args, "--workspace", str(state), "--dry-run"]) == 0
+
+    attempt = _records(capsys.readouterr().out)[-1]
+    calls = json.loads((_attempt_dir(state) / "model-calls.json").read_text())["calls"]
+    assert attempt["metrics"]["failed"] == 0
+    assert attempt["metrics"]["calls"] == len(calls) > 0
+    assert attempt["artifacts"] == [f"attempts/{attempt['id']}/model-calls.json"]
+
+
+def test_a_missing_api_key_fails_the_config_stage_before_any_workspace_exists(
+    monkeypatch, diff_target, tmp_path, capsys
+):
+    """Without provider keys the config record fails with a config error, exit 2, and no state directory."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    with pytest.raises(SystemExit, match="no reachable API key"):
-        main(["review", "diff", *diff_target.args])
+    state = tmp_path / "state"
+
+    assert main(["review", "diff", *diff_target.args, "--workspace", str(state)]) == 2
+
+    records = _records(capsys.readouterr().out)
+    assert [record["status"] for record in records] == ["failed", "failed"]
+    assert records[0]["id"] == "config"
+    assert records[-1]["error"] == records[0]["error"]
+    assert records[0]["error"]["code"] == "config"
+    assert "no reachable API key" in records[0]["error"]["message"]
+    assert not state.exists()
 
 
-def test_review_diff_dry_run_uses_repository_grounding(capsys, diff_target):
-    """A --dry-run diff over one added a.py exits 0 and prints an empty findings list as JSON."""
-    rc = main(["review", "diff", *diff_target.args, "--dry-run"])
-    assert rc == 0
-    assert json.loads(capsys.readouterr().out)["findings"]["findings"] == []
+def test_an_invalid_git_range_fails_the_target_stage_before_any_workspace_exists(diff_target, tmp_path, capsys):
+    """A bare HEAD range fails the target record with an input error, exit 2, no traceback, and no state."""
+    state = tmp_path / "state"
+    args = ["review", "diff", "--repository", str(diff_target.repository), "--git-range", "HEAD"]
+
+    assert main([*args, "--workspace", str(state), "--dry-run"]) == 2
+
+    captured = capsys.readouterr()
+    target = _stage(_records(captured.out), "target")
+    assert target["error"] == {"code": "input", "message": "git range must use A..B or A...B"}
+    assert "Traceback" not in captured.err
+    assert not state.exists()
 
 
-def _git_change(repo: Path, base: dict[str, str], head: dict[str, str]) -> SimpleNamespace:
-    repo.mkdir()
-    git(repo, "init", "--quiet")
-    for files, message in ((base, "base"), (head, "head")):
-        for relative, text in files.items():
-            path = repo / relative
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text, encoding="utf-8")
-        git(repo, "add", ".")
-        git(repo, "commit", "--quiet", "--allow-empty", "-m", message)
-        if message == "base":
-            base_revision = git(repo, "rev-parse", "HEAD")
-    return SimpleNamespace(
-        args=("--repository", str(repo), "--git-range", f"{base_revision}..HEAD"),
-        repository=repo,
-        base=base_revision,
-    )
+def test_state_root_inside_the_repository_is_rejected_before_workspace_creation(tmp_path, capsys):
+    """A --workspace inside the repository fails the target stage with an input error and is never created."""
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    state = repository / ".state"
 
+    assert main(["review", "repository", str(repository), "--dry-run", "--workspace", str(state)]) == 2
 
-@pytest.fixture
-def diff_target(tmp_path):
-    """Commit one added file over an empty base and return its two-dot range arguments."""
-    return _git_change(tmp_path / "repo", {}, {"a.py": "x = 1\n"})
+    target = _stage(_records(capsys.readouterr().out), "target")
+    assert target["error"]["code"] == "input"
+    assert "state root cannot be inside" in target["error"]["message"]
+    assert not state.exists()
 
 
 def test_diff_source_root_uses_resolved_head_revision(tmp_path):
@@ -176,8 +323,8 @@ def test_diff_source_root_uses_resolved_head_revision(tmp_path):
     change = _git_change(tmp_path / "repo", {"app.py": "old\n"}, {"app.py": "new\n"})
     ref = git(change.repository, "rev-parse", "HEAD")
 
-    target = climod.resolve_diff_target(change.repository, f"{change.base}..{ref}")
-    with climod.materialize_diff_target(target) as root:
+    target = resolve_diff_target(change.repository, f"{change.base}..{ref}")
+    with materialize_diff_target(target) as root:
         assert (root / "app.py").read_text() == "new\n"
         worktree = root
 
@@ -186,7 +333,7 @@ def test_diff_source_root_uses_resolved_head_revision(tmp_path):
 
 def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, diff_target):
     """A dry-run diff review checks out its revision exactly once and deletes that checkout afterwards."""
-    original = climod.materialize_diff_target
+    original = commandmod.materialize_diff_target
     roots = []
 
     @contextlib.contextmanager
@@ -195,51 +342,49 @@ def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, d
             roots.append(root)
             yield root
 
-    monkeypatch.setattr(climod, "materialize_diff_target", counted)
+    monkeypatch.setattr(commandmod, "materialize_diff_target", counted)
 
     assert main(["review", "diff", *diff_target.args, "--dry-run"]) == 0
     assert len(roots) == 1
     assert not roots[0].exists()
 
 
-def test_review_diff_dry_run_uses_real_git_range_and_grounding(tmp_path, capsys):
-    """A three-dot range adding a SQL concat dry-runs to empty findings and issues with timing on stderr."""
+def test_review_diff_dry_run_uses_real_git_range_and_grounding(tmp_path):
+    """A three-dot range adding a SQL concat dry-runs to empty findings and issues in findings.json."""
     change = _git_change(
         tmp_path / "repo",
         {"app.py": "def run(name):\n    return name\n"},
         {"app.py": "def run(name):\n    return cursor.execute('SELECT ' + name)\n"},
     )
+    state = tmp_path / "state"
+    args = ["--repository", str(change.repository), "--git-range", f"{change.base}...HEAD"]
 
-    rc = main(
-        ["review", "diff", "--repository", str(change.repository), "--git-range", f"{change.base}...HEAD", "--dry-run"]
-    )
+    assert main(["review", "diff", *args, "--workspace", str(state), "--dry-run"]) == 0
 
-    captured = capsys.readouterr()
-    assert rc == 0
-    assert json.loads(captured.out)["findings"]["findings"] == []
-    assert json.loads(captured.out)["findings"]["issues"] == []
-    assert "prepare done in" in captured.err
-    assert "0 findings in 0 issues: " in captured.err
+    findings = json.loads((_attempt_dir(state) / "findings.json").read_text())
+    assert (findings["findings"], findings["issues"]) == ([], [])
 
 
 def test_docs_only_diff_skips_model_calls(tmp_path, capsys):
-    """A range touching only README.md reports it as a noise skip in stderr and outcome skipped_files."""
+    """A range touching only README.md lists it as a noise skip in plan/skipped-files.json and the plan record."""
     change = _git_change(
         tmp_path / "repo",
         {"app.py": "def run():\n    return True\n", "README.md": "Before\n"},
         {"README.md": "After\n"},
     )
+    state = tmp_path / "state"
 
-    assert main(["review", "diff", *change.args, "--dry-run"]) == 0
+    assert main(["review", "diff", *change.args, "--workspace", str(state), "--dry-run"]) == 0
 
-    captured = capsys.readouterr()
-    assert json.loads(captured.out)["findings"]["findings"] == []
-    assert "skipped 1 file excluded by the noise rules: README.md" in captured.err
-    assert json.loads(captured.out)["outcome"]["skipped_files"] == [{"path": "README.md", "reason": "noise"}]
+    plan = _stage(_records(capsys.readouterr().out), "plan")
+    skipped = json.loads((_review_dir(state) / "plan" / "skipped-files.json").read_text())
+    assert skipped["files"] == [{"path": "README.md", "reason": "noise"}]
+    assert plan["metrics"] == {"items": 0, "skipped_files": 1}
+    assert json.loads((_attempt_dir(state) / "model-calls.json").read_text())["calls"] == []
 
 
-def test_hunkless_diff_sections_are_listed_as_skipped_in_the_outcome(tmp_path, capsys):
-    """Mode-only, rename-only, and empty new files are skipped with reasons while the outcome stays complete."""
+def test_hunkless_diff_sections_are_listed_as_skipped_files(tmp_path):
+    """Mode-only, rename-only, and empty new files are skipped with reasons while the attempt stays ok."""
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "--quiet")
@@ -254,36 +399,24 @@ def test_hunkless_diff_sections_are_listed_as_skipped_in_the_outcome(tmp_path, c
     (repo / "empty.py").write_text("")
     git(repo, "add", ".")
     git(repo, "commit", "--quiet", "-m", "hunkless")
+    state = tmp_path / "state"
+    args = ["--repository", str(repo), "--git-range", f"{base}..HEAD"]
 
-    assert main(["review", "diff", "--repository", str(repo), "--git-range", f"{base}..HEAD", "--dry-run"]) == 0
+    assert main(["review", "diff", *args, "--workspace", str(state), "--dry-run"]) == 0
 
-    captured = capsys.readouterr()
-    outcome = json.loads(captured.out)["outcome"]
-    assert outcome["complete"] is True
-    assert sorted(outcome["skipped_files"], key=lambda item: item["path"]) == [
+    skipped = json.loads((_review_dir(state) / "plan" / "skipped-files.json").read_text())["files"]
+    assert sorted(skipped, key=lambda item: item["path"]) == [
         {"path": "empty.py", "reason": "empty_new_file"},
         {"path": "renamed.py", "reason": "rename_only"},
         {"path": "run.sh", "reason": "mode_only"},
     ]
-    assert "skipped 3 files without reviewable content:" in captured.err
-    assert "run.sh (mode change only)" in captured.err
-    assert "noise rules" not in captured.err
-
-
-def _capture_diff_review(monkeypatch):
-    seen = {}
-
-    def fake_review(prepared, **kwargs):
-        seen.update(kwargs, units=list(prepared.units), root=prepared.shared.root)
-        return _fake_run(prepared, kwargs)
-
-    monkeypatch.setattr(climod, "run_review", fake_review)
-    return seen
+    assert _attempt_record(_attempt_dir(state))["status"] == "ok"
 
 
 def test_review_diff_grounds_units_and_judges_issue_links_on_the_finder(monkeypatch, diff_target):
     """The single diff unit carries +x = 1 and a.py source, with a seat-labelled judge and concurrency 8."""
-    seen = _capture_diff_review(monkeypatch)
+    seen = {}
+    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(default="{}"))
 
@@ -299,143 +432,107 @@ def test_review_diff_grounds_units_and_judges_issue_links_on_the_finder(monkeypa
 
 
 def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
-    """Of app.py, docs, and tests changes only app.py is planned, and grounding.json binds to units.json."""
+    """Of app.py, docs, and tests changes only app.py is planned, and grounding.json binds to plan.json."""
     change = _git_change(
         tmp_path / "repo",
         {},
         dict.fromkeys(("app.py", "docs/readme.md", "tests/test_app.py"), "changed\n"),
     )
-    seen = _capture_diff_review(monkeypatch)
+    seen = {}
+    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(default="{}"))
-
     state = tmp_path / "state"
+
     assert main(["review", "diff", *change.args, "--workspace", str(state)]) == 0
 
     [unit] = seen["units"]
     assert unit.paths == ("app.py",)
     assert "docs/readme.md" not in unit.diff
     assert "tests/test_app.py" not in unit.diff
-    review = next(state.glob("reviews/review-*"))
-    plan = json.loads((review / "units.json").read_text())
-    grounding = json.loads((review / "grounding.json").read_text())
+    review = _review_dir(state)
+    plan = json.loads((review / "plan" / "plan.json").read_text())
+    grounding = json.loads((review / "grounding" / "grounding.json").read_text())
     assert plan["expected_owned_paths"] == ["app.py"]
     assert grounding["unit_plan_receipt_sha256"] == plan["receipt_sha256"]
     assert [context["unit_id"] for context in grounding["contexts"]] == [unit["id"] for unit in plan["units"]]
 
 
-def test_review_diff_empty_git_range_is_clean(monkeypatch, capsys, diff_target):
-    """A HEAD..HEAD range with a mock provider exits 0 with no findings and a complete outcome."""
+def test_review_diff_empty_git_range_is_ok(monkeypatch, diff_target, tmp_path):
+    """A HEAD..HEAD range with a mock provider exits 0 with no findings and an ok attempt."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.setattr(
-        "cyberjury.providers.configuration.make_provider",
-        lambda *a, **k: MockProvider(default='{"findings": []}'),
+        provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(default='{"findings": []}')
     )
-    rc = main(
-        [
-            "review",
-            "diff",
-            "--repository",
-            str(diff_target.repository),
-            "--git-range",
-            "HEAD..HEAD",
-        ]
-    )
-    assert rc == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result["findings"]["findings"] == []
-    assert result["outcome"]["complete"] is True
+    state = tmp_path / "state"
+    args = ["--repository", str(diff_target.repository), "--git-range", "HEAD..HEAD"]
+
+    assert main(["review", "diff", *args, "--workspace", str(state)]) == 0
+
+    attempt = _attempt_dir(state)
+    assert _attempt_record(attempt)["status"] == "ok"
+    assert json.loads((attempt / "findings.json").read_text())["findings"] == []
 
 
-def test_incomplete_diff_review_exits_nonzero_and_surfaces_the_error(monkeypatch, capsys, diff_target, tmp_path):
-    """One engine error exits 1, prints 'the review is incomplete', and records the attempt as incomplete."""
-    monkeypatch.setattr(climod, "run_review", lambda prepared, **k: _fake_run(prepared, k, errors=1))
-    rc = main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"])
-    assert rc == 1
-    output = capsys.readouterr()
-    assert "the review is incomplete" in output.err
-    assert json.loads(output.out)["outcome"]["complete"] is False
-    attempt = next(next((tmp_path / "reviews").iterdir()).joinpath("attempts").iterdir())
-    assert json.loads((attempt / "attempt.json").read_text())["state"] == "incomplete"
+def test_an_incomplete_review_exits_1_and_records_the_reason(monkeypatch, diff_target, tmp_path, capsys):
+    """An incomplete review stage makes the attempt incomplete with that stage's reason and exits 1."""
+    monkeypatch.setattr(commandmod, "run_review", _stub_review(incomplete="review unit 1/1 failed for a.py: blocked"))
+    state = tmp_path / "state"
+
+    assert main(["review", "diff", *diff_target.args, "--workspace", str(state), "--dry-run"]) == 1
+
+    attempt = _records(capsys.readouterr().out)[-1]
+    assert attempt["status"] == "incomplete"
+    assert attempt["error"] == {"code": "model", "message": "review unit 1/1 failed for a.py: blocked"}
+    assert _attempt_record(_attempt_dir(state)) == attempt
 
 
-def test_incomplete_diff_review_asks_to_review_the_whole_diff_again(monkeypatch, capsys, diff_target, tmp_path):
-    """An incomplete diff review says a re-run reviews the whole diff again, not that it retries open work."""
-    monkeypatch.setattr(climod, "run_review", lambda prepared, **k: _fake_run(prepared, k, errors=1))
-
-    assert main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"]) == 1
-
-    err = capsys.readouterr().err
-    assert "Re-run to review the whole diff again" in err
-    assert "retry open work" not in err
-
-
-def test_diff_review_with_fact_limitations_completes_and_notes_them(monkeypatch, capsys, diff_target):
-    """A facts grounding limitation exits 0 and notes that facts:app.ts:3:8 was reviewed from raw source."""
-    grounding = GroundingCoverage(limitations=("facts:app.ts:3:8",))
+def test_repository_review_with_model_errors_marks_units_failed_and_exits_1(tmp_path, monkeypatch, capsys):
+    """A provider answering 'not json at all' fails the unit item, leaves the review stage incomplete, and exits 1."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.setattr(
-        climod,
-        "run_review",
-        lambda prepared, **k: _fake_run(prepared, k, grounding=grounding),
+        provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(default="not json at all")
     )
-    rc = main(["review", "diff", *diff_target.args, "--dry-run"])
+    repository = _flask_repository(tmp_path / "svc")
+    state = tmp_path / "state"
 
-    assert rc == 0
-    assert "NOTE: structured facts are unavailable or partial for facts:app.ts:3:8" in capsys.readouterr().err
+    assert main(["review", "repository", str(repository), "--workspace", str(state)]) == 1
 
-
-def test_a_long_fact_limitation_note_names_five_and_counts_the_rest(monkeypatch, capsys, diff_target):
-    """Seven facts limitations print the first five and 'and 2 more' in the NOTE."""
-    grounding = GroundingCoverage(limitations=tuple(f"facts:app{index}.ts" for index in range(7)))
-    monkeypatch.setattr(climod, "run_review", lambda prepared, **k: _fake_run(prepared, k, grounding=grounding))
-
-    assert main(["review", "diff", *diff_target.args, "--dry-run"]) == 0
-
-    err = capsys.readouterr().err
-    assert "facts:app4.ts, and 2 more, so those sources" in err
-    assert "facts:app5.ts" not in err
+    review = _stage(_records(capsys.readouterr().out), "review")
+    assert review["status"] == "incomplete"
+    items = list((_review_dir(state) / "review" / "items").glob("*.json"))
+    assert review["metrics"]["failed"] == review["metrics"]["items"] == len(items) > 0
+    assert {json.loads(path.read_text())["status"] for path in items} == {"failed"}
 
 
-def test_incomplete_diff_review_surfaces_failed_batch_details(monkeypatch, capsys, diff_target):
-    """Large diff failures include batch paths before the generic incomplete error."""
+def test_partially_parsed_sources_are_counted_as_fact_limitations(tmp_path, capsys):
+    """A repository with a syntax error in app.py reports one limitation on the facts record and stays ok."""
+    repository = tmp_path / "svc"
+    repository.mkdir()
+    (repository / "app.py").write_text("from flask import Flask\napp = Flask(__name__)\ndef broken(:\n")
 
-    def fake_review(prepared, **kwargs):
-        return _fake_run(
-            prepared,
-            kwargs,
-            failures=[
-                ReviewUnitFailure(
-                    index=2,
-                    total=3,
-                    paths=("app.py", "billing.py", "routes.py", "views.py"),
-                    reason="RuntimeError: blocked",
-                )
-            ],
-        )
+    assert main(["review", "repository", str(repository), "--workspace", str(tmp_path / "state"), "--dry-run"]) == 0
 
-    monkeypatch.setattr(climod, "run_review", fake_review)
-    rc = main(["review", "diff", *diff_target.args, "--dry-run"])
-
-    err = capsys.readouterr().err
-    assert rc == 1
-    assert "review unit 2/3 failed for app.py, billing.py, routes.py, and 1 more: RuntimeError: blocked" in err
-    assert "the review is incomplete" in err
+    records = _records(capsys.readouterr().out)
+    assert _stage(records, "facts")["metrics"]["limitations"] == 1
+    assert records[-1]["status"] == "ok"
 
 
 def test_review_repository_writes_the_unit_plan(tmp_path):
-    """A dry-run over a directory with only app.py writes units.json listing a single app.py unit."""
+    """A dry-run over a directory with only app.py writes plan/plan.json listing a single app.py unit."""
     repository = tmp_path / "svc"
     repository.mkdir()
     (repository / "app.py").write_text("x = 1\n")
-    ws = tmp_path / "ws"
-    rc = main(["review", "repository", str(repository), "--workspace", str(ws), "--dry-run"])
-    assert rc == 0
-    review = _repository_project(ws, repository).parents[1]
-    assert [unit["name"] for unit in json.loads((review / "units.json").read_text())["units"]] == ["app.py"]
+    state = tmp_path / "state"
+
+    assert main(["review", "repository", str(repository), "--workspace", str(state), "--dry-run"]) == 0
+
+    plan = json.loads((_review_dir(state) / "plan" / "plan.json").read_text())
+    assert [unit["name"] for unit in plan["units"]] == ["app.py"]
 
 
 def test_review_repository_skips_ignored_trees_of_a_git_work_tree(tmp_path):
-    """A .gitignore'd .venv tree and its lib64 symlink are left out of snapshot.json and the unit plan."""
+    """A .gitignore'd .venv tree and its lib64 symlink are left out of the source snapshot and the unit plan."""
     repository = tmp_path / "svc"
     repository.mkdir()
     git(repository, "init", "--quiet")
@@ -444,30 +541,26 @@ def test_review_repository_skips_ignored_trees_of_a_git_work_tree(tmp_path):
     (repository / ".venv" / "lib").mkdir(parents=True)
     (repository / ".venv" / "lib" / "site.py").write_text("y = 2\n")
     (repository / ".venv" / "lib64").symlink_to("lib", target_is_directory=True)
-    ws = tmp_path / "ws"
+    state = tmp_path / "state"
 
-    assert main(["review", "repository", str(repository), "--workspace", str(ws), "--dry-run"]) == 0
+    assert main(["review", "repository", str(repository), "--workspace", str(state), "--dry-run"]) == 0
 
-    review = _repository_project(ws, repository).parents[1]
-    files = [entry["path"] for entry in json.loads((review / "snapshot.json").read_text())["files"]]
+    review = _review_dir(state)
+    files = [entry["path"] for entry in json.loads((review / "source" / "snapshot.json").read_text())["files"]]
     assert files == [".gitignore", "app.py"]
-    assert json.loads((review / "units.json").read_text())["expected_owned_paths"] == [".gitignore", "app.py"]
-
-
-def _graphable(root):
-    root.mkdir()
-    (root / "app.py").write_text("def handle(req):\n    return lookup(req)\n")
-    (root / "store.py").write_text("def lookup(key):\n    return key\n")
-    return root
+    plan = json.loads((review / "plan" / "plan.json").read_text())
+    assert plan["expected_owned_paths"] == [".gitignore", "app.py"]
 
 
 def test_review_repository_grounds_units_with_syntax_facts(tmp_path):
     """Review extracts syntax facts before it grounds the planned units, delivering candidate callee source."""
-    ws = tmp_path / "ws"
-    rc = main(["review", "repository", str(_graphable(tmp_path / "svc")), "--workspace", str(ws), "--dry-run"])
-    assert rc == 0
-    review = _repository_project(ws, tmp_path / "svc").parents[1]
-    grounding = json.loads((review / "grounding.json").read_text())
+    state = tmp_path / "state"
+
+    assert (
+        main(["review", "repository", str(_graphable(tmp_path / "svc")), "--workspace", str(state), "--dry-run"]) == 0
+    )
+
+    grounding = json.loads((_review_dir(state) / "grounding" / "grounding.json").read_text())
     assert grounding["schema"] == "cyberjury.grounding/v1"
     assert all(context["seed_chars"] > 0 for context in grounding["contexts"])
     assert [
@@ -475,67 +568,23 @@ def test_review_repository_grounds_units_with_syntax_facts(tmp_path):
     ] == ["store.py"]
 
 
-def _flask_repository(root):
-    root.mkdir()
-    (root / "app.py").write_text(
-        "from flask import Flask, request\napp = Flask(__name__)\n"
-        '@app.route("/x/<i>")\ndef h(i):\n    return request.args.get("y", "")\n'
-    )
-    (root / "requirements.txt").write_text("Flask==3.0\n")
-    return root
-
-
-def test_repository_review_keeps_its_result_when_the_live_source_changes(tmp_path, monkeypatch, capsys):
-    """Editing app.py after the review finishes prints a source-changed NOTE but still writes findings."""
+def test_a_review_whose_live_source_changes_keeps_its_result_and_says_so(tmp_path, monkeypatch, capsys):
+    """Editing app.py after the review finishes marks the attempt source_changed but keeps it ok."""
     repository = _flask_repository(tmp_path / "svc")
-    original = climod.run_review
+    original = commandmod.run_review
 
     def review_then_edit(*args, **kwargs):
         result = original(*args, **kwargs)
         (repository / "app.py").write_text("changed = True\n", encoding="utf-8")
         return result
 
-    monkeypatch.setattr(climod, "run_review", review_then_edit)
-    rc = main(["review", "repository", str(repository), "--workspace", str(tmp_path / "ws"), "--dry-run"])
+    monkeypatch.setattr(commandmod, "run_review", review_then_edit)
 
-    assert rc == 0
-    err = capsys.readouterr().err
-    assert "NOTE: review source changed while the review was running" in err
-    assert "Findings written to" in err
+    assert main(["review", "repository", str(repository), "--workspace", str(tmp_path / "state"), "--dry-run"]) == 0
 
-
-def test_diff_review_keeps_its_result_when_the_source_check_fails(monkeypatch, capsys, diff_target, tmp_path):
-    """A failed snapshot match prints the source-changed NOTE yet exits 0 and writes outcome.json."""
-    monkeypatch.setattr(climod.SourceSnapshot, "matches", lambda self: False)
-
-    assert main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"]) == 0
-
-    captured = capsys.readouterr()
-    assert "NOTE: review source changed while the review was running" in captured.err
-    assert json.loads(captured.out)["outcome"]["complete"] is True
-    attempt = next(next((tmp_path / "reviews").iterdir()).joinpath("attempts").iterdir())
-    assert (attempt / "outcome.json").is_file()
-
-
-def test_repository_review_with_model_errors_exits_nonzero(tmp_path, monkeypatch):
-    """A provider answering 'not json at all' to every finder call makes the repository review exit 1."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    repository = _flask_repository(tmp_path / "svc")
-    ws = tmp_path / "ws"
-    monkeypatch.setattr(
-        "cyberjury.providers.configuration.make_provider",
-        lambda *a, **k: MockProvider(default="not json at all"),
-    )
-    rc = main(
-        [
-            "review",
-            "repository",
-            str(repository),
-            "--workspace",
-            str(ws),
-        ]
-    )
-    assert rc == 1
+    attempt = _records(capsys.readouterr().out)[-1]
+    assert attempt["status"] == "ok"
+    assert attempt["attributes"] == {"source_changed": True}
 
 
 def test_repository_review_builds_one_finder_provider(monkeypatch, tmp_path):
@@ -548,155 +597,52 @@ def test_repository_review_builds_one_finder_provider(monkeypatch, tmp_path):
         return provider
 
     monkeypatch.setattr(provider_configuration_module, "make_provider", fake_make_provider)
-    monkeypatch.setattr(climod, "run_review", lambda prepared, **kw: _fake_run(prepared, kw))
-    _seed_source(tmp_path)
-
+    monkeypatch.setattr(commandmod, "run_review", _stub_review())
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    assert main(["review", "repository", str(tmp_path)]) == 0
+    repository = tmp_path / "svc"
+    _seed_source(repository)
+
+    assert main(["review", "repository", str(repository), "--workspace", str(tmp_path / "state")]) == 0
     assert len(providers) == 1
 
 
-@pytest.mark.parametrize(
-    ("args", "expected"),
-    [
-        ([], 8),
-        (["--concurrency", "4"], 4),
-    ],
-)
+@pytest.mark.parametrize(("args", "expected"), [([], 8), (["--concurrency", "4"], 4)])
 def test_repository_review_concurrency_uses_the_api_default(monkeypatch, tmp_path, args, expected):
-    """Repository concurrency is 8 without a flag and 4 with --concurrency 4."""
-    captured = _capture_repository_review(monkeypatch, tmp_path)
-    main(["review", "repository", str(tmp_path), *args])
-    assert captured["concurrency"] == expected
-
-
-def _patch_repository_review(monkeypatch, tmp_path, **result):
+    """Repository concurrency is 8 without a flag and 4 with --concurrency 4, on the finder seat."""
+    seen = {}
+    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    _seed_source(tmp_path)
-    monkeypatch.setattr(
-        climod,
-        "run_review",
-        lambda prepared, **kw: _fake_run(prepared, kw, **result),
-    )
-
-
-def test_repository_review_with_failed_calls_exits_nonzero_and_warns(monkeypatch, tmp_path, capsys):
-    """A rate-limited unit failure exits 1 and prints 'review unit 1/2 failed for app.py' with the reason."""
-    failure = ReviewUnitFailure(index=1, total=2, paths=("app.py",), reason="RuntimeError: provider rate limited")
-    _patch_repository_review(monkeypatch, tmp_path, failures=[failure], errors=1)
-    rc = main(["review", "repository", str(tmp_path)])
-    err = capsys.readouterr().err
-    assert rc == 1
-    assert "error: review unit 1/2 failed for app.py: RuntimeError: provider rate limited" in err
-
-
-def test_repository_review_failure_reason_exits_nonzero_and_asks_to_rerun(monkeypatch, tmp_path, capsys):
-    """A facts failure_reason exits 1, prints the reason as an error, and says 'Re-run to retry open work'."""
-    _patch_repository_review(
-        monkeypatch, tmp_path, errors=1, failure_reason="structured facts unavailable: facts:app.py"
-    )
-    rc = main(["review", "repository", str(tmp_path)])
-    err = capsys.readouterr().err
-    assert rc == 1
-    assert "error: structured facts unavailable: facts:app.py" in err
-    assert "Re-run to retry open work" in err
-
-
-def test_abbreviated_live_flag_is_rejected(tmp_path):
-    """Argparse prefix matching is disabled, so --conc 2 exits with usage code 2."""
-    with pytest.raises(SystemExit) as exc:
-        main(["review", "repository", str(tmp_path), "--conc", "2"])
-    assert exc.value.code == 2
-
-
-@pytest.mark.parametrize(
-    "flag",
-    [
-        ("--concurrency", "0"),
-        ("--concurrency", "two"),
-    ],
-)
-def test_diff_rejects_invalid_cli_values(flag, capsys):
-    """A --concurrency of 0 or 'two' exits with usage code 2 and names the flag on stderr."""
-    with pytest.raises(SystemExit) as exc:
-        main(
-            [
-                "review",
-                "diff",
-                "--repository",
-                "repo",
-                "--git-range",
-                "base..HEAD",
-                "--dry-run",
-                *flag,
-            ]
-        )
-    assert exc.value.code == 2
-    assert flag[0] in capsys.readouterr().err
-
-
-def test_failure_text_reads_the_failures_the_cli_prints(capsys, diff_target, tmp_path):
-    """A bare HEAD range yields one parsed failure 'git range must use A..B or A...B', and NOTE lines yield None."""
-    args = ["review", "diff", "--repository", str(diff_target.repository), "--git-range", "HEAD"]
-    assert main([*args, "--workspace", str(tmp_path / "state"), "--dry-run"]) == 1
-
-    err = capsys.readouterr().err
-    failures = [text for line in err.splitlines() if (text := climod.failure_text(line))]
-
-    assert failures == ["git range must use A..B or A...B"]
-    assert "Traceback" not in err
-    assert climod.failure_text("error: the review is incomplete") == "the review is incomplete"
-    assert climod.failure_text("NOTE: review source changed while the review was running") is None
-
-
-def _capture_repository_review(monkeypatch, repository):
-    captured = {}
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    repository = tmp_path / "svc"
     _seed_source(repository)
 
-    def fake_run(prepared, **kw):
-        captured.update(kw)
-        raise RuntimeError("stop after capture")
-
-    monkeypatch.setattr(climod, "run_review", fake_run)
-    return captured
-
-
-def test_repository_review_uses_the_finder_seat(monkeypatch, tmp_path):
-    """Repository review uses the finder seat and its seat provenance label."""
-    captured = _capture_repository_review(monkeypatch, tmp_path)
-    main(["review", "repository", str(tmp_path)])
-    assert captured["seats"].finder is not None
-    assert captured["seats"].finder_label.startswith("seat-")
+    assert main(["review", "repository", str(repository), "--workspace", str(tmp_path / "state"), *args]) == 0
+    assert seen["concurrency"] == expected
+    assert seen["seats"].finder_label.startswith("seat-")
 
 
 def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target, tmp_path):
     """The request.json records the seat id and --concurrency 5, model-calls.json is empty, and no key leaks."""
-    captured = {}
-
-    def fake_review(prepared, **kwargs):
-        captured.update(kwargs)
-        return _fake_run(prepared, kwargs)
-
+    seen = {}
     monkeypatch.setenv("OPENAI_API_KEY", "secret-canary")
-    monkeypatch.setattr(climod, "run_review", fake_review)
-    assert main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--concurrency", "5"]) == 0
-    review_dir = next((tmp_path / "reviews").iterdir())
-    attempt_dir = next((review_dir / "attempts").iterdir())
-    request = json.loads((attempt_dir / "request.json").read_text())
-    model_calls = json.loads((attempt_dir / "model-calls.json").read_text())
+    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
+    state = tmp_path / "state"
 
+    assert main(["review", "diff", *diff_target.args, "--workspace", str(state), "--concurrency", "5"]) == 0
+
+    attempt = _attempt_dir(state)
+    request = json.loads((attempt / "request.json").read_text())
+    model_calls = json.loads((attempt / "model-calls.json").read_text())
     assert request["providers"]["seat"]["seat_id"].startswith("seat-")
-    assert request["concurrency"]["review"] == captured["concurrency"] == 5
     assert request["concurrency"] == {"review": 5}
+    assert seen["concurrency"] == 5
     assert model_calls["schema"] == "cyberjury.model-calls/v1"
     assert model_calls["calls"] == []
-    assert "secret-canary" not in "".join(path.read_text() for path in review_dir.rglob("*.json*"))
+    assert "secret-canary" not in "".join(path.read_text() for path in _review_dir(state).rglob("*.json"))
 
 
-def test_the_review_reads_its_model_from_the_working_directory_env(monkeypatch, diff_target, tmp_path):
+def test_the_review_reads_its_model_from_the_working_directory_env(monkeypatch, diff_target, tmp_path, capsys):
     """CYBERJURY_MODEL and OPENAI_API_KEY from ./.env select an openai seat running model-from-env."""
-    monkeypatch.setattr(climod, "load_env_file", load_env_file)
+    monkeypatch.setattr(commandmod, "load_env_file", load_env_file)
     project = tmp_path / "project"
     project.mkdir()
     (project / ".env").write_text("CYBERJURY_MODEL=model-from-env\nOPENAI_API_KEY=key-from-env\n", encoding="utf-8")
@@ -704,217 +650,166 @@ def test_the_review_reads_its_model_from_the_working_directory_env(monkeypatch, 
     for name in ("CYBERJURY_MODEL", "OPENAI_API_KEY"):
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
-    captured = {}
-
-    def fake_review(prepared, **kwargs):
-        captured.update(kwargs)
-        return _fake_run(prepared, kwargs)
-
-    monkeypatch.setattr(climod, "run_review", fake_review)
+    seen = {}
+    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
 
     assert main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path / "state")]) == 0
 
-    assert captured["seats"].finder_model == "model-from-env"
-    attempt = next(next((tmp_path / "state" / "reviews").iterdir()).joinpath("attempts").iterdir())
-    seat = json.loads((attempt / "request.json").read_text())["providers"]["seat"]
-    assert (seat["provider"], seat["model"]) == ("openai", "model-from-env")
-
-
-def test_diff_dry_run_persists_calls_bound_to_planned_units(diff_target, tmp_path):
-    """A dry-run diff records model calls whose unit_id is a planned unit and whose trigger is known."""
-    assert main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"]) == 0
-    review = next((tmp_path / "reviews").iterdir())
-    attempt = next(review.joinpath("attempts").iterdir())
-    unit_ids = {unit["id"] for unit in json.loads((review / "units.json").read_text())["units"]}
-    model_calls = json.loads((attempt / "model-calls.json").read_text())
-
-    assert unit_ids
-    assert model_calls["calls"]
-    assert all(call["unit_id"] in unit_ids for call in model_calls["calls"])
-    assert all(call["trigger"] in {"initial_judgment", "evidence_followup"} for call in model_calls["calls"])
-
-
-def test_repository_dry_run_persists_calls_bound_to_planned_units(tmp_path):
-    """A dry-run over a Flask app records model calls whose unit_id each names a planned unit."""
-    repository = _flask_repository(tmp_path / "svc")
-    state = tmp_path / "state"
-
-    assert (
-        main(
-            [
-                "review",
-                "repository",
-                str(repository),
-                "--workspace",
-                str(state),
-                "--dry-run",
-            ]
-        )
-        == 0
-    )
-    review = next((state / "reviews").iterdir())
-    attempt = next((review / "attempts").iterdir())
-    unit_ids = {unit["id"] for unit in json.loads((review / "units.json").read_text())["units"]}
-    model_calls = json.loads((attempt / "model-calls.json").read_text())
-
-    assert model_calls["calls"]
-    assert all(call["unit_id"] in unit_ids for call in model_calls["calls"])
-
-
-def test_repository_reruns_share_review_with_distinct_attempts(tmp_path):
-    """Two dry-runs of one repository reuse one review directory and add two complete attempts."""
-    repository = _flask_repository(tmp_path / "svc")
-    state_root = tmp_path / "state"
-
-    assert main(["review", "repository", str(repository), "--workspace", str(state_root), "--dry-run"]) == 0
-    assert main(["review", "repository", str(repository), "--workspace", str(state_root), "--dry-run"]) == 0
-
-    reviews = list((state_root / "reviews").iterdir())
-    assert len(reviews) == 1
-    attempts = sorted((reviews[0] / "attempts").iterdir())
-    assert len(attempts) == 2
-    assert all(json.loads((attempt / "attempt.json").read_text())["state"] == "complete" for attempt in attempts)
-
-
-def test_provider_preflight_failure_is_terminal_and_redacted(monkeypatch, diff_target, tmp_path):
-    """A missing API key leaves a failed attempt.json whose content has no authorization= header text."""
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-    with pytest.raises(SystemExit, match="no reachable API key"):
-        main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path)])
-
-    review_dir = next((tmp_path / "reviews").iterdir())
-    attempt_dir = next((review_dir / "attempts").iterdir())
-    state = json.loads((attempt_dir / "attempt.json").read_text())
-    assert state["state"] == "failed"
-    assert "authorization=" not in json.dumps(state).lower()
-
-
-def _terminate(*_args):
-    assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL
-    os.kill(os.getpid(), signal.SIGTERM)
-    raise AssertionError("SIGTERM did not stop the review")
-
-
-def _terminated_attempt(diff_target, tmp_path) -> Path:
-    with pytest.raises(KeyboardInterrupt):
-        main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"])
-    return next(next((tmp_path / "reviews").iterdir()).joinpath("attempts").iterdir())
-
-
-def test_a_terminated_review_keeps_its_model_calls_and_ends_interrupted(monkeypatch, diff_target, tmp_path):
-    """A SIGTERM during a dry-run review leaves model-calls.json and an attempt.json in state interrupted."""
-    monkeypatch.setattr(climod, "_execute_review", _terminate)
-
-    attempt = _terminated_attempt(diff_target, tmp_path)
-
-    assert json.loads((attempt / "attempt.json").read_text())["state"] == "interrupted"
-    assert (attempt / "model-calls.json").is_file()
-
-
-def test_a_review_terminated_during_source_preparation_ends_interrupted(monkeypatch, diff_target, tmp_path):
-    """A SIGTERM while the contract receipt is captured leaves attempt.json in state interrupted, not failed."""
-    monkeypatch.setattr(climod.ContractReceipt, "capture", _terminate)
-
-    attempt = _terminated_attempt(diff_target, tmp_path)
-
-    assert json.loads((attempt / "attempt.json").read_text())["state"] == "interrupted"
-
-
-def test_model_call_persistence_failure_marks_the_attempt_failed(monkeypatch, diff_target, tmp_path):
-    """When writing model-calls.json raises, the dry-run exits 1 and attempt.json records state failed."""
-    monkeypatch.setattr(climod, "_execute_review", _complete_stage_one_only)
-
-    def fail_record(_args):
-        raise RuntimeError("model call artifact failed")
-
-    monkeypatch.setattr(climod, "_record_model_calls", fail_record)
-
-    assert main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"]) == 1
-
-    review = next((tmp_path / "reviews").iterdir())
-    attempt = next((review / "attempts").iterdir())
-    assert json.loads((attempt / "attempt.json").read_text())["state"] == "failed"
+    config = _stage(_records(capsys.readouterr().out), "config")
+    assert seen["seats"].finder_model == "model-from-env"
+    assert (config["attributes"]["provider"], config["attributes"]["model"]) == ("openai", "model-from-env")
 
 
 @pytest.mark.parametrize("scope", ["diff", "repository"])
-def test_stage_one_request_is_shared_across_targets(
-    monkeypatch,
-    tmp_path,
-    scope,
-):
-    """Diff and repository runs share a seat request and write target, snapshot, contract, facts, and units."""
-    captured = {}
+def test_dry_runs_persist_calls_bound_to_planned_units(tmp_path, scope):
+    """A dry run records model calls whose unit_id names a planned unit and whose trigger is a finder trigger."""
+    change = _git_change(tmp_path / "repo", {}, {"app.py": "def run(name):\n    return name\n"})
+    target = ["diff", *change.args] if scope == "diff" else ["repository", str(change.repository)]
+    state = tmp_path / "state"
 
-    def fake_dispatch(run):
-        captured["request"] = run.attempt.request
-        captured["intent"] = run.session.intent
-        captured["workspace"] = run.session.workspace.path
-        return _complete_stage_one_only(run)
+    assert main(["review", *target, "--workspace", str(state), "--dry-run"]) == 0
 
-    monkeypatch.setattr(climod, "_execute_review", fake_dispatch)
-    change = _git_change(tmp_path / "repo", {}, {"app.py": "source\n"})
-    target_args = (
-        ["diff", *change.args, "--dry-run"] if scope == "diff" else ["repository", str(change.repository), "--dry-run"]
-    )
+    unit_ids = {unit["id"] for unit in json.loads((_review_dir(state) / "plan" / "plan.json").read_text())["units"]}
+    calls = json.loads((_attempt_dir(state) / "model-calls.json").read_text())["calls"]
+    assert calls
+    assert all(call["unit_id"] in unit_ids for call in calls)
+    assert all(call["trigger"] in {"initial_judgment", "evidence_followup"} for call in calls)
+
+
+def test_a_review_directory_holds_lowercase_kebab_case_files_named_after_their_schemas(tmp_path):
+    """A dry run leaves lowercase kebab case files, each naming the schema its file name or record kind implies."""
+    state = tmp_path / "state"
 
     assert (
-        main(
-            [
-                "review",
-                *target_args,
-                "--workspace",
-                str(tmp_path / "state"),
-            ]
-        )
+        main(["review", "repository", str(_flask_repository(tmp_path / "svc")), "--workspace", str(state), "--dry-run"])
         == 0
     )
-    request = captured["request"]
-    assert captured["intent"].target.kind == scope
-    assert request.providers.seat.seat_id.startswith("seat-")
-    target_artifact = json.loads((captured["workspace"] / "target.json").read_text())
-    snapshot_artifact = json.loads((captured["workspace"] / "snapshot.json").read_text())
-    contract_artifact = json.loads((captured["workspace"] / "contract.json").read_text())
-    facts_artifact = json.loads((captured["workspace"] / "facts.json").read_text())
-    units_artifact = json.loads((captured["workspace"] / "units.json").read_text())
-    assert target_artifact["schema"] == "cyberjury.resolved-target/v1"
-    assert snapshot_artifact["schema"] == "cyberjury.source-snapshot/v1"
-    assert contract_artifact["schema"] == "cyberjury.review-contract/v1"
-    assert set(contract_artifact["files"]) == {
-        "review/contract/security-kernel.md",
-        "review/contract/severity-rubric.md",
-        "review/contract/detection.yaml",
-        *(
-            f"review/contract/languages/{name}.yaml"
-            for name in ("c", "cpp", "go", "java", "javascript", "python", "rust", "solidity", "tsx", "typescript")
-        ),
+
+    review = _review_dir(state)
+    attempt = _attempt_dir(state).name
+    units = [path.name for path in (review / "review" / "items").glob("*.json")]
+    files = sorted(str(path.relative_to(review)) for path in review.rglob("*") if path.is_file())
+    assert files == sorted(
+        [
+            "session.json",
+            "session/intent.json",
+            "session/judgment-configuration.json",
+            "target/target.json",
+            "source/snapshot.json",
+            "source/contract.json",
+            "facts/facts.json",
+            "plan/plan.json",
+            "plan/skipped-files.json",
+            "grounding/grounding.json",
+            *(f"review/items/{unit}" for unit in units),
+            *(f"review/findings/{unit}" for unit in units),
+            f"attempts/{attempt}/request.json",
+            f"attempts/{attempt}/record.json",
+            f"attempts/{attempt}/findings.json",
+            f"attempts/{attempt}/model-calls.json",
+            *(f"attempts/{attempt}/stages/{stage}.json" for stage in STAGES),
+        ]
+    )
+    assert all(re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*(?:\.json)?", part) for name in files for part in name.split("/"))
+
+    def expected_schema(name: str) -> str:
+        if name.startswith(("review/items/", f"attempts/{attempt}/stages/")) or name.endswith("/record.json"):
+            return "cyberjury.record/v1"
+        if name.startswith("review/findings/"):
+            return "cyberjury.unit-findings/v1"
+        return f"cyberjury.{Path(name).stem}/v1"
+
+    assert {name: json.loads((review / name).read_text())["schema"] for name in files} == {
+        name: expected_schema(name) for name in files
     }
-    assert facts_artifact["schema"] == "cyberjury.facts/v1"
-    assert units_artifact["schema"] == "cyberjury.unit-plan/v1"
 
 
-def test_repository_without_reviewable_source_fails_before_model_calls(tmp_path):
-    """A repository holding only README.md exits 1 with empty units and model calls and a failed attempt."""
+def test_repository_reruns_share_review_with_distinct_attempts(tmp_path, capsys):
+    """Two dry runs of one repository reuse one review directory, and the second restores every unit."""
+    repository = _flask_repository(tmp_path / "svc")
+    state = tmp_path / "state"
+    command = ["review", "repository", str(repository), "--workspace", str(state), "--dry-run"]
+
+    assert main(command) == 0
+    capsys.readouterr()
+    assert main(command) == 0
+
+    review = _stage(_records(capsys.readouterr().out), "review")
+    attempts = sorted((_review_dir(state) / "attempts").iterdir())
+    assert len(attempts) == 2
+    assert [_attempt_record(attempt)["status"] for attempt in attempts] == ["ok", "ok"]
+    assert review["metrics"]["restored"] == review["metrics"]["items"] > 0
+
+
+@pytest.mark.parametrize("scope", ["diff", "repository"])
+def test_every_stage_record_lists_the_artifacts_it_wrote(monkeypatch, tmp_path, capsys, scope):
+    """Each stage artifact a record lists exists under the review directory and carries its schema."""
+    monkeypatch.setattr(commandmod, "run_review", _stub_review())
+    change = _git_change(tmp_path / "repo", {}, {"app.py": "source\n"})
+    target = ["diff", *change.args] if scope == "diff" else ["repository", str(change.repository)]
+    state = tmp_path / "state"
+
+    assert main(["review", *target, "--workspace", str(state), "--dry-run"]) == 0
+
+    review = _review_dir(state)
+    records = _records(capsys.readouterr().out)
+    artifacts = {record["id"]: record["artifacts"] for record in records}
+    schemas = {
+        path: json.loads((review / path).read_text())["schema"]
+        for paths in artifacts.values()
+        for path in paths
+        if not path.startswith("attempts/")
+    }
+    assert artifacts["target"] == ["target/target.json"]
+    assert artifacts["source"] == ["source/snapshot.json", "source/contract.json"]
+    assert artifacts["plan"] == ["plan/plan.json", "plan/skipped-files.json"]
+    assert schemas == {
+        "target/target.json": "cyberjury.target/v1",
+        "source/snapshot.json": "cyberjury.snapshot/v1",
+        "source/contract.json": "cyberjury.contract/v1",
+        "facts/facts.json": "cyberjury.facts/v1",
+        "plan/plan.json": "cyberjury.plan/v1",
+        "plan/skipped-files.json": "cyberjury.skipped-files/v1",
+        "grounding/grounding.json": "cyberjury.grounding/v1",
+    }
+    assert all((review / path).is_file() for paths in artifacts.values() for path in paths)
+
+
+def test_repository_without_reviewable_source_fails_the_review_stage_before_model_calls(tmp_path, capsys):
+    """A repository holding only README.md plans no units, fails the review stage with an input error, and exits 2."""
     repository = tmp_path / "repo"
     repository.mkdir()
     (repository / "README.md").write_text("unknown target\n")
     state = tmp_path / "state"
 
-    assert main(["review", "repository", str(repository), "--dry-run", "--workspace", str(state)]) == 1
+    assert main(["review", "repository", str(repository), "--dry-run", "--workspace", str(state)]) == 2
 
-    review = next((state / "reviews").iterdir())
-    attempt = next((review / "attempts").iterdir())
-    assert (review / "target.json").is_file()
-    assert (review / "snapshot.json").is_file()
-    assert json.loads((review / "units.json").read_text())["units"] == []
-    assert json.loads((attempt / "model-calls.json").read_text())["calls"] == []
-    assert json.loads((attempt / "attempt.json").read_text())["state"] == "failed"
+    review = _stage(_records(capsys.readouterr().out), "review")
+    assert review["status"] == "failed"
+    assert review["error"]["code"] == "input"
+    assert json.loads((_review_dir(state) / "plan" / "plan.json").read_text())["units"] == []
+    assert json.loads((_attempt_dir(state) / "model-calls.json").read_text())["calls"] == []
+
+
+def test_a_repository_edited_before_resuming_fails_the_source_stage_with_a_fresh_hint(tmp_path, capsys):
+    """Re-running after app.py changes fails the source stage with a config error naming --fresh and exits 2."""
+    repository = tmp_path / "svc"
+    _seed_source(repository)
+    command = ["review", "repository", str(repository), "--workspace", str(tmp_path / "state"), "--dry-run"]
+    assert main(command) == 0
+    (repository / "app.py").write_text("value = 2\n")
+    capsys.readouterr()
+
+    assert main(command) == 2
+
+    source = _stage(_records(capsys.readouterr().out), "source")
+    assert source["error"]["code"] == "config"
+    assert "--fresh" in source["error"]["message"]
 
 
 def test_diff_runs_get_independent_review_sessions(monkeypatch, diff_target, tmp_path):
-    """Two identical diff dry-runs create two review directories with the same target and snapshot hashes."""
-    monkeypatch.setattr(climod, "_execute_review", _complete_stage_one_only)
+    """Two identical diff dry runs create two review directories with the same target and snapshot hashes."""
+    monkeypatch.setattr(commandmod, "run_review", _stub_review())
     command = ["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"]
 
     assert main(command) == 0
@@ -922,81 +817,79 @@ def test_diff_runs_get_independent_review_sessions(monkeypatch, diff_target, tmp
 
     reviews = list((tmp_path / "reviews").iterdir())
     assert len(reviews) == 2
-    targets = [json.loads((review / "target.json").read_text()) for review in reviews]
-    snapshots = [json.loads((review / "snapshot.json").read_text()) for review in reviews]
+    targets = [json.loads((review / "target" / "target.json").read_text()) for review in reviews]
+    snapshots = [json.loads((review / "source" / "snapshot.json").read_text()) for review in reviews]
     assert len({target["target_sha256"] for target in targets}) == 1
     assert len({snapshot["snapshot_id"] for snapshot in snapshots}) == 1
 
 
 def test_repository_configuration_change_requires_fresh(monkeypatch, tmp_path, capsys):
-    """Changing CYBERJURY_MODEL between runs exits 1 citing --fresh, which then starts a second review."""
-    monkeypatch.setattr(climod, "_execute_review", _complete_stage_one_only)
+    """Changing CYBERJURY_MODEL between runs fails the session stage citing --fresh, which then starts a new review."""
+    monkeypatch.setattr(commandmod, "run_review", _stub_review())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     repository = tmp_path / "repo"
-    repository.mkdir()
-    (repository / "app.py").write_text("value = 1\n")
+    _seed_source(repository)
     base = ["review", "repository", str(repository), "--workspace", str(tmp_path / "state")]
 
     monkeypatch.setenv("CYBERJURY_MODEL", "model-a")
     assert main(base) == 0
     monkeypatch.setenv("CYBERJURY_MODEL", "model-b")
-    assert main(base) == 1
-    assert "--fresh" in capsys.readouterr().err
+    capsys.readouterr()
+    assert main(base) == 2
+    session = _stage(_records(capsys.readouterr().out), "session")
     assert main([*base, "--fresh"]) == 0
 
-    assert len(list((tmp_path / "state" / "reviews").iterdir())) == 2
+    assert session["error"]["code"] == "config"
+    assert "--fresh" in session["error"]["message"]
+    reviews = sorted((tmp_path / "state" / "reviews").iterdir(), key=lambda path: len(list(path.glob("attempts/*"))))
+    assert [len(list(review.glob("attempts/*"))) for review in reviews] == [1, 1]
 
 
-def test_state_root_inside_repository_is_rejected_before_workspace_creation(tmp_path, capsys):
-    """A --workspace inside the repository exits 1 with 'state root cannot be inside' and is never created."""
-    repository = tmp_path / "repo"
-    repository.mkdir()
-    state = repository / ".state"
-
-    assert (
-        main(
-            [
-                "review",
-                "repository",
-                str(repository),
-                "--dry-run",
-                "--workspace",
-                str(state),
-            ]
-        )
-        == 1
-    )
-
-    assert "state root cannot be inside" in capsys.readouterr().err
-    assert not state.exists()
+def _terminate(*_args, **_kwargs):
+    assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL
+    os.kill(os.getpid(), signal.SIGTERM)
+    raise AssertionError("SIGTERM did not stop the review")
 
 
-def test_invalid_committed_git_range_records_failed_attempt_before_models(tmp_path, capsys):
-    """A bare HEAD git range exits 1, records a failed attempt, and writes no target.json."""
-    repository = tmp_path / "repo"
-    repository.mkdir()
-    git(repository, "init", "--quiet")
-    git(repository, "commit", "--quiet", "--allow-empty", "-m", "base")
+def test_a_terminated_review_keeps_its_model_calls_and_ends_interrupted(monkeypatch, diff_target, tmp_path, capsys):
+    """A SIGTERM during the review exits 130 without a traceback, keeps model-calls.json, and records interrupted."""
+    monkeypatch.setattr(commandmod, "run_review", _terminate)
     state = tmp_path / "state"
 
-    assert (
-        main(
-            [
-                "review",
-                "diff",
-                "--repository",
-                str(repository),
-                "--git-range",
-                "HEAD",
-                "--workspace",
-                str(state),
-                "--dry-run",
-            ]
-        )
-        == 1
-    )
+    assert main(["review", "diff", *diff_target.args, "--workspace", str(state), "--dry-run"]) == 130
 
-    assert "must use A..B or A...B" in capsys.readouterr().err
-    review = next((state / "reviews").iterdir())
-    attempt = next((review / "attempts").iterdir())
-    assert json.loads((attempt / "attempt.json").read_text())["state"] == "failed"
-    assert not (review / "target.json").exists()
+    attempt = _attempt_dir(state)
+    record = _attempt_record(attempt)
+    assert (record["status"], record["attributes"]["reason"]) == ("interrupted", "operator interrupted the command")
+    assert (attempt / "model-calls.json").is_file()
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_a_review_terminated_during_source_capture_ends_the_source_stage_interrupted(
+    monkeypatch, diff_target, tmp_path, capsys
+):
+    """A SIGTERM while the contract receipt is captured records the source stage and the attempt interrupted."""
+    monkeypatch.setattr(commandmod.ContractReceipt, "capture", _terminate)
+
+    assert main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path / "state"), "--dry-run"]) == 130
+
+    records = _records(capsys.readouterr().out)
+    assert [record["id"] for record in records[:-1]] == ["config", "target", "session", "source"]
+    assert records[-2]["status"] == records[-1]["status"] == "interrupted"
+
+
+def test_model_call_persistence_failure_marks_the_attempt_failed(monkeypatch, diff_target, tmp_path):
+    """When writing model-calls.json raises, the dry run exits 1 and record.json carries an internal error."""
+    monkeypatch.setattr(commandmod, "run_review", _stub_review())
+
+    def fail_write(_attempt, _document):
+        raise RuntimeError("model call artifact failed")
+
+    monkeypatch.setattr(commandmod.ReviewAttempt, "write_model_calls", fail_write)
+    state = tmp_path / "state"
+
+    assert main(["review", "diff", *diff_target.args, "--workspace", str(state), "--dry-run"]) == 1
+
+    record = _attempt_record(_attempt_dir(state))
+    assert record["status"] == "failed"
+    assert record["error"] == {"code": "internal", "message": "RuntimeError: model call artifact failed"}

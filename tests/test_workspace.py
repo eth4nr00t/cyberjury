@@ -1,4 +1,4 @@
-"""Generic session storage tests cover attempt state, recovery, and safe paths."""
+"""Generic session storage tests cover attempt records, recovery, and safe paths."""
 
 import fcntl
 import json
@@ -6,8 +6,10 @@ import stat
 
 import pytest
 
+from cyberjury.record import Record, RecordError
 from cyberjury.workspace import (
     AttemptWorkspace,
+    SessionConflictError,
     SessionLocator,
     SessionWorkspace,
     UnsupportedSessionFormatError,
@@ -21,8 +23,14 @@ def _session(tmp_path, digit: str) -> SessionWorkspace:
     return SessionWorkspace.open_or_create(
         tmp_path,
         namespace="reviews",
-        session_id="review-" + digit * 32,
+        session_id="review-20260101-000000-" + digit * 8,
         kind="review",
+    )
+
+
+def _terminal(attempt: AttemptWorkspace, status: str = "ok", error: RecordError | None = None) -> Record:
+    return Record(
+        id=attempt.attempt_id, status=status, started_at=attempt.started_at, duration_seconds=1.0, error=error
     )
 
 
@@ -34,17 +42,17 @@ def _simulate_process_exit(attempt: AttemptWorkspace) -> None:
 
 
 def test_session_and_attempt_use_private_json_files_only(tmp_path):
-    """A session holds only session.json, review.json, attempts at 0700, and the attempt files are 0600."""
+    """A session holds only session.json, session/intent.json, attempts at 0700, and the attempt files are 0600."""
     session = _session(tmp_path, "a")
-    session.write_json_once("review.json", {"schema": "test.review/v1"})
+    session.write_json_once("session/intent.json", {"schema": "test.review/v1"})
     attempt = session.start_attempt({"schema": "test.request/v1"})
 
-    assert session.path == tmp_path / "reviews" / ("review-" + "a" * 32)
-    assert {path.name for path in session.path.iterdir()} == {"session.json", "review.json", "attempts"}
-    assert {path.name for path in attempt.path.iterdir()} == {"request.json", "attempt.json"}
+    assert session.path == tmp_path / "reviews" / ("review-20260101-000000-" + "a" * 8)
+    assert {path.name for path in session.path.iterdir()} == {"session.json", "session", "attempts"}
+    assert {path.name for path in attempt.path.iterdir()} == {"request.json", "record.json"}
     assert stat.S_IMODE(session.path.stat().st_mode) == 0o700
     assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in attempt.path.iterdir())
-    assert attempt.read_state()["state"] == "running"
+    assert attempt.read_record().status == "running"
 
 
 def test_a_second_attempt_cannot_start_while_one_is_running(tmp_path):
@@ -52,47 +60,48 @@ def test_a_second_attempt_cannot_start_while_one_is_running(tmp_path):
     session = _session(tmp_path, "b")
     attempt = session.start_attempt({"schema": "test.request/v1"})
 
-    with pytest.raises(RuntimeError, match="already running"):
+    with pytest.raises(SessionConflictError, match="already running"):
         session.start_attempt({"schema": "test.request/v1"})
 
-    attempt.finish(state="complete", detail={"exit_code": 0})
+    attempt.finish(_terminal(attempt))
     session.start_attempt({"schema": "test.request/v1"})
 
 
 def test_reopening_session_marks_running_attempt_interrupted(tmp_path):
-    """Reopening after the lock holder exits marks the old attempt interrupted with finished_at set."""
+    """Reopening after the lock holder exits marks the old attempt interrupted with its duration set."""
     session = _session(tmp_path, "d")
     attempt = session.start_attempt({"schema": "test.request/v1"})
     _simulate_process_exit(attempt)
 
     reopened = _session(tmp_path, "d")
     next_attempt = reopened.start_attempt({"schema": "test.request/v1"})
-    next_attempt.finish(state="complete", detail={"exit_code": 0})
+    next_attempt.finish(_terminal(next_attempt))
 
-    state = json.loads((attempt.path / "attempt.json").read_text())
-    assert state["state"] == "interrupted"
-    assert state["finished_at"] is not None
-    assert json.loads((next_attempt.path / "attempt.json").read_text())["detail"] == {"exit_code": 0}
+    stale = attempt.read_record()
+    assert stale.status == "interrupted"
+    assert stale.attributes == {"reason": "prior process ended without a terminal state"}
+    assert stale.duration_seconds is not None
+    assert next_attempt.read_record().status == "ok"
 
 
 def test_terminal_attempt_cannot_finish_again(tmp_path):
     """Finishing a failed attempt again raises terminal state and leaves the stored state failed."""
     attempt = _session(tmp_path, "e").start_attempt({"schema": "test.request/v1"})
-    attempt.finish(state="failed", detail={}, error={"code": "c", "type": "t", "message": "m"})
+    attempt.finish(_terminal(attempt, "failed", RecordError(code="internal", message="m")))
 
     with pytest.raises(RuntimeError, match="terminal state"):
-        attempt.finish(state="complete", detail={})
-    assert attempt.read_state()["state"] == "failed"
+        attempt.finish(_terminal(attempt))
+    assert attempt.read_record().status == "failed"
 
 
 def test_attempt_state_identity_must_match_its_directory(tmp_path):
-    """An attempt.json whose attempt_id differs from its directory raises WorkspaceCorruptionError."""
+    """A record.json whose id differs from its directory raises WorkspaceCorruptionError."""
     session = _session(tmp_path, "f")
     attempt = session.start_attempt({"schema": "test.request/v1"})
-    attempt.finish(state="complete", detail={})
-    path = attempt.path / "attempt.json"
+    attempt.finish(_terminal(attempt))
+    path = attempt.path / "record.json"
     value = json.loads(path.read_text())
-    value["attempt_id"] = "attempt-" + "0" * 32
+    value["id"] = "attempt-20260101-000000-00000000"
     path.write_text(json.dumps(value))
 
     with pytest.raises(WorkspaceCorruptionError, match="identity"):
@@ -122,10 +131,22 @@ def test_locator_session_id_must_match_requested_kind(tmp_path):
     locator.select_with_state(key, kind="review", reuse=True)
     path = locator.path / f"{key}.json"
     value = json.loads(path.read_text())
-    value["session_id"] = "fetch-" + "d" * 32
+    value["session_id"] = "fetch-20260101-000000-" + "d" * 8
     path.write_text(json.dumps(value))
 
     with pytest.raises(WorkspaceCorruptionError, match="identity"):
+        locator.select_with_state(key, kind="review", reuse=True)
+
+
+def test_a_locator_naming_an_older_session_id_is_reported_as_unsupported(tmp_path):
+    """A locator entry holding a review-<32 hex> session id raises an unsupported format error suggesting --fresh."""
+    locator = SessionLocator.open(tmp_path, namespace="reviews")
+    key = "e" * 64
+    locator.select_with_state(key, kind="review", reuse=True)
+    path = locator.path / f"{key}.json"
+    path.write_text(json.dumps(json.loads(path.read_text()) | {"session_id": "review-" + "a" * 32}))
+
+    with pytest.raises(UnsupportedSessionFormatError, match="--fresh"):
         locator.select_with_state(key, kind="review", reuse=True)
 
 
@@ -137,7 +158,7 @@ def test_existing_state_root_permissions_are_not_changed(tmp_path):
     SessionWorkspace.open_or_create(
         root,
         namespace="reviews",
-        session_id="review-" + "4" * 32,
+        session_id="review-20260101-000000-" + "4" * 8,
         kind="review",
     )
 
@@ -157,7 +178,7 @@ def test_namespace_symlink_is_rejected(tmp_path):
         SessionWorkspace.open_or_create(
             root,
             namespace="reviews",
-            session_id="review-" + "5" * 32,
+            session_id="review-20260101-000000-" + "5" * 8,
             kind="review",
         )
 
@@ -180,7 +201,7 @@ def test_session_rejects_traversal_and_symlink_roots(tmp_path):
         SessionWorkspace.open_or_create(
             link,
             namespace="reviews",
-            session_id="review-" + "f" * 32,
+            session_id="review-20260101-000000-" + "f" * 8,
             kind="review",
         )
 
@@ -220,16 +241,15 @@ def test_public_json_reader_rejects_duplicate_keys(tmp_path):
 
 def _older_attempt_layout(session):
     attempt = session.start_attempt({"schema": "test.request/v1"})
-    attempt.finish(state="complete", detail={})
-    (attempt.path / "attempt.json").unlink()
-    (attempt.path / "status.json").write_text(json.dumps({"schema": "cyberjury.attempt-status/v1"}))
+    attempt.finish(_terminal(attempt))
+    (attempt.path / "record.json").unlink()
+    (attempt.path / "attempt.json").write_text(json.dumps({"schema": "cyberjury.attempt/v1"}))
 
 
-def _older_attempt_schema(session):
-    attempt = session.start_attempt({"schema": "test.request/v1"})
-    attempt.finish(state="complete", detail={})
-    path = attempt.path / "attempt.json"
-    path.write_text(json.dumps(json.loads(path.read_text()) | {"schema": "cyberjury.attempt/v0"}))
+def _older_attempt_name(session):
+    path = session.path / "attempts" / ("attempt-20260101T000000Z-" + "1" * 8)
+    path.mkdir()
+    (path / "attempt.json").write_text(json.dumps({"schema": "cyberjury.attempt/v1"}))
 
 
 def _older_session_schema(session):
@@ -237,9 +257,9 @@ def _older_session_schema(session):
     path.write_text(json.dumps(json.loads(path.read_text()) | {"schema": "cyberjury.session/v0"}))
 
 
-@pytest.mark.parametrize("age", [_older_attempt_layout, _older_attempt_schema, _older_session_schema])
+@pytest.mark.parametrize("age", [_older_attempt_layout, _older_attempt_name, _older_session_schema])
 def test_an_older_session_format_is_reported_as_unsupported(tmp_path, age):
-    """A legacy status.json layout or v0 attempt or session schema raises an error suggesting --fresh."""
+    """An attempt without record.json, an older attempt id, or a v0 session schema raises a --fresh hint."""
     session = _session(tmp_path, "7")
     age(session)
 

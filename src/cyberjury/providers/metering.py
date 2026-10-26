@@ -34,7 +34,7 @@ _CURRENT_UNIT: ContextVar[str] = ContextVar("model_call_unit", default="")
 
 @contextmanager
 def model_call_scope(*, unit_id: str) -> Iterator[None]:
-    """Bind one planned unit around its model calls."""
+    """Bind one review unit or issue link item around its model calls."""
     if not unit_id:
         raise ValueError("model call scope unit_id must be nonempty")
     token = _CURRENT_UNIT.set(unit_id)
@@ -86,20 +86,6 @@ class UsageMeter:
     calls: list[dict[str, object]] = field(default_factory=list)
     _lock: Lock = field(default_factory=Lock, repr=False)
 
-    def snapshot(self) -> dict[str, int]:
-        """Return the token totals of every completed call as plain data."""
-        return _usage_from_calls(self.call_snapshot())
-
-    def summary(self) -> str:
-        """Return aggregate token usage for the run."""
-        s = self.snapshot()
-        return (
-            f"tokens over {s['model_requests']} model requests: "
-            f"total_input={s['total_input_tokens']} uncached={s['uncached_input_tokens']} "
-            f"cache_read={s['cache_read_tokens']} cache_write={s['cache_write_tokens']} "
-            f"output={s['output_tokens']}"
-        )
-
     def call_snapshot(self) -> list[dict[str, object]]:
         """Return per request records in completion order."""
         with self._lock:
@@ -107,14 +93,9 @@ class UsageMeter:
 
     def document(self) -> dict[str, object]:
         """Return the strict attempt artifact for every model call."""
-        return self.document_from(0)
-
-    def document_from(self, completed_calls: int) -> dict[str, object]:
-        """Return the model call artifact for calls after a run boundary."""
-        with self._lock:
-            records = [dict(record) for record in self.calls[completed_calls:]]
+        records = self.call_snapshot()
         calls = [{"sequence": index, **record} for index, record in enumerate(records, 1)]
-        semantic: dict[str, object] = {"calls": calls, "usage": _usage_from_calls(records)}
+        semantic: dict[str, object] = {"calls": calls, "usage": usage_from_calls(records)}
         return {"schema": MODEL_CALLS_SCHEMA, **semantic, "content_sha256": canonical_sha256(semantic)}
 
     def record_call(self, record: dict[str, object]) -> tuple[ParseUpdate, ExchangeUpdate]:
@@ -205,7 +186,8 @@ class MeteringProvider(Provider):
             context.record_exchange = exchange_update
 
 
-def _usage_from_calls(calls: list[dict[str, object]]) -> dict[str, int]:
+def usage_from_calls(calls: list[dict[str, object]]) -> dict[str, int]:
+    """Return the token totals of the completed calls among the given call records."""
     metered = [call for call in calls if "input_tokens" in call]
     usage = {
         "model_requests": len(metered),
@@ -236,6 +218,6 @@ def validate_model_calls_document(value: object) -> dict[str, object]:
     semantic = {"calls": calls, "usage": value["usage"]}
     if value["content_sha256"] != canonical_sha256(semantic):
         raise ValueError("model calls artifact hash does not match its content")
-    if value["usage"] != _usage_from_calls(calls):
+    if value["usage"] != usage_from_calls(calls):
         raise ValueError("model calls artifact usage does not equal its call records")
     return value

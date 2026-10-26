@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from tree_sitter import Language, Query
 
 from cyberjury.review.detection import load_detection
 from cyberjury.review.failures import BackendUnavailable
@@ -25,8 +26,6 @@ from tests.review.syntax.support import callgraph, syntax_facts
 
 def test_specs_ship_a_grammar_and_every_query_per_language():
     """Each spec's queries compile against its grammar and declare the captures the analyzer reads."""
-    from tree_sitter import Language, Query
-
     specs = load_specs()
     assert set(specs) == {"c", "cpp", "go", "java", "javascript", "python", "rust", "solidity", "tsx", "typescript"}
     for name, spec in specs.items():
@@ -686,18 +685,3 @@ def test_native_analyzer_output_does_not_depend_on_input_enumeration(tmp_path):
         inputs.append((path, name, spec))
 
     assert analyze_repository(inputs) == analyze_repository(list(reversed(inputs)))
-
-
-def test_analysis_reports_progress_every_batch_of_files(tmp_path, monkeypatch, capsys):
-    """With a batch of 2, five sources report facts 2/5, 4/5, and 5/5 on stderr."""
-    monkeypatch.setattr(analyzer_module, "_PROGRESS_FILES", 2)
-    specs = load_specs()
-    inputs = []
-    for index in range(5):
-        path = tmp_path / f"m{index}.py"
-        path.write_text(f"def f{index}():\n    return {index}\n")
-        inputs.append((path, path.name, specs["python"]))
-
-    analyze_repository(inputs)
-
-    assert capsys.readouterr().err.splitlines() == ["facts 2/5", "facts 4/5", "facts 5/5"]

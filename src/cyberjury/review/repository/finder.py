@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import replace
 
 from cyberjury.review.context import SourceEvidence, SourceSpan, source_location_receipt
-from cyberjury.review.engine import RoleReply
 from cyberjury.review.finder import ReviewTarget, findings_from_reply
 from cyberjury.review.finding import Finding
+from cyberjury.review.replies import RoleReply
 from cyberjury.review.repository.context import Unit
 from cyberjury.review.repository.prompts import FINDER_RESPONSE_SCHEMA, repository_finder_system
 

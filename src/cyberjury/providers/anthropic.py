@@ -1,4 +1,4 @@
-"""AnthropicProvider: Provider backed by the Anthropic Messages API."""
+"""A provider backed by the Anthropic Messages API."""
 
 from __future__ import annotations
 

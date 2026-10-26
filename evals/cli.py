@@ -204,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_abbrev=False,
     )
     r.add_argument("case", help="full <project>:<repository case id> name")
-    r.add_argument("review_attempt", help="review attempt directory holding findings.json and outcome.json")
+    r.add_argument("review_attempt", help="review attempt directory holding record.json and findings.json")
     r.add_argument("--attempts-dir", required=True, help="runs directory for <project>/<case>/attempt-NN.json")
     r.set_defaults(func=_cmd_repository)
 

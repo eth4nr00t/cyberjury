@@ -1,13 +1,12 @@
-"""Review session tests cover logical identity, attempts, and error redaction."""
+"""Review session tests cover logical identity, attempts, and where each stage writes its artifacts."""
 
 import json
 from dataclasses import replace
 
 import pytest
 
-from cyberjury.providers.metering import UsageMeter
+from cyberjury.record import Record
 from cyberjury.review.contract import ContractReceipt
-from cyberjury.review.engine import ReviewOutcome
 from cyberjury.review.facts import Facts, FactsReceipt
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.request import (
@@ -19,11 +18,12 @@ from cyberjury.review.request import (
     TargetInput,
     seat_identity,
 )
-from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
-from cyberjury.review.session import ReviewSession, safe_error
+from cyberjury.review.result import FindingsArtifact, SkippedFiles
+from cyberjury.review.session import ReviewSession
 from cyberjury.review.target import ResolvedTarget
 from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.sources.snapshot import SourceSnapshot
+from cyberjury.workspace import SessionConflictError
 
 
 def _request() -> ReviewAttemptRequest:
@@ -42,32 +42,27 @@ def _request() -> ReviewAttemptRequest:
     )
 
 
-def _record_run_artifacts(attempt) -> None:
-    findings = FindingsArtifact.create((), ())
-    outcome = OutcomeArtifact.create(
-        target=attempt.intent.target.kind,
-        source_revision=_snapshot_id(attempt),
-        findings=findings,
-        outcome=ReviewOutcome(findings=()),
+def _finish(attempt) -> None:
+    attempt.bind(FindingsArtifact.create((), ()))
+    attempt.finish(
+        Record(
+            id=attempt.workspace.attempt_id, status="ok", started_at=attempt.workspace.started_at, duration_seconds=1.0
+        )
     )
-    attempt.bind_result(findings, outcome)
-    attempt.record_model_calls(UsageMeter().document())
-
-
-def _snapshot_id(attempt) -> str:
-    return attempt.session_workspace.read_json("snapshot.json")["snapshot_id"]
 
 
 def _bind_source(attempt, root) -> None:
     target = ResolvedTarget(kind="repository", repository_root=str(root.resolve()))
-    attempt.bind_target(target)
-    attempt.bind_snapshot(SourceSnapshot.capture(root, ()))
-    attempt.bind_contract(ContractReceipt.capture())
-    attempt.bind_facts(_FACTS)
     unit_plan = UnitPlanReceipt.create(facts=_FACTS, units=())
-    attempt.bind_unit_plan(unit_plan)
-    grounding = GroundingReceipt.create(unit_plan=unit_plan, contexts=())
-    attempt.bind_grounding(grounding)
+    for value in (
+        target,
+        SourceSnapshot.capture(root, ()),
+        ContractReceipt.capture(),
+        _FACTS,
+        unit_plan,
+        GroundingReceipt.create(unit_plan=unit_plan, contexts=()),
+    ):
+        attempt.bind(value)
 
 
 _FACTS = FactsReceipt.create(backend_id="test", facts=Facts())
@@ -79,8 +74,7 @@ def test_same_review_intent_reuses_session_with_distinct_attempts(tmp_path):
     first_session = ReviewSession.select_active(tmp_path, intent, reuse=True)
     first = first_session.start_attempt(_request())
     _bind_source(first, tmp_path)
-    _record_run_artifacts(first)
-    first.complete(exit_code=0)
+    _finish(first)
     second_session = ReviewSession.select_active(tmp_path, intent, reuse=True)
     second = second_session.start_attempt(_request())
 
@@ -96,19 +90,6 @@ def test_review_attempt_request_is_the_persisted_request(tmp_path):
     attempt = ReviewSession.create(tmp_path, intent).start_attempt(request)
 
     assert json.loads((attempt.workspace.path / "request.json").read_text()) == request.to_dict()
-
-
-def test_safe_error_redacts_and_bounds_sensitive_values():
-    """Bearer headers, api key, and token values are removed and the message stays within 2000 chars."""
-    secret = (
-        "Authorization: Bearer super-secret "
-        "headers={'Authorization': 'Bearer dict-secret'} "
-        "api key loose-secret token token-secret"
-    )
-    error = safe_error(RuntimeError(secret))
-
-    assert "secret" not in error["message"]
-    assert len(error["message"]) <= 2000
 
 
 def test_independent_reviews_of_the_same_intent_have_unique_ids(tmp_path):
@@ -127,19 +108,17 @@ def test_repository_judgment_change_requires_a_fresh_session(tmp_path):
     session = ReviewSession.select_active(tmp_path, intent, reuse=True)
     first = session.start_attempt(_request())
     _bind_source(first, tmp_path)
-    _record_run_artifacts(first)
-    first.complete(exit_code=0)
+    _finish(first)
     changed = replace(_request(), engine_version="different-build")
 
-    with pytest.raises(ValueError, match="--fresh"):
+    with pytest.raises(SessionConflictError, match="--fresh"):
         session.start_attempt(changed)
 
     fresh = ReviewSession.select_active(tmp_path, intent, reuse=False)
     assert fresh.workspace.session_id != session.workspace.session_id
     fresh_attempt = fresh.start_attempt(changed)
     _bind_source(fresh_attempt, tmp_path)
-    _record_run_artifacts(fresh_attempt)
-    fresh_attempt.complete(exit_code=0)
+    _finish(fresh_attempt)
 
 
 def test_repository_concurrency_change_can_resume_same_judgment(tmp_path):
@@ -148,67 +127,47 @@ def test_repository_concurrency_change_can_resume_same_judgment(tmp_path):
     session = ReviewSession.select_active(tmp_path, intent, reuse=True)
     first = session.start_attempt(_request())
     _bind_source(first, tmp_path)
-    _record_run_artifacts(first)
-    first.complete(exit_code=0)
-    bound = session.workspace.read_json("judgment-configuration.json")
+    _finish(first)
+    bound = session.workspace.read_json("session/judgment-configuration.json")
     changed = replace(_request(), concurrency=ConcurrencyRecord(review=4))
 
     second = session.start_attempt(changed)
     _bind_source(second, tmp_path)
-    _record_run_artifacts(second)
-    second.complete(exit_code=0)
+    _finish(second)
 
     assert second.session_workspace.path == first.session_workspace.path == session.workspace.path
     assert second.workspace.path != first.workspace.path
-    assert session.workspace.read_json("judgment-configuration.json") == bound
-    assert json.loads((second.workspace.path / "attempt.json").read_text())["state"] == "complete"
+    assert session.workspace.read_json("session/judgment-configuration.json") == bound
+    assert second.workspace.read_record().status == "ok"
 
 
-def test_attempt_state_records_the_terminal_state_and_exit_code(tmp_path):
-    """The attempt.json state goes from running to complete with exit_code 0, and every receipt file is written."""
-    intent = ReviewIntent(target=TargetInput(kind="repository", repository=str(tmp_path)))
-    state = tmp_path.parent / f"{tmp_path.name}-state"
-    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
-    assert json.loads((attempt.workspace.path / "attempt.json").read_text())["state"] == "running"
-    _bind_source(attempt, tmp_path)
-    _record_run_artifacts(attempt)
-    attempt.complete(exit_code=0)
-
-    recorded = json.loads((attempt.workspace.path / "attempt.json").read_text())
-    assert recorded["state"] == "complete"
-    assert recorded["detail"]["exit_code"] == 0
-    for name in ("target", "snapshot", "contract", "facts", "units", "grounding"):
-        assert (attempt.session_workspace.path / f"{name}.json").is_file()
-
-
-def test_a_receipt_cannot_bind_before_the_receipt_it_extends(tmp_path):
-    """Binding a unit plan before any facts receipt raises ValueError about no bound facts."""
-    intent = ReviewIntent(target=TargetInput(kind="repository", repository=str(tmp_path)))
-    state = tmp_path.parent / f"{tmp_path.name}-state"
-    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
-    attempt.bind_target(ResolvedTarget(kind="repository", repository_root=str(tmp_path.resolve())))
-    attempt.bind_snapshot(SourceSnapshot.capture(tmp_path, ()))
-    attempt.bind_contract(ContractReceipt.capture())
-
-    with pytest.raises(ValueError, match="no bound facts"):
-        attempt.bind_unit_plan(UnitPlanReceipt.create(facts=_FACTS, units=()))
-
-
-def test_terminal_state_must_match_the_review_outcome(tmp_path):
-    """Completing with exit code 0 when the outcome records one error raises a terminal state error."""
+def test_each_stage_writes_its_artifacts_under_its_own_directory(tmp_path):
+    """Target, source, facts, plan, and grounding artifacts land in their stage directories of the review."""
     intent = ReviewIntent(target=TargetInput(kind="repository", repository=str(tmp_path)))
     state = tmp_path.parent / f"{tmp_path.name}-state"
     attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
     _bind_source(attempt, tmp_path)
-    findings = FindingsArtifact.create((), ())
-    outcome = OutcomeArtifact.create(
-        target="repository",
-        source_revision=_snapshot_id(attempt),
-        findings=findings,
-        outcome=ReviewOutcome(findings=(), errors=1),
-    )
-    attempt.bind_result(findings, outcome)
-    attempt.record_model_calls(UsageMeter().document())
+    attempt.bind(SkippedFiles(()))
 
-    with pytest.raises(ValueError, match="terminal state"):
-        attempt.complete(exit_code=0)
+    for name in (
+        "target/target.json",
+        "source/snapshot.json",
+        "source/contract.json",
+        "facts/facts.json",
+        "plan/plan.json",
+        "plan/skipped-files.json",
+        "grounding/grounding.json",
+    ):
+        assert (attempt.session_workspace.path / name).is_file()
+
+
+def test_an_attempt_runs_until_its_terminal_record_is_written(tmp_path):
+    """record.json reads running after start and ok after finish."""
+    intent = ReviewIntent(target=TargetInput(kind="repository", repository=str(tmp_path)))
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    attempt = ReviewSession.select_active(state, intent, reuse=True).start_attempt(_request())
+    assert attempt.workspace.read_record().status == "running"
+
+    _finish(attempt)
+
+    assert attempt.workspace.read_record().status == "ok"

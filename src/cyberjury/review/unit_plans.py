@@ -8,7 +8,7 @@ from typing import Literal
 from cyberjury.canonical import canonical_sha256, text_sha256
 from cyberjury.review.facts import FactsReceipt
 
-UNIT_PLAN_SCHEMA = "cyberjury.unit-plan/v1"
+PLAN_SCHEMA = "cyberjury.plan/v1"
 
 type UnitKind = Literal["diff", "source"]
 
@@ -114,7 +114,4 @@ class UnitPlanReceipt:
 
     def to_dict(self) -> dict[str, object]:
         """Return the strict unit plan artifact."""
-        return {"schema": UNIT_PLAN_SCHEMA, **self.semantic_dict(), "receipt_sha256": self.receipt_sha256}
-
-
-__all__ = ["UnitPlanReceipt", "UnitPlanRecord", "UnitSourceSlice"]
+        return {"schema": PLAN_SCHEMA, **self.semantic_dict(), "receipt_sha256": self.receipt_sha256}

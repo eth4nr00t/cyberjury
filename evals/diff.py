@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
-import sys
+import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -39,22 +39,14 @@ class _CaseProgress:
         return round(time.monotonic() - self.started, 3)
 
 
-class _Tee(io.TextIOBase):
-    def __init__(self, stream: io.TextIOBase) -> None:
-        self._stream = stream
-        self._failures: list[str] = []
-
-    @property
-    def failure(self) -> str:
-        return "; ".join(self._failures)
-
-    def write(self, text: str) -> int:
-        self._stream.write(text)
-        self._failures.extend(failure for line in text.splitlines() if (failure := cli.failure_text(line)) is not None)
-        return len(text)
-
-    def flush(self) -> None:
-        self._stream.flush()
+def _final_error(output: str) -> dict[str, str]:
+    decoder, position, last = json.JSONDecoder(), 0, None
+    while position < len(output.rstrip()):
+        last, position = decoder.raw_decode(output, position)
+        while position < len(output) and output[position].isspace():
+            position += 1
+    error = last.get("error") if isinstance(last, dict) else None
+    return error if isinstance(error, dict) else {"code": "", "message": ""}
 
 
 def case_workspace(workspace: Path, case: BenchmarkCase, number: int) -> Path:
@@ -111,10 +103,15 @@ def _review_case(
     argv = ["review", "diff", "--repository", str(root), "--git-range", git_range, "--workspace", str(workspace)]
     if concurrency:
         argv += ["--concurrency", str(concurrency)]
-    diagnostics = _Tee(sys.stderr)
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(diagnostics):
-        cli.main(argv)
-    attempts = sorted(workspace.glob("reviews/*/attempts/*/attempt.json"))
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        code = cli.main(argv)
+    if code == cli.INTERRUPTED_EXIT:
+        raise KeyboardInterrupt
+    error = _final_error(output.getvalue())
+    if error["code"] == "config":
+        raise SystemExit(error["message"])
+    attempts = sorted(workspace.glob("reviews/*/attempts/*/record.json"))
     if len(attempts) != 1:
-        return recorded_attempt(case, workspace, number, error=diagnostics.failure or "the review recorded no attempt")
-    return recorded_attempt(case, attempts[0].parent, number, error=diagnostics.failure)
+        return recorded_attempt(case, workspace, number, error=error["message"] or "the review recorded no attempt")
+    return recorded_attempt(case, attempts[0].parent, number, error=error["message"])

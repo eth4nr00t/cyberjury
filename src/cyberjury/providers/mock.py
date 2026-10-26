@@ -1,4 +1,4 @@
-"""MockProvider: a Provider that returns canned text instead of calling a model."""
+"""A provider that returns canned text instead of calling a model."""
 
 from __future__ import annotations
 

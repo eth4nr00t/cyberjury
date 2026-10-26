@@ -23,7 +23,7 @@ from cyberjury.sources.paths import (
     require_contained_symlinks,
 )
 
-SNAPSHOT_SCHEMA = "cyberjury.source-snapshot/v1"
+SNAPSHOT_SCHEMA = "cyberjury.snapshot/v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MAX_SOURCE_FILE_BYTES = 100_000_000
 _MAX_SNAPSHOT_BYTES = 2_000_000_000

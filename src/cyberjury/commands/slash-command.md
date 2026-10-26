@@ -52,9 +52,11 @@ positional tokens, explicit flags, or the current directory default.
 
 After the command:
 
-- Relay the report exactly enough for the user to act.
-- If the command exits nonzero, state that the diff review failed or degraded and include the error
-  details.
+- Stdout ends with the stage records and the attempt record. Read the findings file the `result`
+  record lists in `artifacts`, relative to the review directory in the `session` record's `path`,
+  and relay the findings exactly enough for the user to act.
+- If the command exits nonzero, state that the diff review failed, degraded, or was interrupted, and
+  include the `error` of the attempt record when it has one.
 
 ## Repository Review
 
@@ -64,9 +66,10 @@ Use one command.
 cyberjury review repository <target> [repository flags]
 ```
 
-If this exits nonzero, state that the repository review failed or is incomplete and include the
-error details. Do not call the review complete. Re-running the same command on the same workspace
-resumes open units. Do not edit workspace files.
+Read and relay its findings the same way as a Diff Review. If this exits nonzero, state that the
+repository review failed, is incomplete, or was interrupted, and include the `error` of the attempt
+record when it has one. Do not call the review complete. Re-running the same command on the same
+workspace resumes open units. Do not edit workspace files.
 
 ## Response
 
@@ -74,5 +77,5 @@ Summarize the result in this order:
 
 - Commands run.
 - Exit status for each step.
-- Findings location or printed findings.
+- Findings file and the findings it holds.
 - Any failures or degraded review warning.

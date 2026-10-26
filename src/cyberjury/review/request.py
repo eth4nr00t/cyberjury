@@ -10,8 +10,8 @@ from cyberjury.canonical import canonical_sha256
 
 type ReviewTargetKind = Literal["diff", "repository"]
 
-INTENT_SCHEMA = "cyberjury.review-intent/v1"
-REQUEST_SCHEMA = "cyberjury.review-attempt-request/v1"
+INTENT_SCHEMA = "cyberjury.intent/v1"
+REQUEST_SCHEMA = "cyberjury.request/v1"
 
 
 @dataclass(frozen=True, kw_only=True)

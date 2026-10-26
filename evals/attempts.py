@@ -10,8 +10,9 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury.review.result import FindingsArtifact, OutcomeArtifact
+from cyberjury.review.result import FindingsArtifact
 from cyberjury.sources.snapshot import capture_source_snapshot
+from cyberjury.workspace import read_record
 from evals.benchmarks.cases import BenchmarkCase
 from evals.benchmarks.targets import source_root
 
@@ -121,26 +122,26 @@ def collect_attempts(directories: Sequence[str | Path]) -> list[Attempt]:
 
 def recorded_attempt(case: BenchmarkCase, directory: Path, number: int, *, error: str = "") -> dict[str, object]:
     """Record the product output of one review attempt directory as an adjudicable attempt."""
-    findings_path = directory / "findings.json"
-    if not findings_path.is_file():
+    record_path, findings_path = directory / "record.json", directory / "findings.json"
+    record = read_record(record_path) if record_path.is_file() else None
+    reason = record.error.message if record is not None and record.error is not None else ""
+    if record is None or not findings_path.is_file():
         return {
             "case": case.name,
             "attempt": number,
             "complete": False,
-            "error": error or f"{directory} has no review result",
+            "error": reason or error or f"{directory} has no review result",
             "findings": [],
         }
     findings = read_json(findings_path)
-    artifact = FindingsArtifact.from_dict(findings)
-    outcome = OutcomeArtifact.from_dict(read_json(directory / "outcome.json"))
-    if outcome.target != case.kind or outcome.findings_sha256 != artifact.content_sha256:
-        raise ValueError(f"{directory} outcome does not identify its {case.kind} findings")
-    _require_case_source(case, directory, outcome.source_revision)
+    FindingsArtifact.from_dict(findings)
+    _require_case_source(case, directory, str(read_record(directory / "stages" / "source.json").attributes["snapshot"]))
+    complete = record.status == "ok"
     return {
         "case": case.name,
         "attempt": number,
-        "complete": outcome.complete,
-        "error": "" if outcome.complete else outcome.failure_reason or error or "review incomplete",
+        "complete": complete,
+        "error": "" if complete else reason or record.status,
         "findings": [{**item, "candidate_id": item["id"]} for item in findings["findings"]],
         "issues": findings["issues"],
     }
@@ -150,11 +151,11 @@ def _require_case_source(case: BenchmarkCase, directory: Path, source_revision: 
     session = directory.resolve().parent.parent
     if directory.resolve().parent.name != "attempts":
         raise ValueError(f"{directory} is not a review attempt directory inside its review session")
-    target, snapshot = read_json(session / "target.json"), read_json(session / "snapshot.json")
+    target, snapshot = read_json(session / "target" / "target.json"), read_json(session / "source" / "snapshot.json")
     if not isinstance(target, dict) or target.get("kind") != case.kind:
         raise ValueError(f"{session} is not a {case.kind} review session")
     if not isinstance(snapshot, dict) or snapshot.get("snapshot_id") != source_revision:
-        raise ValueError(f"{session} snapshot.json does not identify the reviewed source of {directory}")
+        raise ValueError(f"{session} source/snapshot.json does not identify the reviewed source of {directory}")
     if case.kind == "diff":
         git = target.get("git") if isinstance(target.get("git"), dict) else {}
         if (git.get("patch_base_revision"), git.get("right_revision")) != (case.target["base"], case.target["commit"]):

@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from cyberjury.review.context import GroundingContext
+from cyberjury.review.context import GroundingContext, delivered_source_block
 from cyberjury.review.definitions import DefinitionUnitPlan
-from cyberjury.review.diff.context import ground_diff_unit, plan_diff_units
+from cyberjury.review.diff.context import changed_file_sources, ground_diff_unit, plan_diff_units
 from cyberjury.review.diff.model import DiffUnit
 from cyberjury.review.diff.prepare import prepare_diff_review
 from cyberjury.review.facts import FactLimitation, Facts
@@ -379,9 +379,6 @@ def test_changed_file_windows_center_on_every_changed_region_of_any_text_file(tm
 
 def test_changed_file_windows_stay_inside_the_context_budget_as_exact_line_ranges(tmp_path):
     """A 4000-line app.py yields one window from line 1 that fits the cap and ends on a whole line."""
-    from cyberjury.review.context import delivered_source_block
-    from cyberjury.review.diff.context import changed_file_sources
-
     (tmp_path / "app.py").write_text("".join(f"value_{index} = {index}\n" for index in range(1, 4000)))
 
     _text, delivered = changed_file_sources(tmp_path, ("app.py",), {})

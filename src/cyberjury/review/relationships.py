@@ -14,7 +14,6 @@ type ObservationKind = Literal["syntax_call", "import_declaration", "namespace_d
 type StructuralRelationKind = Literal["import", "namespace", "inheritance", "reference"]
 type RelationshipTargetStatus = Literal["candidate", "unresolved"]
 
-RELATIONSHIP_EVIDENCE_SCHEMA = "cyberjury.relationship-evidence/v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -461,7 +460,6 @@ class RelationshipEvidenceBundle:
         """Serialize deterministic evidence in stable order."""
         canonical = self.canonical()
         return {
-            "schema": RELATIONSHIP_EVIDENCE_SCHEMA,
             "sources": [source.to_data() for source in canonical.sources],
             "definitions": [definition.to_data() for definition in canonical.definitions],
             "callsites": [callsite.to_data() for callsite in canonical.callsites],

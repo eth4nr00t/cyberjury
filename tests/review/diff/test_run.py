@@ -20,6 +20,7 @@ from cyberjury.review.diff.model import (
     DiffUnit,
 )
 from cyberjury.review.finding import ChangeAnchor, Finding
+from cyberjury.workspace import read_record
 from tests.review.diff.support import diff_unit, diff_units, finder, reply, review
 from tests.review.support import StubIssueJudge, definition
 
@@ -644,18 +645,12 @@ def test_diff_review_is_not_degraded_by_a_complete_finding():
     assert len(result.outcome.findings) == 1
 
 
-def test_diff_review_reports_one_progress_call_per_batch():
-    """Two per-file units report on_unit progress as (1, 2) then (2, 2)."""
-    seen = []
+def test_diff_review_records_one_item_per_unit(tmp_path):
+    """Two per-file units leave two ok review item records beside their findings payloads."""
+    review(_FILE_A + _FILE_B, provider=MockProvider(default=reply([])), max_chars=1, review=tmp_path)
 
-    review(
-        _FILE_A + _FILE_B,
-        provider=MockProvider(default=reply([])),
-        max_chars=1,
-        on_unit=lambda done, total, _seconds: seen.append((done, total)),
-    )
-
-    assert seen == [(1, 2), (2, 2)]
+    records = [read_record(path) for path in sorted((tmp_path / "review" / "items").glob("*.json"))]
+    assert [record.status for record in records] == ["ok", "ok"]
 
 
 def test_diff_review_records_failed_batch_and_continues():

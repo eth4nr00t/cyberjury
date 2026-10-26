@@ -19,7 +19,7 @@ from cyberjury.sources.git import (
     resolve_root,
 )
 
-TARGET_SCHEMA = "cyberjury.resolved-target/v1"
+TARGET_SCHEMA = "cyberjury.target/v1"
 
 
 class TargetResolutionError(RuntimeError):

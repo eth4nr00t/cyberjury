@@ -13,7 +13,8 @@ from cyberjury.review.facts import Facts, FactsReceipt
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.navigation import SourceNavigator
-from cyberjury.review.result import SkippedFile
+from cyberjury.review.recorder import Recorder
+from cyberjury.review.result import SkippedFile, SkippedFiles
 from cyberjury.review.selection import FileSelection, select_files
 from cyberjury.review.syntax.facts import extract_syntax_facts, syntax_backend_id
 from cyberjury.review.unit_plans import UnitPlanReceipt, UnitPlanRecord
@@ -81,25 +82,35 @@ def prepare_review[U: PlannedUnit](
     *,
     plan: Callable[[SharedGrounding], ReviewPlan[U]],
     ground: Callable[[U, SharedGrounding], GroundingContext],
+    detection: Detection | None = None,
     has_reviewable_source: bool = True,
+    recorder: Recorder | None = None,
 ) -> PreparedReview[U]:
-    """Extract facts and navigation when the target has reviewable source, then plan, ground, and bind receipts."""
-    detection = detection_for(snapshot.root, snapshot.files)
-    selection = select_files(snapshot.root, snapshot.files, detection)
-    if has_reviewable_source:
-        facts, receipt = extract_facts(snapshot, selection, detection)
-        navigator = SourceNavigator.from_facts(
-            snapshot.root,
-            source_files=selection.navigation_files,
-            import_files=facts.import_files,
-            relationship_evidence=facts.relationships,
-            documentation_files=selection.documentation_files,
-            dependency_files=selection.dependency_files,
-        )
-    else:
-        facts = Facts()
-        receipt = FactsReceipt.create(backend_id=syntax_backend_id(), facts=facts)
-        navigator = None
+    """Extract facts and navigation when the target has reviewable source, then plan and ground, one stage each.
+
+    A caller that already detected the snapshot's languages passes that detection instead of detecting again.
+    """
+    recorder = recorder or Recorder()
+    with recorder.stage("facts") as measure:
+        if detection is None:
+            detection = detection_for(snapshot.root, snapshot.files)
+        selection = select_files(snapshot.root, snapshot.files, detection)
+        if has_reviewable_source:
+            facts, receipt = extract_facts(snapshot, selection, detection)
+            navigator = SourceNavigator.from_facts(
+                snapshot.root,
+                source_files=selection.navigation_files,
+                import_files=facts.import_files,
+                relationship_evidence=facts.relationships,
+                documentation_files=selection.documentation_files,
+                dependency_files=selection.dependency_files,
+            )
+        else:
+            facts = Facts()
+            receipt = FactsReceipt.create(backend_id=syntax_backend_id(), facts=facts)
+            navigator = None
+        measure.metrics.update(limitations=len(facts.limitations))
+        measure.bind(receipt)
     shared = SharedGrounding(
         snapshot=snapshot,
         detection=detection,
@@ -107,19 +118,27 @@ def prepare_review[U: PlannedUnit](
         facts=facts,
         navigator=navigator,
     )
-    planned = plan(shared)
-    unit_plan = UnitPlanReceipt.create(
-        facts=receipt,
-        units=tuple(planned.records),
-        expected_owned_paths=planned.expected_owned_paths,
-    )
-    units = tuple(replace(unit, id=record.id) for unit, record in zip(planned.units, unit_plan.units, strict=True))
-    units = tuple(replace(unit, grounding=ground(unit, shared)) for unit in units)
+    with recorder.stage("plan") as measure:
+        planned = plan(shared)
+        unit_plan = UnitPlanReceipt.create(
+            facts=receipt,
+            units=tuple(planned.records),
+            expected_owned_paths=planned.expected_owned_paths,
+        )
+        measure.metrics.update(items=len(unit_plan.units), skipped_files=len(planned.skipped_files))
+        measure.bind(unit_plan)
+        measure.bind(SkippedFiles(planned.skipped_files))
+    with recorder.stage("grounding") as measure:
+        units = tuple(replace(unit, id=record.id) for unit, record in zip(planned.units, unit_plan.units, strict=True))
+        units = tuple(replace(unit, grounding=ground(unit, shared)) for unit in units)
+        grounding = GroundingReceipt.create(unit_plan=unit_plan, contexts=tuple(unit.grounding for unit in units))
+        measure.metrics.update(items=len(units))
+        measure.bind(grounding)
     return PreparedReview(
         shared=shared,
         facts=receipt,
         unit_plan=unit_plan,
-        grounding=GroundingReceipt.create(unit_plan=unit_plan, contexts=tuple(unit.grounding for unit in units)),
+        grounding=grounding,
         units=units,
         skipped_files=planned.skipped_files,
     )

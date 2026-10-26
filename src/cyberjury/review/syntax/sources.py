@@ -76,10 +76,3 @@ def collect_navigation_evidence(
         navigation_sources=navigation_sources,
         limitations=tuple(limitations),
     )
-
-
-__all__ = [
-    "RepositoryNavigationEvidence",
-    "collect_navigation_evidence",
-    "reviewable_sources",
-]

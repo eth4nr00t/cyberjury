@@ -2,7 +2,7 @@ extensions: [.py]
 grammar: [tree_sitter_python, language]
 files:
   ignored_dirs: [.mypy_cache, .pytest_cache, .ruff_cache, .tox, .venv, __pycache__, venv]
-  test_name_patterns: ['*_test.py', test_*.py]
+  test_name_patterns: ['*_test.py', 'test_*.py']
   lockfiles: [Pipfile.lock, pdm.lock, poetry.lock, uv.lock]
 syntax:
   definitions: |

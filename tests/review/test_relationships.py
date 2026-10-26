@@ -1,4 +1,4 @@
-"""Relationship evidence stays deterministic and model results stay attributable."""
+"""Relationship evidence keeps stable ids and rejects inconsistent source coordinates."""
 
 import pytest
 
@@ -49,12 +49,11 @@ def _bundle():
 
 
 def test_relationship_evidence_has_stable_ids_and_explicit_source_hashes():
-    """Rebuilding the route-to-load bundle gives equal ids, v1 schema data, and 64-hex content hashes."""
+    """Rebuilding the route-to-load bundle gives equal ids, a candidate callee, and 64-hex content hashes."""
     bundle = _bundle()
 
     assert bundle == _bundle()
     data = bundle.to_data()
-    assert data["schema"] == "cyberjury.relationship-evidence/v1"
     assert bundle.call_relationships[0].target_status == "candidate"
     assert bundle.call_relationships[0].candidate_callee_definition_ids == (
         next(item.id for item in bundle.definitions if item.name == "load"),

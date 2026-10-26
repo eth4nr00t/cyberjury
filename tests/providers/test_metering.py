@@ -1,4 +1,4 @@
-"""Metering tests cover usage aggregation, snapshots, and provider delegation."""
+"""Metering tests cover per-call records, usage aggregation, and provider delegation."""
 
 import json
 
@@ -12,6 +12,7 @@ from cyberjury.providers.metering import (
     model_call_context,
     model_call_scope,
     record_model_parse,
+    usage_from_calls,
     validate_model_calls_document,
 )
 
@@ -40,12 +41,12 @@ def _call(provider):
 
 
 def test_metering_records_each_calls_usage_and_returns_the_inner_result():
-    """One call with 100 uncached and 80 cache-read tokens returns "ok" and snapshots 180 total input."""
+    """One call with 100 uncached and 80 cache-read tokens returns "ok" and totals 180 input tokens."""
     meter = UsageMeter()
     inner = _Fake(Usage(input_tokens=100, output_tokens=20, cache_read_tokens=80, cache_write_tokens=0))
     result = _call(MeteringProvider(inner, meter))
     assert result.text == "ok"
-    assert meter.snapshot() == {
+    assert usage_from_calls(meter.call_snapshot()) == {
         "model_requests": 1,
         "total_input_tokens": 180,
         "uncached_input_tokens": 100,
@@ -61,48 +62,31 @@ def test_meter_accumulates_across_calls():
     metered = MeteringProvider(_Fake(Usage(input_tokens=10, output_tokens=5, cache_write_tokens=10)), meter)
     _call(metered)
     _call(metered)
-    snap = meter.snapshot()
-    assert snap["model_requests"] == 2
-    assert snap["uncached_input_tokens"] == 20
-    assert snap["output_tokens"] == 10
-    assert snap["cache_write_tokens"] == 20
+    usage = usage_from_calls(meter.call_snapshot())
+    assert usage["model_requests"] == 2
+    assert usage["uncached_input_tokens"] == 20
+    assert usage["output_tokens"] == 10
+    assert usage["cache_write_tokens"] == 20
 
 
-def test_summary_names_every_bucket_and_leads_with_the_whole_prompt():
-    """Three calls produce a summary with total_input=24 plus uncached, cache_read, cache_write, and output."""
-    meter = UsageMeter()
-    metered = MeteringProvider(
-        _Fake(Usage(input_tokens=1, output_tokens=2, cache_read_tokens=3, cache_write_tokens=4)), meter
-    )
-    for _ in range(3):
-        _call(metered)
-    s = meter.summary()
-    assert "3 model requests" in s
-    assert "total_input=24" in s
-    assert "uncached=3" in s
-    assert "cache_read=9" in s
-    assert "cache_write=12" in s
-    assert "output=6" in s
-
-
-def test_snapshot_derives_the_whole_prompt_so_a_cache_hit_is_not_read_as_a_saving():
+def test_usage_derives_the_whole_prompt_so_a_cache_hit_is_not_read_as_a_saving():
     """Ten uncached plus 90 cache-read tokens report total_input_tokens as 100."""
     meter = UsageMeter()
     _call(MeteringProvider(_Fake(Usage(input_tokens=10, cache_read_tokens=90, output_tokens=2)), meter))
-    snap = meter.snapshot()
-    assert snap["model_requests"] == 1
-    assert snap["uncached_input_tokens"] == 10
-    assert snap["cache_read_tokens"] == 90
-    assert snap["total_input_tokens"] == 100
+    usage = usage_from_calls(meter.call_snapshot())
+    assert usage["model_requests"] == 1
+    assert usage["uncached_input_tokens"] == 10
+    assert usage["cache_read_tokens"] == 90
+    assert usage["total_input_tokens"] == 100
 
 
-def test_snapshot_is_a_copy_so_a_later_call_cannot_mutate_a_recorded_delta():
-    """A snapshot taken after a 5-token call still reads 5 after a later 7-token call."""
+def test_call_snapshot_is_a_copy_so_a_later_call_cannot_change_it():
+    """Call records taken after a 5-token call still hold one call of 5 tokens after a later 7-token call."""
     meter = UsageMeter()
     _call(MeteringProvider(_Fake(Usage(input_tokens=5)), meter))
-    before = meter.snapshot()
+    before = meter.call_snapshot()
     _call(MeteringProvider(_Fake(Usage(input_tokens=7)), meter))
-    assert before["uncached_input_tokens"] == 5
+    assert [call["input_tokens"] for call in before] == [5]
 
 
 def test_a_failed_call_is_recorded_but_adds_no_usage():
@@ -116,29 +100,8 @@ def test_a_failed_call_is_recorded_but_adds_no_usage():
     with pytest.raises(RuntimeError, match="down"):
         _call(MeteringProvider(_Down(), meter))
 
-    assert meter.snapshot()["model_requests"] == 0
+    assert usage_from_calls(meter.call_snapshot())["model_requests"] == 0
     assert meter.call_snapshot()[0]["status"] == "failed"
-
-
-def test_meter_documents_one_run_after_a_call_boundary():
-    """A document from the call boundary holds only the second call, renumbered to sequence 1 with 12 input tokens."""
-    meter = UsageMeter()
-    provider = MeteringProvider(_Fake(Usage(input_tokens=7, cache_read_tokens=5, output_tokens=3)), meter)
-    with model_call_context(role="finder", trigger="provider_request"):
-        _call(provider)
-        record_model_parse()
-    boundary = len(meter.call_snapshot())
-    with model_call_context(role="finder", trigger="provider_request"):
-        _call(provider)
-        record_model_parse()
-
-    complete = validate_model_calls_document(meter.document())
-    second = validate_model_calls_document(meter.document_from(boundary))
-
-    assert complete["usage"]["model_requests"] == 2
-    assert second["usage"]["model_requests"] == 1
-    assert second["usage"]["total_input_tokens"] == 12
-    assert [call["sequence"] for call in second["calls"]] == [1]
 
 
 def test_meter_records_role_unit_prompt_size_usage_duration_and_status():

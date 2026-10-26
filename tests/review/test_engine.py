@@ -18,20 +18,18 @@ from cyberjury.review.context import (
     select_evidence,
 )
 from cyberjury.review.engine import (
-    EvidenceJudgment,
-    FindingAccumulator,
     ReviewCycle,
     ReviewOutcome,
-    RoleResponseError,
     extend_review_outcome,
-    parse_role_response,
-    run_evidence_judgment,
     run_grounded_judgment,
     run_review_units,
 )
+from cyberjury.review.exchange import EvidenceJudgment, run_evidence_judgment
 from cyberjury.review.failures import ReviewUnitFailure
 from cyberjury.review.navigation import SourceBudgetError, SourceNavigationError, SourceNavigator
+from cyberjury.review.replies import RoleResponseError, parse_role_response
 from cyberjury.review.schemas import closed_object, finder_response_schema
+from cyberjury.review.union import FindingAccumulator
 from tests.review.support import navigator_from_callgraph
 
 
@@ -1371,13 +1369,13 @@ def test_review_units_record_a_raised_unit_as_failed_work():
     assert outcome.errors == 1
 
 
-def test_a_failing_unit_hook_stops_the_run_instead_of_losing_its_checkpoint():
-    """An on_unit hook raising "checkpoint write failed" propagates out of run_review_units."""
+def test_a_failing_unit_hook_stops_the_run_instead_of_losing_its_record():
+    """An on_unit hook raising "unit record write failed" propagates out of run_review_units."""
 
     def fail(*_args):
-        raise RuntimeError("checkpoint write failed")
+        raise RuntimeError("unit record write failed")
 
-    with pytest.raises(RuntimeError, match="checkpoint write failed"):
+    with pytest.raises(RuntimeError, match="unit record write failed"):
         _units(["one"], lambda _unit: ReviewCycle(findings=[]), on_unit=fail)
 
 

@@ -292,19 +292,7 @@ class SourceNavigationSession:
         """Execute a strict batch and fail rather than reinterpret malformed queries."""
         queries = parse_source_queries(requested)
         query_keys = tuple(_query_key(query) for query in queries)
-        if len(query_keys) != len(set(query_keys)):
-            repeated = next(query for query, key in zip(queries, query_keys, strict=True) if query_keys.count(key) > 1)
-            raise RepeatedSourceQueryError(repeated)
-        already_executed = next(
-            (query for query, key in zip(queries, query_keys, strict=True) if key in self._executed_query_keys),
-            None,
-        )
-        if already_executed is not None:
-            raise RepeatedSourceQueryError(already_executed)
-        if len(self._executed_query_keys) + len(query_keys) > MAX_UNIQUE_QUERIES_PER_SESSION:
-            raise SourceNavigationError(
-                f"source navigation exceeds {MAX_UNIQUE_QUERIES_PER_SESSION} unique queries per session"
-            )
+        self._admit_batch(queries, query_keys)
         blocks: list[str] = []
         coverage = GroundingCoverage()
         source_evidence: list[SourceEvidence] = []
@@ -313,52 +301,15 @@ class SourceNavigationSession:
             self._executed_query_keys.add(query_key)
             kind = query["kind"]
             if kind in {"search_symbols", "search_text"}:
-                if kind == "search_symbols":
-                    targets, page, more, exact_match = self._search_symbols(query["query"], query["page"])
-                    label = "Unique exact symbol match"
-                else:
-                    targets, page, more = self._search_text(query["query"], query["page"])
-                    exact_match, label = True, "Unique exact text match"
-                blocks.append(
-                    _render_search(
-                        index,
-                        kind,
-                        query["query"],
-                        targets,
-                        page,
-                        more,
-                        self._held_targets(targets, held_receipts),
-                        exact_match=exact_match,
-                    )
-                )
-                if kind == "search_symbols" and not exact_match and page == 0:
-                    bindings = self._import_bindings(query["query"].split(".")[0])
-                    if bindings:
-                        blocks[-1] += "\n" + bindings
-                exact = (
-                    self._unique_exact_read(
-                        targets, page=page, more=more, blocks=blocks, target_chars=target_chars, label=label
-                    )
-                    if exact_match
-                    else None
-                )
+                exact = self._search(index, query, blocks, held_receipts, target_chars=target_chars)
                 if exact is not None:
-                    blocks.append(f"{label}:\n{exact.text}")
                     coverage = merge_grounding_coverage((coverage, exact.coverage))
                     source_evidence.extend(exact.source_evidence)
             elif kind == "search_call_candidates":
-                text = self._search_call_candidates(
-                    query["definition_id"],
-                    query["direction"],
-                    query["page"],
-                )
+                text = self._search_call_candidates(query["definition_id"], query["direction"], query["page"])
                 blocks.append(f"Source query {index} {text}")
             elif kind == "search_structural_candidates":
-                text = self._search_structural_candidates(
-                    query["definition_id"],
-                    query["direction"],
-                    query["page"],
-                )
+                text = self._search_structural_candidates(query["definition_id"], query["direction"], query["page"])
                 blocks.append(f"Source query {index} {text}")
             else:
                 raise SourceNavigationError(f"source query {index} has unknown kind {kind!r}")
@@ -381,6 +332,62 @@ class SourceNavigationSession:
             coverage=coverage,
             source_evidence=tuple(source_evidence),
         )
+
+    def _admit_batch(self, queries: list[dict[str, object]], query_keys: tuple[str, ...]) -> None:
+        if len(query_keys) != len(set(query_keys)):
+            repeated = next(query for query, key in zip(queries, query_keys, strict=True) if query_keys.count(key) > 1)
+            raise RepeatedSourceQueryError(repeated)
+        already_executed = next(
+            (query for query, key in zip(queries, query_keys, strict=True) if key in self._executed_query_keys),
+            None,
+        )
+        if already_executed is not None:
+            raise RepeatedSourceQueryError(already_executed)
+        if len(self._executed_query_keys) + len(query_keys) > MAX_UNIQUE_QUERIES_PER_SESSION:
+            raise SourceNavigationError(
+                f"source navigation exceeds {MAX_UNIQUE_QUERIES_PER_SESSION} unique queries per session"
+            )
+
+    def _search(
+        self,
+        index: int,
+        query: dict[str, object],
+        blocks: list[str],
+        held_receipts: list[SourceEvidence],
+        *,
+        target_chars: int,
+    ) -> SourceNavigationResult | None:
+        kind = query["kind"]
+        if kind == "search_symbols":
+            targets, page, more, exact_match = self._search_symbols(query["query"], query["page"])
+            label = "Unique exact symbol match"
+        else:
+            targets, page, more = self._search_text(query["query"], query["page"])
+            exact_match, label = True, "Unique exact text match"
+        blocks.append(
+            _render_search(
+                index,
+                kind,
+                query["query"],
+                targets,
+                page,
+                more,
+                self._held_targets(targets, held_receipts),
+                exact_match=exact_match,
+            )
+        )
+        if kind == "search_symbols" and not exact_match and page == 0:
+            bindings = self._import_bindings(query["query"].split(".")[0])
+            if bindings:
+                blocks[-1] += "\n" + bindings
+        if not exact_match:
+            return None
+        exact = self._unique_exact_read(
+            targets, page=page, more=more, blocks=blocks, target_chars=target_chars, label=label
+        )
+        if exact is not None:
+            blocks.append(f"{label}:\n{exact.text}")
+        return exact
 
     def _held_targets(self, targets: tuple[SourceTarget, ...], receipts: list[SourceEvidence]) -> dict[str, str]:
         held = {}

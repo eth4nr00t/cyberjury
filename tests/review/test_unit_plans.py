@@ -22,7 +22,7 @@ def test_unit_plan_binds_facts_and_units_into_its_receipt_hash():
     receipt = UnitPlanReceipt.create(facts=_FACTS, units=(_unit(),))
     renamed = UnitPlanReceipt.create(facts=_FACTS, units=(_unit("other"),))
 
-    assert receipt.to_dict()["schema"] == "cyberjury.unit-plan/v1"
+    assert receipt.to_dict()["schema"] == "cyberjury.plan/v1"
     assert receipt.facts_receipt_sha256 == _FACTS.receipt_sha256
     assert receipt.expected_owned_paths == ("app.py",)
     assert renamed.receipt_sha256 != receipt.receipt_sha256

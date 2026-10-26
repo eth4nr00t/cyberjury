@@ -1,4 +1,4 @@
-"""RetryProvider: wrap any Provider, retrying `complete` on transient failure."""
+"""A provider wrapper that retries `complete` on transient failure."""
 
 from __future__ import annotations
 

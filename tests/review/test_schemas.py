@@ -3,6 +3,8 @@
 import pytest
 
 from cyberjury.providers.base import ResponseSchema
+from cyberjury.review.diff import prompts as diff
+from cyberjury.review.repository import prompts as repository
 from cyberjury.review.schemas import closed_object, finder_response_schema, validate_response_object
 
 _FINDING = closed_object({"file": {"type": "string"}})
@@ -10,9 +12,6 @@ _FINDING = closed_object({"file": {"type": "string"}})
 
 def test_every_finder_system_explains_each_schema_field_without_an_example():
     """Diff and repository finder prompts name every schema field in backticks and give no JSON example."""
-    from cyberjury.review.diff import prompts as diff
-    from cyberjury.review.repository import prompts as repository
-
     systems = (
         (diff.diff_finder_system(review_brief="", severity_rubric="", navigation=""), diff.FINDER_RESPONSE_SCHEMA),
         (

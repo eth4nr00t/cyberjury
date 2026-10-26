@@ -8,7 +8,7 @@ from pathlib import Path
 
 from cyberjury.canonical import canonical_sha256
 
-CONTRACT_SCHEMA = "cyberjury.review-contract/v1"
+CONTRACT_SCHEMA = "cyberjury.contract/v1"
 CONTRACT_DIR = Path(__file__).resolve().parent
 _PACKAGE_ROOT = CONTRACT_DIR.parents[1]
 SECURITY_KERNEL_FILE = CONTRACT_DIR / "security-kernel.md"

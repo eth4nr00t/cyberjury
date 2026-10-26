@@ -1,4 +1,4 @@
-"""Strict shared findings and outcome artifacts for every review target."""
+"""Strict shared findings and skipped file artifacts for every review target."""
 
 from __future__ import annotations
 
@@ -8,28 +8,26 @@ from dataclasses import dataclass
 from typing import Literal
 
 from cyberjury.canonical import canonical_sha256, normalized_repository_path
-from cyberjury.review.engine import ReviewOutcome
 from cyberjury.review.finding import Finding
 from cyberjury.review.issues import Issue, issue_id
 from cyberjury.severity import SEVERITIES, index
 
 FINDINGS_SCHEMA = "cyberjury.findings/v1"
-OUTCOME_SCHEMA = "cyberjury.review-outcome/v1"
-RESULT_SCHEMA = "cyberjury.review-result/v1"
-SKIP_REASONS = {
-    "noise": "excluded by the noise rules",
-    "binary": "binary file",
-    "not_utf8": "not UTF-8 text",
-    "empty_file": "empty file",
-    "too_large": "larger than the review file size limit",
-    "rename_only": "rename only",
-    "copy_only": "copy only",
-    "mode_only": "mode change only",
-    "empty_new_file": "empty new file",
-    "empty_deleted_file": "empty deleted file",
-    "no_hunk": "file section without a hunk",
-    "submodule": "git submodule pointer",
-}
+SKIPPED_FILES_SCHEMA = "cyberjury.skipped-files/v1"
+SKIP_REASONS = (
+    "noise",
+    "binary",
+    "not_utf8",
+    "empty_file",
+    "too_large",
+    "rename_only",
+    "copy_only",
+    "mode_only",
+    "empty_new_file",
+    "empty_deleted_file",
+    "no_hunk",
+    "submodule",
+)
 
 
 def _digest(value: object, label: str) -> str:
@@ -57,11 +55,6 @@ class SkippedFile:
         if self.reason not in SKIP_REASONS:
             raise ValueError("skipped file reason is invalid")
 
-    @property
-    def description(self) -> str:
-        """Return the operator wording of the skip reason."""
-        return SKIP_REASONS[self.reason]
-
     def to_dict(self) -> dict[str, object]:
         """Return the strict JSON representation."""
         return {"path": self.path, "reason": self.reason}
@@ -72,6 +65,17 @@ class SkippedFile:
         if not isinstance(value, dict) or set(value) != {"path", "reason"}:
             raise ValueError("skipped file record has an invalid shape")
         return cls(path=value["path"], reason=value["reason"])
+
+
+@dataclass(frozen=True, slots=True)
+class SkippedFiles:
+    """The target files one review kept out of model review."""
+
+    files: tuple[SkippedFile, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the strict JSON representation."""
+        return {"schema": SKIPPED_FILES_SCHEMA, "files": [item.to_dict() for item in self.files]}
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -402,172 +406,3 @@ def findings_artifact(findings: Iterable[Finding], issues: Sequence[Issue]) -> F
             for issue in issues
         ),
     )
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class OutcomeArtifact:
-    """The strict target neutral completion state for one review result."""
-
-    target: Literal["diff", "repository"]
-    source_revision: str
-    findings_sha256: str
-    complete: bool
-    errors: int
-    failures: int
-    incomplete: int
-    grounding_missing: int
-    grounding_unresolved: int
-    limitations: int
-    failure_reason: str
-    skipped_files: tuple[SkippedFile, ...]
-    content_sha256: str
-    schema: str = OUTCOME_SCHEMA
-
-    def __post_init__(self) -> None:
-        """Verify completion from its controlling facts and content hash."""
-        if self.schema != OUTCOME_SCHEMA or self.target not in {"diff", "repository"}:
-            raise ValueError("review outcome schema or target is invalid")
-        _digest(self.source_revision, "review outcome source revision")
-        _digest(self.findings_sha256, "review outcome findings hash")
-        if not isinstance(self.complete, bool):
-            raise ValueError("review outcome completion is invalid")
-        for name in (
-            "errors",
-            "failures",
-            "incomplete",
-            "grounding_missing",
-            "grounding_unresolved",
-            "limitations",
-        ):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise ValueError(f"review outcome {name} must be a nonnegative integer")
-        if not isinstance(self.failure_reason, str):
-            raise ValueError("review outcome failure reason must be a string")
-        if not isinstance(self.skipped_files, tuple) or not all(
-            isinstance(item, SkippedFile) for item in self.skipped_files
-        ):
-            raise ValueError("review outcome skipped files are invalid")
-        expected_complete = not any(
-            (
-                self.errors,
-                self.failures,
-                self.incomplete,
-                self.grounding_missing,
-                self.grounding_unresolved,
-                self.failure_reason,
-            )
-        )
-        if self.complete != expected_complete:
-            raise ValueError("review outcome completion contradicts its counters")
-        if self.content_sha256 != canonical_sha256(self.semantic_dict()):
-            raise ValueError("review outcome content hash does not match its artifact")
-
-    @classmethod
-    def create[T](
-        cls,
-        *,
-        target: Literal["diff", "repository"],
-        source_revision: str,
-        findings: FindingsArtifact,
-        outcome: ReviewOutcome[T],
-        skipped_files: tuple[SkippedFile, ...] = (),
-    ) -> OutcomeArtifact:
-        """Create the target neutral terminal state from a review outcome."""
-        fields = {
-            "target": target,
-            "source_revision": source_revision,
-            "findings_sha256": findings.content_sha256,
-            "complete": outcome.complete,
-            "errors": outcome.errors,
-            "failures": len(outcome.failures),
-            "incomplete": len(outcome.incomplete),
-            "grounding_missing": len(outcome.grounding.missing),
-            "grounding_unresolved": len(outcome.grounding.unresolved),
-            "limitations": len(outcome.grounding.limitations),
-            "failure_reason": outcome.failure_reason,
-        }
-        semantic = fields | {"skipped_files": [item.to_dict() for item in skipped_files]}
-        return cls(**fields, skipped_files=tuple(skipped_files), content_sha256=canonical_sha256(semantic))
-
-    def semantic_dict(self) -> dict[str, object]:
-        """Return the content covered by the artifact hash."""
-        return {
-            "target": self.target,
-            "source_revision": self.source_revision,
-            "findings_sha256": self.findings_sha256,
-            "complete": self.complete,
-            "errors": self.errors,
-            "failures": self.failures,
-            "incomplete": self.incomplete,
-            "grounding_missing": self.grounding_missing,
-            "grounding_unresolved": self.grounding_unresolved,
-            "limitations": self.limitations,
-            "failure_reason": self.failure_reason,
-            "skipped_files": [item.to_dict() for item in self.skipped_files],
-        }
-
-    def to_dict(self) -> dict[str, object]:
-        """Return the strict JSON representation."""
-        return {"schema": self.schema, **self.semantic_dict(), "content_sha256": self.content_sha256}
-
-    @classmethod
-    def from_dict(cls, value: object) -> OutcomeArtifact:
-        """Parse and verify one outcome artifact."""
-        fields = {
-            "schema",
-            "target",
-            "source_revision",
-            "findings_sha256",
-            "complete",
-            "errors",
-            "failures",
-            "incomplete",
-            "grounding_missing",
-            "grounding_unresolved",
-            "limitations",
-            "failure_reason",
-            "skipped_files",
-            "content_sha256",
-        }
-        if not isinstance(value, dict) or set(value) != fields or not isinstance(value["skipped_files"], list):
-            raise ValueError("review outcome artifact has an invalid shape")
-        return cls(
-            **{key: item for key, item in value.items() if key not in {"schema", "skipped_files"}},
-            skipped_files=tuple(SkippedFile.from_dict(item) for item in value["skipped_files"]),
-            schema=value["schema"],
-        )
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ReviewResultArtifact:
-    """One self contained machine result for CLI consumers."""
-
-    review_id: str
-    attempt_id: str
-    findings: FindingsArtifact
-    outcome: OutcomeArtifact
-    schema: str = RESULT_SCHEMA
-
-    def __post_init__(self) -> None:
-        """Require the outcome to identify the embedded finding set."""
-        if self.schema != RESULT_SCHEMA:
-            raise ValueError("review result schema is unsupported")
-        if re.fullmatch(r"review-[0-9a-f]{32}", self.review_id) is None:
-            raise ValueError("review result review id is invalid")
-        if re.fullmatch(r"attempt-[0-9a-f]{32}", self.attempt_id) is None:
-            raise ValueError("review result attempt id is invalid")
-        if not isinstance(self.findings, FindingsArtifact) or not isinstance(self.outcome, OutcomeArtifact):
-            raise ValueError("review result artifacts are invalid")
-        if self.outcome.findings_sha256 != self.findings.content_sha256:
-            raise ValueError("review result outcome does not identify its findings")
-
-    def to_dict(self) -> dict[str, object]:
-        """Return the strict JSON representation."""
-        return {
-            "schema": self.schema,
-            "review_id": self.review_id,
-            "attempt_id": self.attempt_id,
-            "findings": self.findings.to_dict(),
-            "outcome": self.outcome.to_dict(),
-        }

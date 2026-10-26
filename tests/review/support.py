@@ -141,4 +141,4 @@ class StubIssueJudge:
         self.pairs.append(pair)
         if self.error is not None:
             raise self.error
-        return LinkDecision(same_fix=self.same_fix(pair), reason="one change decides both findings")
+        return LinkDecision(same_fix=self.same_fix(pair), rationale="one change decides both findings")
