@@ -128,12 +128,6 @@ def merge_bases(repository: str | Path, left: str, right: str) -> tuple[str, ...
     return tuple(line for line in _git(repository, "merge-base", "--all", left, right).splitlines() if line)
 
 
-def contains_gitlink(repository: str | Path, revision: str) -> bool:
-    """Report whether one committed tree depends on an unacquired submodule tree."""
-    tree = _git(repository, "ls-tree", "-r", revision)
-    return any(line.startswith("160000 ") for line in tree.splitlines())
-
-
 def worktree_files(repository: str | Path) -> tuple[str, ...]:
     """List the tracked and unignored untracked files present in one Git work tree."""
     raw = _git_limited_bytes(
@@ -142,6 +136,7 @@ def worktree_files(repository: str | Path) -> tuple[str, ...]:
         limit=_MAX_GIT_LIST_BYTES,
         label="Git output",
     )
+    submodules = _submodule_paths(repository)
     files: list[str] = []
     for record in raw.split(b"\0"):
         if not record or record.endswith(b"/"):
@@ -150,14 +145,22 @@ def worktree_files(repository: str | Path) -> tuple[str, ...]:
             path = record.decode("utf-8")
         except UnicodeError as exc:
             raise GitSourceError("Git work tree contains a path that is not UTF-8") from exc
-        if os.path.lexists(Path(repository) / path):
+        if path not in submodules and os.path.lexists(Path(repository) / path):
             files.append(path)
     return tuple(dict.fromkeys(files))
 
 
-def index_contains_gitlink(repository: str | Path) -> bool:
-    """Report whether a live repository index contains a submodule entry."""
-    return any(line.startswith("160000 ") for line in _git(repository, "ls-files", "--stage").splitlines())
+def _submodule_paths(repository: str | Path) -> set[str]:
+    raw = _git_limited_bytes(repository, ("ls-files", "-z", "--stage"), limit=_MAX_GIT_LIST_BYTES, label="Git output")
+    paths: set[str] = set()
+    for record in raw.split(b"\0"):
+        header, _, path = record.partition(b"\t")
+        if header.startswith(b"160000 "):
+            try:
+                paths.add(path.decode("utf-8"))
+            except UnicodeError as exc:
+                raise GitSourceError("Git index contains a submodule path that is not UTF-8") from exc
+    return paths
 
 
 def canonical_patch(repository: str | Path, base_revision: str, head_revision: str) -> str:
@@ -177,6 +180,7 @@ def canonical_patch(repository: str | Path, base_revision: str, head_revision: s
         "--no-ext-diff",
         "--no-textconv",
         "--no-color",
+        "--submodule=short",
         "--find-renames=50%",
         "--abbrev=7",
         "--diff-algorithm=myers",
@@ -225,6 +229,8 @@ def _git_blobs(repository: str, revision: str) -> tuple[_GitBlob, ...]:
             path = raw_path.decode("utf-8")
         except (UnicodeError, ValueError) as exc:
             raise GitSourceError("Git tree contains a noncanonical entry") from exc
+        if kind == "commit" and mode == "160000":
+            continue
         if kind != "blob" or mode not in {"100644", "100755", "120000"}:
             raise GitSourceError(f"Git tree entry is unsupported: {path!r}")
         blobs.append(_GitBlob(mode=mode, object_id=object_id, path=path))

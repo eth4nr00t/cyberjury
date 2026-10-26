@@ -200,6 +200,17 @@ def has_diff_hunk(diff: str) -> bool:
     return any(_parsed_hunks(chunk) for chunk in split_diff_by_file(diff))
 
 
+def _is_submodule_chunk(chunk: str) -> bool:
+    for line in split_lines(chunk):
+        if line.startswith("@@"):
+            return False
+        if line.startswith(
+            ("index ", "new file mode ", "deleted file mode ", "old mode ", "new mode ")
+        ) and line.endswith(" 160000"):
+            return True
+    return False
+
+
 def _hunkless_reason(chunk: str) -> str:
     header = split_lines(chunk)
     if any(line.startswith(("Binary files ", "GIT binary patch")) for line in header):
@@ -217,12 +228,14 @@ def _hunkless_reason(chunk: str) -> str:
 
 
 def strip_unreviewable_files(diff: str, detection: Detection) -> tuple[str, tuple[SkippedFile, ...]]:
-    """Remove noise files and file sections without a hunk before they consume review work."""
+    """Remove submodule, noise, oversized, and hunkless file sections before they consume review work."""
     kept: list[str] = []
     skipped: list[SkippedFile] = []
     for chunk in split_diff_by_file(diff):
         path = chunk_path(chunk)
-        if path and detection.is_noise_path(path):
+        if path and _is_submodule_chunk(chunk):
+            skipped.append(SkippedFile(path=path, reason="submodule"))
+        elif path and detection.is_noise_path(path):
             skipped.append(SkippedFile(path=path, reason="noise"))
         elif path in detection.oversized_files:
             skipped.append(SkippedFile(path=path, reason="too_large"))

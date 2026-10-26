@@ -368,7 +368,7 @@ def test_diff_finder_rejects_schema_valid_findings_with_invalid_semantics(change
         _run(finder(MockProvider(default=reply([finding]))), _DIFF)
 
 
-def test_semantic_violation_in_one_finding_keeps_the_valid_findings_of_thereply():
+def test_semantic_violation_in_one_finding_keeps_the_valid_findings_of_the_reply():
     """A blank title on findings[1] keeps findings[0], fails the cycle, and names the field."""
     valid = {
         "file": "app.py",

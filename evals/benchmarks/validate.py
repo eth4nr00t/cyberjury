@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse
 
 import yaml
 from jsonschema import Draft202012Validator, FormatChecker
@@ -22,6 +24,17 @@ def validate_document(data: object, schema_name: str, where: object) -> None:
             f"{'.'.join(str(part) for part in error.absolute_path) or '<root>'}: {error.message}" for error in errors
         )
         raise ValueError(f"{where} violates {schema_name}: {detail}")
+
+
+def _validate_project_id(benchmark: dict, directory: str) -> None:
+    project = benchmark["id"]
+    if project != directory:
+        raise ValueError(f"benchmark id {project} does not match its directory {directory}")
+    url = benchmark["repository"].get("url")
+    if url:
+        name = PurePosixPath(urlparse(url).path).name.removesuffix(".git")
+        if project != re.sub(r"[._]+", "-", name.lower()):
+            raise ValueError(f"benchmark id {project} does not match its repository name {name}")
 
 
 def _validate_semantics(benchmark: dict, *, source_root: Path | None = None) -> None:
@@ -87,5 +100,6 @@ def validate_benchmark(path: str | Path, *, source_root: str | Path | None = Non
     benchmark_file = benchmark_path(path)
     benchmark = yaml.safe_load(benchmark_file.read_text(encoding="utf-8"))
     validate_document(benchmark, BENCHMARK_SCHEMA, benchmark_file)
+    _validate_project_id(benchmark, benchmark_file.parent.name)
     _validate_semantics(benchmark, source_root=Path(source_root) if source_root else None)
     return benchmark

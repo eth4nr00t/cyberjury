@@ -250,7 +250,7 @@ def spec_for(specs: dict[str, LangSpec], rel: str) -> LangSpec | None:
     return next((spec for spec in specs.values() if suffix in spec.extensions), None)
 
 
-def grammar_for(spec: LangSpec) -> CapsuleType:
+def grammar_for(spec: LangSpec) -> CapsuleType | int:
     """Return the installed grammar object for one language specification."""
     return getattr(importlib.import_module(spec.module), spec.accessor)()
 

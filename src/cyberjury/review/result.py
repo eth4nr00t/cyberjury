@@ -28,6 +28,7 @@ SKIP_REASONS = {
     "empty_new_file": "empty new file",
     "empty_deleted_file": "empty deleted file",
     "no_hunk": "file section without a hunk",
+    "submodule": "git submodule pointer",
 }
 
 

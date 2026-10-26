@@ -5,8 +5,8 @@ AI-assisted security review for code diffs and repositories.
 The tool has two review paths:
 
 - **Diff Review** audits a git range against its repository in one command.
-- **Repository Review** fans out across a repository, reviews focused units, and deduplicates
-  candidates.
+- **Repository Review** fans out across a repository, reviews focused units, and groups the
+  findings into issues.
 
 Diff Review is fast and reports findings at post change lines shown in the patch. Every finding keeps
 an exact old or new change anchor, so added behavior and removed controls use one scope contract. Each
@@ -21,8 +21,8 @@ without a file is still reviewed from its raw source. Each review records a hash
 in `contract.json`.
 
 A Repository Review of a Git work tree covers the tracked files and the untracked files Git does not
-ignore. A plain directory is covered completely. Files that are not UTF-8 text, binary, or empty are
-listed as skipped in `outcome.json`.
+ignore, but not the contents of Git submodules. A plain directory is covered completely. Files that
+are not UTF-8 text, binary, or empty are listed as skipped in `outcome.json`.
 
 ## Quick Review
 

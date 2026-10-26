@@ -37,7 +37,7 @@ class MockProvider(Provider):
         cache_segments: tuple[str, ...] = (),
         response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
-        """Return one provider completion with optional usage accounting."""
+        """Record the call and return the next canned, responder, or default text."""
         self.calls.append(
             {
                 "system": system,

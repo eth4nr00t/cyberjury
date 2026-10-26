@@ -502,7 +502,8 @@ def _malformed_request_correction(failure: str, valid_ids: tuple[str, ...]) -> s
     return (
         f"The previous response was not committed because {failure}. No evidence was delivered and none of its "
         f"findings were accepted.{resubmit} Request only exact ids published in this review. Do not invent or "
-        f"transform ids. {_CORRECTED_RESPONSE}"
+        "transform ids. File paths, module names, and descriptions are not evidence ids, and source outside the "
+        f"reviewed repository cannot be requested. {_CORRECTED_RESPONSE}"
     )
 
 

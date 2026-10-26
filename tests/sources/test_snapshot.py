@@ -121,6 +121,19 @@ def test_git_work_tree_snapshot_lists_tracked_and_unignored_files_without_walkin
     assert not snapshot.matches()
 
 
+def test_git_work_tree_listing_leaves_out_a_checked_out_submodule(tmp_path):
+    """A gitlink at lib/dep whose directory is checked out is left out, and app.py is listed."""
+    git(tmp_path, "init", "--quiet")
+    (tmp_path / "app.py").write_text("app\n", encoding="utf-8")
+    git(tmp_path, "add", "app.py")
+    git(tmp_path, "commit", "--quiet", "-m", "base")
+    git(tmp_path, "update-index", "--add", "--cacheinfo", f"160000,{git(tmp_path, 'rev-parse', 'HEAD')},lib/dep")
+    (tmp_path / "lib" / "dep").mkdir(parents=True)
+    (tmp_path / "lib" / "dep" / "Dep.sol").write_text("contract Dep {}\n", encoding="utf-8")
+
+    assert source_snapshot_files(tmp_path) == ("app.py",)
+
+
 def test_listing_skips_symlinks_that_do_not_resolve_to_a_contained_file(tmp_path):
     """Directory, dangling, and outside links are left out of a plain tree, and link.py to app.py stays."""
     (tmp_path / "app.py").write_text("app\n", encoding="utf-8")

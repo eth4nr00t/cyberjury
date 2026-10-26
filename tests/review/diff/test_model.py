@@ -144,6 +144,21 @@ def test_strip_unreviewable_files_skips_binary_changes():
     assert kept == _SRC
 
 
+def test_strip_unreviewable_files_skips_submodule_pointer_changes():
+    """A lib/forge-std submodule pointer change is skipped as submodule while the app.py source chunk is kept."""
+    submodule = (
+        "diff --git a/lib/forge-std b/lib/forge-std\nindex 1111111..2222222 160000\n"
+        "--- a/lib/forge-std\n+++ b/lib/forge-std\n@@ -1 +1 @@\n"
+        "-Subproject commit 1111111111111111111111111111111111111111\n"
+        "+Subproject commit 2222222222222222222222222222222222222222\n"
+    )
+
+    kept, skipped = strip_unreviewable_files(submodule + _SRC, _DETECTION)
+
+    assert [(item.path, item.reason) for item in skipped] == [("lib/forge-std", "submodule")]
+    assert kept == _SRC
+
+
 def test_strip_unreviewable_files_keeps_a_chunk_whose_path_cannot_be_read():
     """A hunk with no file header is kept and nothing is reported as skipped."""
     headerless = "@@ -0,0 +1 @@\n+x = 1\n"

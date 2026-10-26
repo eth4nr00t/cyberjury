@@ -7,11 +7,8 @@ from pathlib import Path
 
 from cyberjury.numbering import split_lines
 from cyberjury.review.context import (
-    CandidateCallContext,
     GroundingContext,
     SourceEvidence,
-    candidate_call_context,
-    definition_evidence,
     definition_plan_source_files,
     delivered_source_block,
     files_without_seed_definitions,
@@ -37,6 +34,7 @@ from cyberjury.review.prepare import ReviewPlan, SharedGrounding
 from cyberjury.review.prompts import one_line_source
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.result import SkippedFile
+from cyberjury.review.seed_sources import CandidateCallContext, candidate_call_context, definition_evidence
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS, ReviewExecutionSettings
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff

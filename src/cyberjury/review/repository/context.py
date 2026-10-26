@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 
 from cyberjury.review.context import (
     GroundingContext,
-    candidate_call_context,
     definition_plan_source_files,
     numbered_source_range,
     publish_evidence,
@@ -17,6 +16,7 @@ from cyberjury.review.context import (
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.paths import safe_repository_path
 from cyberjury.review.prompts import fenced_source
+from cyberjury.review.seed_sources import candidate_call_context
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 if TYPE_CHECKING:

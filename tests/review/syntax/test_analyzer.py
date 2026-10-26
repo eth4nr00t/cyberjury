@@ -28,7 +28,7 @@ def test_specs_ship_a_grammar_and_every_query_per_language():
     from tree_sitter import Language, Query
 
     specs = load_specs()
-    assert set(specs) == {"c", "cpp", "go", "java", "javascript", "python", "rust", "tsx", "typescript"}
+    assert set(specs) == {"c", "cpp", "go", "java", "javascript", "python", "rust", "solidity", "tsx", "typescript"}
     for name, spec in specs.items():
         language = Language(grammar_for(spec))
         queries = (
@@ -299,6 +299,44 @@ def test_rust_java_c_and_cpp_sources_yield_definitions_and_calls(tmp_path, name,
     assert calls <= {callsite.callee_spelling for callsite in facts.relationships.callsites}
 
 
+def test_solidity_contracts_yield_member_value_and_library_calls(tmp_path):
+    """A withdraw function's value call, interface call, and library call keep their callees and receivers."""
+    (tmp_path / "Vault.sol").write_text(
+        "contract Vault {\n"
+        "    function withdraw(address to, uint256 a) external {\n"
+        '        (bool ok, ) = to.call{value: a}("");\n'
+        "        IERC20(token).safeTransfer(to, a);\n"
+        "        Lib.check(a);\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    facts = syntax_facts(tmp_path)
+
+    assert not facts.limitations
+    assert {(item.callee_spelling, item.receiver_expression) for item in facts.relationships.callsites} >= {
+        ("call", "to"),
+        ("safeTransfer", "IERC20(token)"),
+        ("check", "Lib"),
+    }
+
+
+def test_solidity_file_level_struct_and_enum_are_type_definitions(tmp_path):
+    """A file-level struct TakeResult and enum Side are searchable type definitions."""
+    (tmp_path / "Types.sol").write_text(
+        "struct TakeResult {\n    uint256 amount;\n}\n\nenum Side { Buy, Sell }\n",
+        encoding="utf-8",
+    )
+
+    facts = syntax_facts(tmp_path)
+
+    assert {(item.name, item.kind) for item in facts.relationships.definitions} >= {
+        ("TakeResult", "type"),
+        ("Side", "type"),
+    }
+
+
 def test_one_extension_maps_to_one_language():
     """No file extension is claimed by more than one language spec."""
     seen: dict[str, str] = {}
@@ -539,6 +577,7 @@ def test_parse_limitation_column_uses_characters_after_non_ascii_text(tmp_path):
         ("broken.java", "class Broken { void broken( { }\n", "java"),
         ("broken.c", "int broken( {\n", "c"),
         ("broken.cpp", "int broken( {\n", "cpp"),
+        ("broken.sol", "contract Broken { function broken( {\n", "solidity"),
     ],
 )
 def test_every_tree_sitter_language_uses_one_parse_limitation_contract(tmp_path, name, source, analyzer):

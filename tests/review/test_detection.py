@@ -28,12 +28,13 @@ def test_is_test_path_by_directory_segment():
 
 
 def test_is_test_path_by_naming_convention_across_ecosystems():
-    """Python test_ prefixes, Go _test suffixes, and JS/TS .spec and .test names count as tests."""
+    """Python test_ prefixes, Go _test suffixes, JS/TS .spec and .test, and Solidity .t.sol names count as tests."""
     d = load_detection()
     assert d.is_test_path("app/test_views.py")
     assert d.is_test_path("app/views_test.go")
     assert d.is_test_path("app/billing.spec.js")
     assert d.is_test_path("app/api.test.ts")
+    assert d.is_test_path("src/Vault.t.sol")
 
 
 def test_is_test_path_keeps_production_sampleish_names():

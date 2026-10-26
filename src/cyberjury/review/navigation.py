@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal, Protocol
 
 from cyberjury.canonical import text_sha256
@@ -330,6 +331,10 @@ class SourceNavigationSession:
                         exact_match=exact_match,
                     )
                 )
+                if kind == "search_symbols" and not exact_match and page == 0:
+                    bindings = self._import_bindings(query["query"].split(".")[0])
+                    if bindings:
+                        blocks[-1] += "\n" + bindings
                 exact = (
                     self._unique_exact_read(
                         targets, page=page, more=more, blocks=blocks, target_chars=target_chars, label=label
@@ -486,6 +491,38 @@ class SourceNavigationSession:
         published = tuple(self._register_target(target) for target in selected)
         self._discovered_definition_ids.update(target.definition_id for target in published if target.definition_id)
         return published, selected_page, more, exact
+
+    def _import_bindings(self, name: str) -> str:
+        if not name or any(definition.name == name for definition in self._navigator.definitions):
+            return ""
+        identifier = re.compile(rf"(?<![\w$]){re.escape(name)}(?![\w$])")
+        statements: list[tuple[bool, str, int, str]] = []
+        for relationship in self._structural_relationships:
+            if relationship.kind not in {"import", "namespace"}:
+                continue
+            reference = relationship.source
+            source = self._source(reference.path)
+            selected = source[reference.start : reference.end]
+            text = " ".join(selected.split())
+            if text_sha256(selected) != reference.content_sha256 or not identifier.search(text):
+                continue
+            module = PurePosixPath(relationship.reference.strip("\"'")).name.split(".")[0]
+            binds = name in {relationship.reference, module} or relationship.reference.startswith(f"{name} from ")
+            statements.append((not binds, reference.path, source.count("\n", 0, reference.start) + 1, text[:240]))
+        if not statements:
+            return ""
+        statements = sorted(set(statements))
+        lines = [
+            f"No definition named {inline_source(name)} was found in the reviewed source. "
+            f"Import statements that name {inline_source(name)}:"
+        ]
+        lines.extend(
+            f"- {one_line_source(path)}:{line} | {inline_source(text)}"
+            for _, path, line, text in statements[:_MAX_RESULTS_PER_PAGE]
+        )
+        if len(statements) > _MAX_RESULTS_PER_PAGE:
+            lines.append(f"- {len(statements) - _MAX_RESULTS_PER_PAGE} more import statements are not listed")
+        return "\n".join(lines)
 
     def _owned_by(self, definition: DefinitionEvidence, qualifier: tuple[str, ...]) -> bool:
         owners: list[str] = []
@@ -804,6 +841,10 @@ def navigation_instructions() -> str:
         "names it as a candidate target, and `both` lists both.\n"
         "- Search results and candidates are unverified syntax matches. Read the source before relying on a "
         "relationship.\n"
+        "- Searches cover only the reviewed repository snapshot. Code from installed packages, git submodules, or "
+        "other locations outside it cannot be searched, and no evidence id delivers it. A symbol search that finds "
+        "no definition also lists any import statements that name it. When needed code is outside the snapshot, "
+        "judge with the delivered evidence and treat that code's behavior as an assumption.\n"
         "- Batch every independent search and evidence request into one response and never repeat a query. "
         f"Send at most {MAX_QUERIES_PER_BATCH} `source_queries` in one response and "
         f"{MAX_UNIQUE_QUERIES_PER_SESSION} unique queries across this unit."

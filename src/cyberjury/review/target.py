@@ -12,8 +12,6 @@ from cyberjury.canonical import canonical_sha256
 from cyberjury.sources.git import (
     GitSourceError,
     canonical_patch,
-    contains_gitlink,
-    index_contains_gitlink,
     materialize_revision,
     merge_bases,
     object_format,
@@ -118,11 +116,6 @@ def resolve_repository_target(repository: str | Path) -> ResolvedTarget:
     root = path.resolve()
     if not root.is_dir():
         raise TargetResolutionError(f"repository target is not a directory: {root}")
-    try:
-        if (root / ".git").exists() and index_contains_gitlink(root):
-            raise TargetResolutionError("Git submodules require verified recursive source acquisition")
-    except GitSourceError as exc:
-        raise TargetResolutionError(str(exc)) from exc
     return ResolvedTarget(
         kind="repository",
         repository_root=str(root),
@@ -171,8 +164,6 @@ def resolve_diff_target(repository: str | Path, git_range: str) -> ResolvedTarge
             base_revision = bases[0]
         else:
             base_revision = left_revision
-        if any(contains_gitlink(root, revision) for revision in {base_revision, head_revision}):
-            raise TargetResolutionError("Git submodules require verified recursive source acquisition")
         patch_text = canonical_patch(root, base_revision, head_revision)
     except GitSourceError as exc:
         raise TargetResolutionError(str(exc)) from exc

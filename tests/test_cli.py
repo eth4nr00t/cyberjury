@@ -854,7 +854,7 @@ def test_stage_one_request_is_shared_across_targets(
         "review/contract/detection.yaml",
         *(
             f"review/contract/languages/{name}.yaml"
-            for name in ("c", "cpp", "go", "java", "javascript", "python", "rust", "tsx", "typescript")
+            for name in ("c", "cpp", "go", "java", "javascript", "python", "rust", "solidity", "tsx", "typescript")
         ),
     }
     assert facts_artifact["schema"] == "cyberjury.facts/v1"

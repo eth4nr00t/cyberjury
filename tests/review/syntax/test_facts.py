@@ -31,7 +31,7 @@ def test_a_four_hop_chain_is_recovered_edge_by_edge(tmp_path):
     assert graph["app/repository.py"]["load_order"][0]["calls"] == ["run_query"]
 
 
-def test_syntax_facts_persist_candidates_without_a_resolvedcallgraph(tmp_path):
+def test_syntax_facts_persist_candidates_without_a_resolved_callgraph(tmp_path):
     """The routes-handler-repository chain yields call relationships with candidate callee definition ids."""
     facts = syntax_facts(_chain(tmp_path))
 

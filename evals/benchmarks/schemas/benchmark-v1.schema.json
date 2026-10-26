@@ -7,7 +7,7 @@
   "additionalProperties": false,
   "required": ["id", "repository", "cases"],
   "properties": {
-    "id": {"$ref": "#/$defs/slug"},
+    "id": {"description": "The project directory name, which equals the repository name at the end of repository.url when a url is given.", "$ref": "#/$defs/slug"},
     "repository": {"$ref": "#/$defs/repository"},
     "cases": {
       "type": "array",
@@ -73,9 +73,9 @@
       }
     },
     "checkId": {
-      "description": "<subject>-<weakness> in kebab-case. subject names the feature or component that holds the defect, such as mail-test or storage-path-template. weakness is one of: missing-permission (model or object permission check missing), idor (object fetched by id without ownership or visibility scoping), missing-owner (created object has no owner and becomes visible to all), privilege-escalation, information-disclosure, path-traversal, stored-xss, ssrf, csrf, injection, denial-of-service, authentication-bypass, symlink-following. One vulnerability keeps one id across cases, and distinct vulnerabilities of one case get distinct ids.",
+      "description": "<subject>-<weakness> in kebab-case. subject names the feature or component that holds the defect, such as mail-test or storage-path-template. weakness is one of: missing-permission (model or object permission check missing), idor (object fetched by id without ownership or visibility scoping), missing-owner (created object has no owner and becomes visible to all), privilege-escalation, information-disclosure, path-traversal, stored-xss, ssrf, csrf, injection, denial-of-service, authentication-bypass, symlink-following, accounting-error (balance, share, reward, or fee bookkeeping that loses, misroutes, or mis-scales value), pricing-error (a price or valuation that is stale, inflated, or zero where it sets trade or redemption amounts), front-running (an outcome that depends on transaction ordering without a caller-supplied bound), open-redirect (a redirect target check that lets a request send users to another site). One vulnerability keeps one id across cases, and distinct vulnerabilities of one case get distinct ids.",
       "type": "string",
-      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*-(?:missing-permission|idor|missing-owner|privilege-escalation|information-disclosure|path-traversal|stored-xss|ssrf|csrf|injection|denial-of-service|authentication-bypass|symlink-following)$",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*-(?:missing-permission|idor|missing-owner|privilege-escalation|information-disclosure|path-traversal|stored-xss|ssrf|csrf|injection|denial-of-service|authentication-bypass|symlink-following|accounting-error|pricing-error|front-running|open-redirect)$",
       "maxLength": 80
     },
     "rootCause": {

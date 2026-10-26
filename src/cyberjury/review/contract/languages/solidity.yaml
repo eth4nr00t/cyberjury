@@ -1,0 +1,49 @@
+extensions: [.sol]
+grammar: [tree_sitter_solidity, language]
+files:
+  test_name_patterns: ['*.t.sol']
+syntax:
+  definitions: |
+    [(contract_declaration name: (identifier) @name)
+     (interface_declaration name: (identifier) @name)
+     (library_declaration name: (identifier) @name)
+     (struct_declaration name: (identifier) @name)
+     (enum_declaration name: (identifier) @name)
+     (function_definition name: (identifier) @name)
+     (modifier_definition name: (identifier) @name)] @def
+  type_definitions: |
+    [(contract_declaration name: (identifier) @name)
+     (interface_declaration name: (identifier) @name)
+     (library_declaration name: (identifier) @name)
+     (struct_declaration name: (identifier) @name)
+     (enum_declaration name: (identifier) @name)] @type
+  structural_relationships:
+  - kind: inheritance
+    query: |
+      (contract_declaration
+        name: (identifier) @owner_name
+        (inheritance_specifier ancestor: (user_defined_type (identifier) @target_name) @reference)) @owner
+  - kind: inheritance
+    query: |
+      (interface_declaration
+        name: (identifier) @owner_name
+        (inheritance_specifier ancestor: (user_defined_type (identifier) @target_name) @reference)) @owner
+  calls: |
+    (call_expression function: (expression (identifier) @callee)) @call
+    (call_expression
+      function: (expression (member_expression object: (_) @receiver property: (identifier) @member))) @call
+    (call_expression
+      function: (expression
+        (struct_expression
+          type: (expression (member_expression object: (_) @receiver property: (identifier) @member))))) @call
+    (modifier_invocation (identifier) @callee) @call
+  imports:
+  - query: |
+      (import_directive
+        import_name: (identifier) @imported . alias: (identifier)? @alias
+        source: (string) @module) @statement
+  namespace_imports:
+  - |
+    (import_directive . source: (string) @module . alias: (identifier)? @alias) @statement
+  - |
+    (import_directive "*" alias: (identifier) @alias source: (string) @module) @statement

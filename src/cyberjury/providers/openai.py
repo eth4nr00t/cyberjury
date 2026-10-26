@@ -98,19 +98,15 @@ def _routing_hint(cache: bool, system: str, cache_prefix: str) -> dict[str, str]
 
 
 def _responses_usage(response: Any) -> Usage:
-    return _usage(response, "input_tokens", "output_tokens", "input_tokens_details")
-
-
-def _usage(response: Any, input_field: str, output_field: str, details_field: str) -> Usage:
     u = getattr(response, "usage", None)
     if u is None:
         return Usage()
-    details = getattr(u, details_field, None)
+    details = getattr(u, "input_tokens_details", None)
     cached = _int(getattr(details, "cached_tokens", None))
     written = _int(getattr(details, "cache_write_tokens", None))
     return Usage(
-        input_tokens=max(_int(getattr(u, input_field, None)) - cached - written, 0),
-        output_tokens=_int(getattr(u, output_field, None)),
+        input_tokens=max(_int(getattr(u, "input_tokens", None)) - cached - written, 0),
+        output_tokens=_int(getattr(u, "output_tokens", None)),
         cache_read_tokens=cached,
         cache_write_tokens=written,
     )

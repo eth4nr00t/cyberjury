@@ -242,6 +242,35 @@ def test_dotted_symbol_search_lists_last_segment_matches_as_unread_candidates(tm
     assert result.source_evidence == ()
 
 
+def test_symbol_search_without_a_definition_lists_the_aliased_import_that_binds_it(tmp_path):
+    """S imported as an alias of requests.Session has no local definition, so the search names its import."""
+    navigator = _python_navigator(
+        tmp_path, {"client.py": "from requests import Session as S\n\ndef fetch():\n    return S()\n"}
+    )
+
+    result = navigator.session().execute(
+        [{"kind": "search_symbols", "query": "S", "page": 0}],
+        target_chars=10_000,
+    )
+
+    assert "client.py:1 | `from requests import Session as S`" in result.text
+    assert result.source_evidence == ()
+
+
+def test_dotted_symbol_search_without_a_definition_lists_the_module_import_of_its_first_segment(tmp_path):
+    """np.array with numpy imported as np names the import statement that binds np."""
+    navigator = _python_navigator(
+        tmp_path, {"calc.py": "import numpy as np\n\ndef total(values):\n    return np.array(values).sum()\n"}
+    )
+
+    result = navigator.session().execute(
+        [{"kind": "search_symbols", "query": "np.array", "page": 0}],
+        target_chars=10_000,
+    )
+
+    assert "calc.py:1 | `import numpy as np`" in result.text
+
+
 def test_last_symbol_page_is_not_mistaken_for_a_unique_result(tmp_path):
     """Page 1 of 21 Repeated definitions holds one item yet is not auto-read as a unique match."""
     source = "value = 1\n" * 21

@@ -184,14 +184,37 @@ def test_canonical_patch_keeps_the_default_rename_representation(tmp_path):
     assert "rename to after.py" in target.patch.text
 
 
-def test_diff_target_fails_loud_when_head_contains_unacquired_submodule(tmp_path):
-    """A gitlink entry at lib/dependency in HEAD raises TargetResolutionError mentioning submodules."""
+def test_diff_target_with_a_submodule_materializes_without_it(tmp_path):
+    """A head commit holding a gitlink at lib/dependency resolves and materializes app.py without lib/dependency."""
     repository, base, _head = _repository(tmp_path / "repo")
     git(repository, "update-index", "--add", "--cacheinfo", f"160000,{base},lib/dependency")
     git(repository, "commit", "--quiet", "-m", "gitlink")
 
-    with pytest.raises(TargetResolutionError, match="submodules"):
-        resolve_diff_target(repository, f"{base}..HEAD")
+    target = resolve_diff_target(repository, f"{base}..HEAD")
+
+    with materialize_diff_target(target) as source_root:
+        assert (source_root / "app.py").read_text(encoding="utf-8") == "head\n"
+        assert not (source_root / "lib" / "dependency").exists()
+
+
+def test_diff_target_patch_ignores_a_repository_submodule_diff_setting(tmp_path):
+    """With diff.submodule=log in the repository config, the gitlink still appears as a 160000 patch section."""
+    repository, base, _head = _repository(tmp_path / "repo")
+    git(repository, "update-index", "--add", "--cacheinfo", f"160000,{base},lib/dependency")
+    git(repository, "commit", "--quiet", "-m", "gitlink")
+    git(repository, "config", "diff.submodule", "log")
+
+    target = resolve_diff_target(repository, f"{base}..HEAD")
+
+    assert "diff --git a/lib/dependency b/lib/dependency\nnew file mode 160000" in target.patch.text
+
+
+def test_repository_target_with_a_submodule_resolves(tmp_path):
+    """A work tree whose index holds a gitlink at lib/dependency resolves as a repository target."""
+    repository, base, _head = _repository(tmp_path / "repo")
+    git(repository, "update-index", "--add", "--cacheinfo", f"160000,{base},lib/dependency")
+
+    assert resolve_repository_target(repository).repository_root == str(repository.resolve())
 
 
 def test_repository_target_requires_a_real_nonsymlink_directory(tmp_path):

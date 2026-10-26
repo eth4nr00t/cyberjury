@@ -142,10 +142,11 @@ def test_namespace_declaration_and_concrete_use_are_distinct_relationship_questi
         ("models.js", "class Base {}\nclass Child extends Base {}\n"),
         ("models.ts", "class Base {}\nclass Child extends Base {}\n"),
         ("models.tsx", "class Base {}\nclass Child extends Base {}\n"),
+        ("models.sol", "contract Base {}\ncontract Child is Base {}\n"),
     ],
 )
 def test_class_inheritance_uses_one_cross_language_structural_contract(tmp_path, name, source):
-    """Child extending Base in Python, JS, TS, and TSX gives the same Base inheritance candidate."""
+    """Child extending Base in Python, JS, TS, TSX, and Solidity gives the same Base inheritance candidate."""
     (tmp_path / name).write_text(source)
 
     evidence = syntax_facts(tmp_path).relationships.to_data()
@@ -251,6 +252,44 @@ def test_decorator_calls_belong_to_the_decorated_definition(tmp_path):
     assert callsite["caller_definition_id"] == protected["id"]
     start, end = protected["source"]["range"]
     assert (tmp_path / "app.py").read_text()[start:end].startswith("@require_admin")
+
+
+def test_solidity_modifier_calls_belong_to_the_modified_function(tmp_path):
+    """The onlyOwner modifier on withdraw is a callsite of withdraw whose candidate is the onlyOwner modifier."""
+    (tmp_path / "Vault.sol").write_text(
+        "contract Vault {\n"
+        "    modifier onlyOwner() { require(msg.sender == owner); _; }\n"
+        "    function withdraw() external onlyOwner {}\n"
+        "}\n"
+    )
+
+    relationships = syntax_facts(tmp_path).relationships
+    names = {item.id: item.name for item in relationships.definitions}
+    callsite = next(item for item in relationships.callsites if item.callee_spelling == "onlyOwner")
+    relationship = next(item for item in relationships.call_relationships if item.callsite_id == callsite.id)
+
+    assert names[callsite.caller_definition_id] == "withdraw"
+    assert [names[item] for item in relationship.candidate_callee_definition_ids] == ["onlyOwner"]
+
+
+def test_solidity_named_import_is_a_declaration_clue_for_its_alias(tmp_path):
+    """A call through Auth imported as {Ownable as Auth} carries the Auth from ./Ownable.sol clue."""
+    (tmp_path / "Vault.sol").write_text(
+        'import {Ownable as Auth} from "./Ownable.sol";\n'
+        "contract Vault {\n"
+        "    function check() external { Auth(owner).verify(); }\n"
+        "}\n"
+    )
+
+    evidence = syntax_facts(tmp_path).relationships.to_data()
+    callsite = next(item for item in evidence["callsites"] if item["callee_spelling"] == "Auth")
+    declaration = next(
+        item
+        for item in evidence["observations"]
+        if item["kind"] == "import_declaration" and callsite["id"] in item["subject_ids"]
+    )
+
+    assert declaration["label"] == "Auth from ./Ownable.sol"
 
 
 def test_unaliased_go_import_is_a_raw_clue_for_a_receiver_call(tmp_path):

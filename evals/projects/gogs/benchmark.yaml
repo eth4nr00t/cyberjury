@@ -60,6 +60,27 @@ cases:
         locations:
           - {file: internal/route/api/v1/repo/commits.go, line: 20}
           - {file: internal/route/api/v1/repo/commits.go, line: 32}
+      - id: dashboard-feed-information-disclosure
+        root_cause: notifyWatchers copies every action including private ones to all watchers (internal/database/actions.go:122) and DeleteCollaboration removes access without unwatching (internal/database/repo_collaboration.go:194) while retrieveFeeds renders the viewer feed with no per-item access check (internal/route/user/home.go:73), so a revoked collaborator keeps seeing private repository activity
+        locations:
+          - {file: internal/database/actions.go, line: 122}
+          - {file: internal/database/repo_collaboration.go, line: 194}
+          - {file: internal/route/user/home.go, line: 73}
+      - id: debug-endpoints-information-disclosure
+        root_cause: newMacaron mounts the toolbox middleware without DisableDebug (internal/cmd/web.go:151), which registers /debug/pprof/* and /debug/profile ahead of any authentication middleware, so an unauthenticated client reads goroutine, heap, and command line profiles and starts CPU profiling
+        locations:
+          - {file: internal/cmd/web.go, line: 151}
+      - id: draft-release-information-disclosure
+        root_cause: Releases and the v1 Releases API load draft releases with GetDraftReleasesByRepoID and return them to every reader without a writer-access check (internal/route/repo/release.go:116, internal/route/api/v1/repo/repo.go:454), so unpublished draft notes and attachments reach readers including anonymous users on public repositories
+        locations:
+          - {file: internal/route/repo/release.go, line: 116}
+          - {file: internal/route/repo/release.go, line: 137}
+          - {file: internal/route/api/v1/repo/repo.go, line: 454}
+      - id: email-lookup-information-disclosure
+        root_cause: Email2User is registered without the sign-in Toggle (internal/cmd/web.go:250) and resolves any submitted email to its account via GetByEmail (internal/route/user/home.go:443), so an unauthenticated client confirms which email addresses own accounts even when sign-in is required to view
+        locations:
+          - {file: internal/cmd/web.go, line: 250}
+          - {file: internal/route/user/home.go, line: 443}
       - id: external-login-authentication-bypass
         root_cause: UsersStore.Authenticate authenticates an existing external user by the submitted login string instead of the stored LoginName (internal/database/users.go:122) and returns the matched Gogs user without comparing the authenticated external identity (internal/database/users.go:128), so another account of the same external source whose login equals a Gogs username signs in as that user
         locations:
@@ -75,6 +96,10 @@ cases:
         root_cause: HTTPContexter treats a request as a read-only pull when the service query is git-upload-pack, the path ends in git-upload-pack, or the method is GET (internal/route/repo/http.go:61), so a git-receive-pack request carrying service=git-upload-pack passes with read access and writes to a repository the user can only read
         locations:
           - {file: internal/route/repo/http.go, line: 61}
+      - id: git-path-guard-path-traversal
+        root_cause: isRepositoryGitPath compares path components to .git without trimming trailing spaces (internal/database/repo_editor.go:539), so on a Windows host a web upload or edit with a tree path component like '.git ' writes into the repository real .git directory
+        locations:
+          - {file: internal/database/repo_editor.go, line: 539}
       - id: github-auth-authentication-bypass
         root_cause: The GitHub login source doAuth accepts whichever account the submitted credentials authenticate at /user (internal/auth/github/config.go:34) without comparing it to the submitted login, and UsersStore.Authenticate then returns the local account named by that login (internal/database/users.go:122), so credentials of one GitHub account sign in to another Gogs user bound to the same source
         locations:
@@ -122,6 +147,12 @@ cases:
         root_cause: LocalStorage.Upload reports success for an OID whose object file already exists after discarding the request body (internal/lfsutil/storage.go:80) without hashing the body against the OID, so a writer of one repository binds another repository's LFS object to their own and downloads its content
         locations:
           - {file: internal/lfsutil/storage.go, symbol: LocalStorage.Upload}
+      - id: local-network-blocklist-ssrf
+        root_cause: netutil.IsBlockedLocalHostname matches resolved IPs against localCIDRs (internal/netutil/netutil.go:61) whose list omits the IPv6 unspecified address ::/128 (internal/netutil/netutil.go:33), so a webhook or migration URL whose host is the IPv6 unspecified address passes the check and connects to local services
+        locations:
+          - {file: internal/netutil/netutil.go, line: 33}
+          - {file: internal/netutil/netutil.go, line: 61}
+          - {file: internal/database/webhook.go, line: 701}
       - id: login-csrf
         root_cause: The CSRF toggle skips token validation on every sign-out-required route (internal/context/auth.go:56), including POST /user/login (internal/cmd/web.go:196), so a cross-site request logs the victim's browser into another account
         locations:
@@ -202,6 +233,18 @@ cases:
           - {file: internal/email/email.go, line: 125}
           - {file: internal/route/user/auth.go, line: 486}
           - {file: internal/route/user/auth.go, line: 503}
+      - id: passwordless-account-authentication-bypass
+        root_cause: UsersStore.Create stores EncodePassword of the given password for reverse-proxy auto-registered accounts that have no password (internal/database/users.go:343) and Authenticate validates local accounts with ValidatePassword without rejecting an empty password (internal/database/users.go:94), so HTTP Basic credentials with an empty password sign in as such an account
+        locations:
+          - {file: internal/database/users.go, line: 94}
+          - {file: internal/database/users.go, line: 343}
+          - {file: internal/context/auth.go, line: 213}
+      - id: prohibit-login-authentication-bypass
+        root_cause: ProhibitLogin is enforced only in the web Toggle middleware (internal/context/auth.go:38) while the Git smart HTTP and SSH paths authorize by password, token, or key without checking it (internal/route/repo/http.go:123, internal/cmd/serv.go:204), so an administratively disabled account keeps Git access
+        locations:
+          - {file: internal/context/auth.go, line: 38}
+          - {file: internal/route/repo/http.go, line: 123}
+          - {file: internal/cmd/serv.go, line: 204}
       - id: protected-branch-whitelist-privilege-escalation
         root_cause: Protected branch whitelist rows copy team members only when the whitelisted team ids change (internal/database/repo_branch.go:219) and IsUserInProtectBranchWhitelist trusts the stored rows (internal/database/repo_branch.go:96), so users removed from a whitelisted team keep pushing directly to the protected branch
         locations:
@@ -214,6 +257,15 @@ cases:
           - {file: internal/database/pull.go, line: 264}
           - {file: internal/database/pull.go, line: 282}
           - {file: internal/database/pull.go, symbol: PullRequest.Merge}
+      - id: redirect-validation-open-redirect
+        root_cause: urlutil.IsSameSite checks only that the redirect target begins with a slash and that its second byte is not a slash or backslash (internal/urlutil/urlutil.go:4), so a value such as a slash, a tab, and another slash passes the same-site test and browsers reparse it as a scheme-relative external URL
+        locations:
+          - {file: internal/urlutil/urlutil.go, line: 4}
+          - {file: internal/route/user/auth.go, line: 96}
+          - {file: internal/route/user/auth.go, line: 142}
+          - {file: internal/route/repo/repo.go, line: 264}
+          - {file: internal/route/repo/branch.go, line: 112}
+          - {file: internal/route/user/profile.go, line: 125}
       - id: release-attachment-idor
         root_cause: NewRelease and UpdateRelease set the release id on attachments selected only by caller-supplied UUIDs (internal/database/release.go:184, internal/database/release.go:327) without checking their current release or repository, so a writer of one repository moves another repository's release attachments
         locations:
@@ -262,6 +314,11 @@ cases:
           - {file: internal/cmd/web.go, line: 197}
           - {file: internal/route/user/auth.go, line: 220}
           - {file: internal/route/user/auth.go, line: 223}
+      - id: unlisted-action-information-disclosure
+        root_cause: NewIssue and createComment set the action IsPrivate from repo.IsPrivate alone (internal/database/issue.go:784, internal/database/comment.go:211) rather than repo.IsPrivate or repo.IsUnlisted as other actions do, so issue and comment activity of unlisted repositories appears in the public profile feed
+        locations:
+          - {file: internal/database/issue.go, line: 784}
+          - {file: internal/database/comment.go, line: 211}
       - id: upload-symlink-following
         root_cause: Repository.UploadRepoFiles rejects only a target whose final path component is a symlink (internal/database/repo_editor.go:605) and does not check its parent directories, so an upload under a committed symlinked directory writes outside the repository working tree
         locations:
@@ -396,19 +453,6 @@ cases:
           - {file: templates/repo/view_file.tmpl, line: 50}
         change_anchors:
           - {file: templates/repo/view_file.tmpl, line: 50, side: new}
-  - id: diff-7555558
-    kind: diff
-    base: 28e0003a9a30292bfde21581f0c49f78b4647883
-    commit: 75555585e8cd8ed21a342b3f729e416da77423ab
-    checks:
-      - id: pull-request-merge-injection
-        root_cause: PullRequest.Merge passes the head and base branch names to git merge and rebase as positional arguments without --end-of-options (models/pull.go:266, models/pull.go:284), so a branch name that begins with a dash is parsed as a git option
-        locations:
-          - {file: models/pull.go, line: 266}
-          - {file: models/pull.go, line: 284}
-        change_anchors:
-          - {file: models/pull.go, line: 266, side: new}
-          - {file: models/pull.go, line: 284, side: new}
   - id: diff-d720c92
     kind: diff
     base: a35911486ffe0cd373662219a8f231b9cf38d84c
@@ -489,14 +533,3 @@ cases:
           - {file: internal/route/api/v1/api.go, line: 358}
         change_anchors:
           - {file: internal/route/api/v1/api.go, line: 358, side: new}
-  - id: diff-594a2dc
-    kind: diff
-    base: 06193ed825094581da4fb5550804d7445fc5ae13
-    commit: 594a2dc41f6e70f0cc535b125316d05e12666fda
-    checks:
-      - id: go-get-information-disclosure
-        root_cause: ServeGoGet now looks up the repository without an access check and places its real default branch in the go-get response (internal/context/go_get.go:33), so unauthenticated callers confirm private repositories and learn their default branch
-        locations:
-          - {file: internal/context/go_get.go, line: 33}
-        change_anchors:
-          - {file: internal/context/go_get.go, line: 33, side: new}
