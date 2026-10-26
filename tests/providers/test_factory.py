@@ -67,12 +67,6 @@ def _complete(provider):
     return provider.complete(system="s", messages=[Message(role="user", content="c")], model="m", max_tokens=8)
 
 
-def test_openai_provider_calls_the_responses_api(scripted_openai):
-    """The OpenAI provider sends one responses.create call for model m and returns its output text."""
-    assert _complete(make_provider("openai")).text == "answered"
-    assert scripted_openai.calls == ["m"]
-
-
 def test_retries_allow_one_extra_attempt_per_retry(scripted_openai):
     """Two rate-limit failures with retries=2 succeed on the third call and report three attempts."""
     scripted_openai.failures = 2

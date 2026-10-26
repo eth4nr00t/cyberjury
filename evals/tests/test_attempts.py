@@ -11,11 +11,11 @@ from cyberjury.review.issues import issue_id
 from cyberjury.review.result import FindingRecord, FindingsArtifact, IssueRecord
 from cyberjury.sources.snapshot import capture_source_snapshot
 from cyberjury.workspace import write_record
-from evals.attempts import recorded_attempt
+from evals.attempts import load_attempt, recorded_attempt
 from evals.benchmarks.cases import find_case
 from tests.support import git
 
-A = "candidate-" + "a" * 20
+A, B = "candidate-" + "a" * 20, "candidate-" + "b" * 20
 _ATTEMPT = "attempt-20260101-000000-11111111"
 
 
@@ -23,12 +23,6 @@ def _ok(record_id, **attributes):
     return Record(
         id=record_id, status="ok", started_at="2026-01-01T00:00:00Z", duration_seconds=1.0, attributes=attributes
     )
-
-
-@pytest.fixture
-def case(benchmark_project):
-    """Return the benchmark project's diff case."""
-    return find_case(benchmark_project.diff_case, [benchmark_project.benchmark])
 
 
 def _review_attempt(directory, reviewed_root, *, target=None):
@@ -163,3 +157,9 @@ def test_an_attempt_without_a_result_is_recorded_incomplete_with_its_failure(tmp
         "provider unavailable",
         [],
     )
+
+
+def test_attempt_issues_must_partition_its_reports(tmp_path, write_attempt):
+    """An attempt whose issues cover only A of reports A and B fails to load with "partition"."""
+    with pytest.raises(ValueError, match="partition"):
+        load_attempt(write_attempt(tmp_path / "runs", 1, (A, B), issues=((A,),)))

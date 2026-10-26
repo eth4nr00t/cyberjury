@@ -117,7 +117,7 @@ def test_packets_say_when_references_hold_no_earlier_verdicts(tmp_path, capsys, 
 
 
 def test_repository_records_the_next_attempt_of_a_repository_case(tmp_path, monkeypatch, capsys, benchmark_project):
-    """A second repository run records attempt 2, and passing a diff case raises not a repository case."""
+    """A second repository run records attempt 2."""
     from evals import attempts
 
     def record(case, directory, number):
@@ -134,5 +134,19 @@ def test_repository_records_the_next_attempt_of_a_repository_case(tmp_path, monk
         capsys.readouterr().out.splitlines()[-1]
         == f"recorded {benchmark_project.repository_case} attempt 2: 0 reports, complete True"
     )
+
+
+def test_repository_rejects_a_diff_case(tmp_path, benchmark_project):
+    """Passing the diff case to repository raises not a repository case."""
     with pytest.raises(ValueError, match="not a repository case"):
-        main([*args[:1], benchmark_project.diff_case, *args[2:]])
+        main(
+            [
+                "repository",
+                benchmark_project.diff_case,
+                str(tmp_path),
+                "--attempts-dir",
+                str(tmp_path / "runs"),
+                "--benchmark",
+                str(benchmark_project.benchmark),
+            ]
+        )

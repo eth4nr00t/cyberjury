@@ -27,3 +27,16 @@ def callgraph(root) -> dict[str, dict[str, list[dict[str, object]]]]:
         entry = {"range": [definition.start, definition.end], "calls": list(definition.calls)}
         graph.setdefault(definition.file, {}).setdefault(definition.name, []).append(entry)
     return graph
+
+
+def write_call_chain(root):
+    """Write app/routes.py calling handle_request, which calls load_order, which calls run_query."""
+    (root / "app").mkdir(parents=True)
+    (root / "app" / "routes.py").write_text(
+        "from app.handler import handle_request\n\n\ndef get_order(oid):\n    return handle_request(oid)\n"
+    )
+    (root / "app" / "handler.py").write_text(
+        "from app.repository import load_order\n\n\ndef handle_request(oid):\n    return load_order(oid)\n"
+    )
+    (root / "app" / "repository.py").write_text("def load_order(oid):\n    return run_query(oid)\n")
+    return root

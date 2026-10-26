@@ -33,17 +33,6 @@ class SessionConflictError(RuntimeError):
     """The session cannot take this attempt: another one runs, or its bound configuration differs."""
 
 
-class UnsupportedSessionFormatError(WorkspaceCorruptionError):
-    """A session or attempt was written in a format this version cannot continue."""
-
-    def __init__(self, session_id: str, detail: str) -> None:
-        """Name the session, the incompatible part, and the way forward."""
-        super().__init__(
-            f"session {session_id} has an unsupported session format ({detail}), "
-            "it was likely written by an older cyberjury version. Start a new session with --fresh"
-        )
-
-
 def _new_id(kind: str) -> str:
     return f"{kind}-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
@@ -207,11 +196,14 @@ class SessionLocator:
                 expected = {"schema", "locator_key", "session_id"}
                 if set(value) != expected or value["schema"] != LOCATOR_SCHEMA:
                     raise WorkspaceCorruptionError("session locator has an invalid schema")
-                if value["locator_key"] != key or not str(value["session_id"]).startswith(f"{kind}-"):
+                session_id = str(value["session_id"])
+                if (
+                    value["locator_key"] != key
+                    or not session_id.startswith(f"{kind}-")
+                    or not _SESSION_ID.fullmatch(session_id)
+                ):
                     raise WorkspaceCorruptionError("session locator identity is invalid")
-                if not _SESSION_ID.fullmatch(str(value["session_id"])):
-                    raise UnsupportedSessionFormatError(str(value["session_id"]), "older session id")
-                return str(value["session_id"]), False
+                return session_id, False
             session_id = new_session_id(kind)
             _atomic_json(
                 locator,
@@ -289,9 +281,7 @@ class SessionWorkspace(_JsonDirectory):
         if identity.exists():
             data = _read_json(identity)
             expected = {"schema", "session_id", "kind", "created_at"}
-            if data.get("schema") != SESSION_SCHEMA:
-                raise UnsupportedSessionFormatError(session_id, "session.json schema")
-            if set(data) != expected:
+            if set(data) != expected or data["schema"] != SESSION_SCHEMA:
                 raise WorkspaceCorruptionError("session identity has an invalid schema")
             if data["session_id"] != session_id or data["kind"] != kind:
                 raise WorkspaceCorruptionError("session identity does not match the requested workflow")
@@ -388,20 +378,15 @@ class AttemptWorkspace(_JsonDirectory):
     def open(cls, path: str | Path, *, session_id: str) -> AttemptWorkspace:
         """Open one published attempt directory and validate its record."""
         raw_path = Path(path)
-        if raw_path.is_symlink():
+        if raw_path.is_symlink() or not is_attempt_id(raw_path.name):
             raise WorkspaceCorruptionError("attempt path is invalid")
-        if not is_attempt_id(raw_path.name):
-            raise UnsupportedSessionFormatError(session_id, f"{raw_path.name} is an older attempt layout")
         attempt = cls(path=raw_path.resolve(), session_id=session_id, attempt_id=raw_path.name, started_at="")
         attempt.started_at = attempt.read_record().started_at
         return attempt
 
     def read_record(self) -> Record:
         """Return the attempt record."""
-        path = self.path / "record.json"
-        if not path.exists() and not path.is_symlink():
-            raise UnsupportedSessionFormatError(self.session_id, f"{self.attempt_id} has no record.json")
-        record = read_record(path)
+        record = read_record(self.path / "record.json")
         if record.id != self.attempt_id:
             raise WorkspaceCorruptionError("attempt record identity does not match its directory")
         return record

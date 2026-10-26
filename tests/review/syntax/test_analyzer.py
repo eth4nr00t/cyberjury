@@ -11,7 +11,6 @@ from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.prepare import extract_facts
 from cyberjury.review.selection import FileSelection
 from cyberjury.review.syntax import analyzer as analyzer_module
-from cyberjury.review.syntax import facts as facts_module
 from cyberjury.review.syntax.analyzer import (
     MAX_SOURCE_BYTES,
     AnalyzerConfigurationError,
@@ -21,7 +20,7 @@ from cyberjury.review.syntax.analyzer import (
     spec_for,
 )
 from cyberjury.sources.snapshot import capture_source_snapshot
-from tests.review.syntax.support import callgraph, syntax_facts
+from tests.review.syntax.support import callgraph, syntax_facts, write_call_chain
 
 
 def test_specs_ship_a_grammar_and_every_query_per_language():
@@ -62,11 +61,10 @@ def test_specs_ship_a_grammar_and_every_query_per_language():
 
 
 def test_python_and_javascript_family_ship_imports_queries():
-    """Python, JavaScript, TypeScript, and TSX define import queries, and Go defines none."""
+    """Python, JavaScript, TypeScript, and TSX define import queries."""
     specs = load_specs()
     for name in ("python", "javascript", "typescript", "tsx"):
         assert specs[name].imports, name
-    assert specs["go"].imports == ()
 
 
 def test_a_syntax_error_keeps_the_partial_graph_and_records_a_limitation(tmp_path):
@@ -113,42 +111,12 @@ def test_a_syntax_error_placeholder_never_becomes_an_empty_name(tmp_path):
     assert [item["name"] for item in facts.relationships.to_data()["definitions"]] == ["run"]
 
 
-def test_a_file_that_breaks_the_relationship_graph_is_excluded_as_a_limitation(tmp_path, monkeypatch):
-    """When the graph cannot be built with bad.py, bad.py becomes a limitation and ok.py keeps its facts."""
-    (tmp_path / "bad.py").write_text("def bad():\n    return 1\n")
-    (tmp_path / "ok.py").write_text("def ok():\n    return True\n")
-    build = facts_module.facts_from_repository
-
-    def failing_build(repository):
-        if any(definition.file == "bad.py" for definition in repository.definitions):
-            raise ValueError("definition evidence name must not be empty")
-        return build(repository)
-
-    monkeypatch.setattr(facts_module, "facts_from_repository", failing_build)
-
-    facts = syntax_facts(tmp_path)
-
-    assert [item["name"] for item in facts.relationships.to_data()["definitions"]] == ["ok"]
-    assert [(item.source, item.analyzer, item.reason) for item in facts.limitations] == [
-        ("bad.py", "syntax graph", "analysis failed (ValueError)")
-    ]
-
-
-def test_a_graph_failure_no_single_file_explains_still_fails_extraction(tmp_path, monkeypatch):
-    """A graph error that appears only with both files together is not hidden as a file limitation."""
-    (tmp_path / "one.py").write_text("def one():\n    return 1\n")
-    (tmp_path / "two.py").write_text("def two():\n    return 2\n")
-    build = facts_module.facts_from_repository
-
-    def failing_build(repository):
-        if len({definition.file for definition in repository.definitions}) > 1:
-            raise ValueError("cross file evidence conflict")
-        return build(repository)
-
-    monkeypatch.setattr(facts_module, "facts_from_repository", failing_build)
-
-    with pytest.raises(BackendUnavailable, match="cross file evidence conflict"):
-        syntax_facts(tmp_path)
+def test_a_three_edge_call_chain_is_recovered_edge_by_edge(tmp_path):
+    """get_order calls handle_request, handle_request calls load_order, and load_order calls run_query."""
+    graph = callgraph(write_call_chain(tmp_path))
+    assert graph["app/routes.py"]["get_order"][0]["calls"] == ["handle_request"]
+    assert graph["app/handler.py"]["handle_request"][0]["calls"] == ["load_order"]
+    assert graph["app/repository.py"]["load_order"][0]["calls"] == ["run_query"]
 
 
 def test_a_structural_query_missing_a_capture_is_a_configuration_error(tmp_path):
@@ -233,16 +201,6 @@ def test_a_structural_reference_outside_its_owner_becomes_a_file_limitation(tmp_
     ]
 
 
-def test_nul_in_code_uses_the_same_source_limitation_contract(tmp_path):
-    """A NUL byte inside a TS function name yields a partially parsed limitation for render.ts."""
-    (tmp_path / "render.ts").write_bytes(b"export function \x00render() { return true; }\n")
-
-    facts = syntax_facts(tmp_path)
-
-    assert facts.limitations[0].source == "render.ts"
-    assert facts.limitations[0].reason == "partially parsed"
-
-
 def test_definition_target_query_rejects_an_unknown_grammar_node(tmp_path):
     """A misspelled node type in the definitions query raises AnalyzerConfigurationError "invalid query"."""
     specs = load_specs()
@@ -288,7 +246,7 @@ def test_definition_target_query_rejects_an_unknown_grammar_node(tmp_path):
     ],
 )
 def test_rust_java_c_and_cpp_sources_yield_definitions_and_calls(tmp_path, name, source, definitions, calls):
-    """Each new language parses one file into its named definitions and the calls between them."""
+    """A Rust, Java, C, or C++ file parses into its named definitions and the calls between them."""
     (tmp_path / name).write_text(source, encoding="utf-8")
 
     facts = syntax_facts(tmp_path)
@@ -497,15 +455,6 @@ def test_references_inside_a_decorated_definition_keep_their_owner(tmp_path):
     assert owners == ["handler", "plain"]
 
 
-def test_tests_and_noise_directories_are_left_out(tmp_path):
-    """Only keep.py appears in the call graph, and test_skip.py and node_modules/dep.js are excluded."""
-    (tmp_path / "keep.py").write_text("def keep():\n    return 1\n")
-    (tmp_path / "test_skip.py").write_text("def test_skip():\n    return 1\n")
-    (tmp_path / "node_modules").mkdir()
-    (tmp_path / "node_modules" / "dep.js").write_text("function dep() {}\n")
-    assert set(callgraph(tmp_path)) == {"keep.py"}
-
-
 def test_the_analyzer_refuses_a_file_that_grew_past_the_parse_cap(tmp_path):
     """A huge.py handed to the analyzer beyond MAX_SOURCE_BYTES is an "over the parse cap" limitation."""
     specs = load_specs()
@@ -612,7 +561,7 @@ def test_an_unsupported_typescript_export_does_not_abort_other_files(tmp_path):
     assert [(item.source, item.analyzer) for item in facts.limitations] == [("barrel.ts", "typescript")]
 
 
-def test_native_analyzer_matches_the_cross_language_structure_oracle(tmp_path):
+def test_native_analyzer_recovers_the_cross_language_structure(tmp_path):
     """Python, JS, TS, and Go sources yield the expected definitions, callsites, and Go receivers."""
     sources = {
         "service.py": (

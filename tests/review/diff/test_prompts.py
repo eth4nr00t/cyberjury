@@ -1,10 +1,8 @@
 """Diff prompts keep the review contract in the system prompt and evidence in the user message."""
 
-from cyberjury.review.diff.prompts import DIFF_FINDING_SCHEMA, diff_finder_system, diff_seed
+from cyberjury.review.diff.prompts import DIFF_FINDING_SCHEMA, FINDER_RESPONSE_SCHEMA, diff_finder_system, diff_seed
 from cyberjury.review.navigation import navigation_instructions
 from cyberjury.review.repository.prompts import REPOSITORY_FINDING_SCHEMA, repository_finder_system
-
-_DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
 
 def _system(navigation: bool = True) -> str:
@@ -33,6 +31,16 @@ def test_system_carries_scope_boundary_kernel_rubric_evidence_and_field_meanings
         assert text in system
     for field in (*DIFF_FINDING_SCHEMA["properties"], "evidence_requests", "source_queries"):
         assert f"`{field}`" in system
+
+
+def test_system_explains_each_schema_field_without_an_example():
+    """The diff finder prompt names every response and finding field in backticks and gives no JSON example."""
+    system = diff_finder_system(review_brief="", severity_rubric="", navigation="")
+    root = FINDER_RESPONSE_SCHEMA.schema["properties"]
+
+    for field in (*root, *root["findings"]["items"]["properties"]):
+        assert f"`{field}`" in system
+    assert '{"findings"' not in system
 
 
 def test_system_omits_navigation_only_when_navigation_is_unavailable():

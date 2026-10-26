@@ -101,6 +101,7 @@ def test_build_units_splits_a_large_file_into_overlapping_windows(tmp_path):
     (tmp_path / "views.py").write_text("x" * 60_000)
     units = build_units(str(tmp_path), ["views.py"], ())
     assert [u.name for u in units] == ["views.py#1", "views.py#2", "views.py#3"]
+    assert {u.file for u in units} == {"views.py"}
     assert units[0].span[0] == 0
     assert units[1].span[0] < units[0].span[1]
     assert units[-1].span[1] == 60_000

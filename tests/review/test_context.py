@@ -12,6 +12,7 @@ from cyberjury.review.context import (
     evidence_index,
     evidence_request_ids,
     merge_grounding_coverage,
+    select_evidence,
     source_id,
     source_location_receipt,
     with_scoped_fact_limitations,
@@ -231,3 +232,26 @@ def test_fact_limitations_are_scoped_to_sources_published_by_the_unit():
     assert context.coverage.limitations == ("facts:app.py",)
     assert "app.py: python unparsable" in context.text
     assert "unrelated.py" not in context.text
+
+
+def test_one_oversized_definition_remains_indivisible_evidence():
+    """A 200-character definition selected under a 100-character target is delivered whole, not truncated."""
+    evidence = EvidenceItem.create(identity="large.py:Big:0:200", label="large.py:Big", text="x" * 200)
+
+    selected = select_evidence(
+        (evidence,),
+        [evidence.id],
+        target_chars=100,
+    )
+
+    assert selected.text == f"Read evidence `{evidence.id}` large.py:Big:\n```\n{evidence.text}\n```"
+    assert selected.coverage.included == (evidence.identity,)
+
+
+@pytest.mark.parametrize("requested", [[""], [" ev-one"], ["ev-one", "ev-one"]])
+def test_evidence_selection_rejects_repaired_or_duplicate_ids(requested):
+    """Empty, whitespace-padded, or duplicated ids raise EvidenceRequestError instead of being normalized."""
+    evidence = EvidenceItem.create(identity="one.py:1", label="one", text="source")
+
+    with pytest.raises(EvidenceRequestError):
+        select_evidence((evidence,), requested, target_chars=100)

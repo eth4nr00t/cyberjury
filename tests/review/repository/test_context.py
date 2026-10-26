@@ -21,10 +21,8 @@ from cyberjury.review.repository.context import (
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
-from tests.review.repository.support import finder, review, source_unit
+from tests.review.repository.support import EMPTY_REPLY, finder, review, source_unit
 from tests.review.support import route_call, shared_grounding
-
-_EMPTY_REPLY = '{"findings": [], "evidence_requests": [], "source_queries": []}'
 
 
 def _ground(unit, *, facts_by_file, limitations, navigator, snapshot):
@@ -110,6 +108,48 @@ def test_repository_candidate_file_limitations_follow_the_published_source(tmp_p
     assert "incomplete parse" in grounded.prompt.source
 
 
+def test_a_unit_limitation_is_attached_to_its_rendered_source(tmp_path):
+    """A partially parsed broken.py limitation at 1:11 appears in the rendered source and leaves coverage complete."""
+    (tmp_path / "broken.py").write_text("def broken(:\n", encoding="utf-8")
+    limitation = FactLimitation(source="broken.py", analyzer="python", reason="partially parsed", line=1, column=11)
+
+    grounded = _ground(
+        source_unit(tmp_path, "broken.py"),
+        facts_by_file={},
+        limitations=(limitation,),
+        navigator=None,
+        snapshot=capture_source_snapshot(tmp_path),
+    ).grounding
+
+    assert "broken.py at 1:11" in grounded.prompt.source
+    assert grounded.coverage.limitations == ("facts:broken.py:1:11",)
+    assert grounded.coverage.complete is True
+
+
+def test_repository_reviewer_keeps_embedded_markdown_fence_in_source(tmp_path):
+    """A source line containing ``` is fenced with ~~~ so the triple backtick reaches the prompt intact."""
+    (tmp_path / "app.py").write_text('marker = "```"\n', encoding="utf-8")
+    provider = MockProvider(default=EMPTY_REPLY)
+
+    review(finder(provider), source_unit(tmp_path, "app.py", name="app.py"))
+
+    prompt = provider.calls[0]["messages"][0].content
+    assert "Code under review, cited as `seed`:\n~~~\n# file: app.py" in prompt
+    assert 'marker = "```"' in prompt
+
+
+def test_repository_prompt_never_carries_the_unit_name(tmp_path):
+    """A unit named with a backtick and newline leaks neither fragment into the prompt."""
+    (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
+    provider = MockProvider(default=EMPTY_REPLY)
+
+    review(finder(provider), source_unit(tmp_path, "app.py", name="app`unit\nnext heading"))
+
+    prompt = provider.calls[0]["messages"][0].content
+    assert "app`unit" not in prompt
+    assert "next heading" not in prompt
+
+
 def _prompt_of(prov):
     return prov.calls[0]["messages"][0].content
 
@@ -127,7 +167,7 @@ def _grounded(tmp_path, name, facts_by_file):
 def test_reviewer_grounds_a_unit_with_only_its_own_files_facts(tmp_path):
     """The views.py prompt carries its calls[load_owner] hints while admin.py delete_all hints stay out."""
     (tmp_path / "views.py").write_text("def list_items():\n    return load_owner()\n")
-    prov = MockProvider(default=_EMPTY_REPLY)
+    prov = MockProvider(default=EMPTY_REPLY)
     by_file = {
         "views.py": "def list_items()  calls[load_owner]",
         "admin.py": "def delete_all()  calls[purge]",
@@ -144,7 +184,7 @@ def test_repository_syntax_hints_are_bounded_per_file_with_a_visible_marker(tmp_
     (tmp_path / "large.py").write_text("value = 1\n")
     limit = DEFAULT_REVIEW_SETTINGS.execution.max_syntax_hint_chars_per_file
     facts = "fact\n" * (limit // 5 + 1)
-    provider = MockProvider(default=_EMPTY_REPLY)
+    provider = MockProvider(default=EMPTY_REPLY)
 
     review(
         finder(provider),
@@ -185,7 +225,7 @@ def test_repository_units_with_seed_definitions_get_no_syntax_hints(tmp_path):
 def test_reviewer_adds_no_facts_block_without_a_map(tmp_path):
     """An empty facts map leaves the finder prompt without any 'syntax hints' block."""
     (tmp_path / "v.py").write_text("x = 1")
-    prov = MockProvider(default=_EMPTY_REPLY)
+    prov = MockProvider(default=EMPTY_REPLY)
     review(finder(prov), _grounded(tmp_path, "v.py", {}))
     assert "syntax hints" not in _prompt_of(prov)
 

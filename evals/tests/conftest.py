@@ -49,8 +49,24 @@ def benchmark_project(tmp_path):
 
 
 @pytest.fixture
+def case(benchmark_project):
+    """Return the benchmark project's diff case."""
+    from evals.benchmarks.cases import find_case
+
+    return find_case(benchmark_project.diff_case, [benchmark_project.benchmark])
+
+
+@pytest.fixture
+def cases(benchmark_project):
+    """Load every case of the benchmark project."""
+    from evals.benchmarks.cases import load_cases
+
+    return load_cases([benchmark_project.benchmark])
+
+
+@pytest.fixture
 def write_attempt(benchmark_project):
-    """Record an attempt of the diff case with one finding per candidate id, and its issues when given."""
+    """Record an attempt of the diff case with one finding per candidate id, each its own issue unless given."""
     from evals.attempts import attempt_path
     from evals.benchmarks.cases import find_case
 
@@ -82,9 +98,11 @@ def write_attempt(benchmark_project):
                 }
                 for identity in candidates
             ],
+            "issues": [
+                {"representative": members[0], "members": list(members)}
+                for members in (issues if issues is not None else tuple((identity,) for identity in candidates))
+            ],
         }
-        if issues is not None:
-            record["issues"] = [{"representative": members[0], "members": list(members)} for members in issues]
         path.write_text(json.dumps(record), encoding="utf-8")
         return path
 

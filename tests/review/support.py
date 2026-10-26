@@ -142,3 +142,33 @@ class StubIssueJudge:
         if self.error is not None:
             raise self.error
         return LinkDecision(same_fix=self.same_fix(pair), rationale="one change decides both findings")
+
+
+@dataclass(frozen=True)
+class StubFinding:
+    """A minimal finding for scheduler and evidence exchange tests."""
+
+    title: str
+    location: str
+    severity: str = "HIGH"
+    found_by: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+    category: str = ""
+
+
+def finding_key(finding: StubFinding) -> str:
+    """Identify a stub finding by its location."""
+    return finding.location
+
+
+def fold_findings(existing: StubFinding, incoming: StubFinding) -> StubFinding:
+    """Merge two stub findings at one location, uniting their labels and evidence references."""
+    labels = tuple(sorted(set(existing.found_by) | set(incoming.found_by)))
+    return StubFinding(
+        existing.title,
+        existing.location,
+        existing.severity,
+        labels,
+        tuple(dict.fromkeys((*existing.evidence_refs, *incoming.evidence_refs))),
+        existing.category,
+    )

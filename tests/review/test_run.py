@@ -1,19 +1,20 @@
-"""Repository Review through the shared run covers unit failures, issue grouping, and resume."""
+"""The shared run reviews every unit, records and resumes unit work, and groups findings into issues."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.facts import FactLimitation
+from cyberjury.review.context import GroundingContext, SourceSpan
 from cyberjury.review.recorder import Recorder
-from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.repository import context as context_module
 from cyberjury.review.repository.finder import REPOSITORY_TARGET
 from cyberjury.review.run import run_review
 from cyberjury.review.seats import ReviewSeats
 from cyberjury.workspace import WorkspaceCorruptionError, read_record
+from tests.review.diff import support as diff
 from tests.review.repository.support import (
     EMPTY_REPLY,
     finder_reply,
@@ -40,6 +41,56 @@ def _units(root, names):
     for name in names:
         (root / f"{name}.py").write_text("value = 1\n", encoding="utf-8")
     return ground([source_unit(root, f"{name}.py", name=name) for name in names])
+
+
+def test_empty_diff_is_complete_without_model_work():
+    """A whitespace-only diff is complete and the provider receives no calls."""
+    provider = MockProvider(default="{}")
+
+    result = diff.review("  \n", provider=provider)
+
+    assert result.outcome.complete is True
+    assert provider.calls == []
+
+
+def test_run_fails_loud_on_zero_units(tmp_path):
+    """A repository with only README.md raises ValueError about no readable production source files."""
+    repository = tmp_path / "empty"
+    repository.mkdir()
+    (repository / "README.md").write_text("nothing to review here\n")
+    with pytest.raises(ValueError, match="no readable production source files"):
+        run_repository_review(repository, tmp_path / "ws")
+
+
+def test_a_failed_unit_makes_the_outcome_incomplete_with_its_failure():
+    """A non-JSON reply leaves the outcome incomplete with one error and one recorded failure."""
+    result = diff.review(diff.SQL_DIFF, provider=MockProvider(default="not json"))
+
+    assert result.outcome.complete is False
+    assert result.outcome.errors == 1
+    assert len(result.outcome.failures) == 1
+
+
+def test_each_unit_is_sent_only_its_own_grounding():
+    """Each of two per-file units sends only its own grounding text, once each across the two prompts."""
+    provider = MockProvider(default=diff.reply([]))
+
+    units = [
+        replace(
+            unit,
+            grounding=GroundingContext(
+                text="context for a.py" if "a.py" in unit.diff else "context for b.py",
+            ),
+        )
+        for unit in diff.diff_units(diff.FILE_A_DIFF + diff.FILE_B_DIFF, max_chars=1)
+    ]
+
+    diff.review(units, provider=provider)
+
+    prompts = [call["messages"][0].content for call in provider.calls]
+    assert len(prompts) == 2
+    assert sum("context for a.py" in prompt for prompt in prompts) == 1
+    assert sum("context for b.py" in prompt for prompt in prompts) == 1
 
 
 def test_concurrency_yields_same_union_as_serial(tmp_path):
@@ -73,6 +124,26 @@ def test_unit_failures_are_counted_not_silent(tmp_path):
     assert {c.title for c in outcome.findings} == {"ok1", "ok2"}
 
 
+def test_a_failed_batch_keeps_the_findings_of_the_other_batches():
+    """A large diff keeps completed batch results while surfacing failed batches."""
+    finding_b = {
+        "file": "b.py",
+        "line": 1,
+        "severity": "HIGH",
+        "category": "missing-authorization",
+        "evidence": "unguarded sink",
+    }
+    provider = MockProvider(responses=["not json", "still not json", diff.reply([finding_b])])
+
+    result = diff.review(diff.FILE_A_DIFF + diff.FILE_B_DIFF, provider=provider, max_chars=1)
+
+    assert [f.evidence for f in result.outcome.findings] == ["unguarded sink"]
+    assert result.outcome.complete is False
+    failure = result.outcome.failures[0]
+    assert (failure.index, failure.total, failure.paths) == (1, 2, ("a.py",))
+    assert "reply had no complete JSON object" in failure.reason
+
+
 def test_repository_unit_grounding_is_materialized_once(tmp_path, monkeypatch):
     """Reviewing unit.py reads its text once and sends value = 1 in the finder prompt."""
     (tmp_path / "unit.py").write_text("value = 1\n", encoding="utf-8")
@@ -93,48 +164,45 @@ def test_repository_unit_grounding_is_materialized_once(tmp_path, monkeypatch):
     assert reads == 1
 
 
-def test_a_unit_limitation_is_attached_to_its_rendered_source(tmp_path):
-    """A partially parsed broken.py limitation at 1:11 appears in the prompt and leaves the outcome complete."""
-    (tmp_path / "broken.py").write_text("def broken(:\n", encoding="utf-8")
-    provider = MockProvider(default=EMPTY_REPLY)
-    limitation = FactLimitation(source="broken.py", analyzer="python", reason="partially parsed", line=1, column=11)
-
-    outcome = _run(ground([source_unit(tmp_path, "broken.py")], limitations=(limitation,)), provider)
-
-    assert "broken.py at 1:11" in provider.calls[0]["messages"][0].content
-    assert outcome.grounding.limitations == ("facts:broken.py:1:11",)
-    assert outcome.complete is True
-
-
-def test_one_source_operation_keeps_reports_at_different_lines_separate(tmp_path):
-    """Findings at lines 63 and 64 sharing operation call-shared stay two separate findings."""
-
-    class OperationNavigator:
-        relationship_evidence = RelationshipEvidenceBundle()
-
-        def session(self):
-            return self
-
-        def record_delivered(self, evidence, *, seed_spans=()):
-            return None
-
-        def source_operation_id(self, file, line):
-            return "call-shared" if file == "matching.py" and line in {63, 64} else ""
-
-    (tmp_path / "matching.py").write_text("value = 1\n" * 70, encoding="utf-8")
-    provider = unit_provider(
-        lambda _name: [finding("matching.py", line, title=f"regex operation {line}") for line in (63, 64)]
+def test_findings_are_located_before_duplicates_fold():
+    """Duplicates anchored at unchanged line 10 and added line 11 fold to one finding anchored at 11."""
+    diff_text = (
+        "diff --git a/app.py b/app.py\n"
+        "--- a/app.py\n"
+        "+++ b/app.py\n"
+        "@@ -10,2 +10,3 @@\n"
+        " existing()\n"
+        "+expose()\n"
+        " finish()\n"
     )
-
-    outcome = _run(
-        ground([source_unit(tmp_path, "matching.py", name="matching")], navigator=OperationNavigator()),
-        provider,
-    )
-
-    assert [(item.line, item.source_operation_id) for item in outcome.findings] == [
-        (63, "call-shared"),
-        (64, "call-shared"),
+    base = {
+        "file": "app.py",
+        "line": 10,
+        "severity": "HIGH",
+        "category": "other",
+        "evidence": "existing operation is exposed",
+    }
+    findings = [
+        {**base, "change_anchor": {"file": "app.py", "line": 10, "side": "new"}},
+        {**base, "change_anchor": {"file": "app.py", "line": 11, "side": "new"}},
     ]
+
+    result = diff.review(diff_text, provider=MockProvider(default=diff.reply(findings)))
+
+    assert [
+        (item.line, item.change_anchor.line if item.change_anchor else None) for item in result.outcome.findings
+    ] == [(10, 11)]
+    assert result.outcome.complete is False
+
+
+def test_diff_review_records_one_item_per_unit(tmp_path):
+    """Two per-file units leave two ok review item records beside their findings payloads."""
+    diff.review(
+        diff.FILE_A_DIFF + diff.FILE_B_DIFF, provider=MockProvider(default=diff.reply([])), max_chars=1, review=tmp_path
+    )
+
+    records = [read_record(path) for path in sorted((tmp_path / "review" / "items").glob("*.json"))]
+    assert [record.status for record in records] == ["ok", "ok"]
 
 
 _FLASK_APP = """
@@ -202,7 +270,7 @@ def test_repository_run_completes_and_records_each_unit(custody_repository, tmp_
 
 
 def test_repository_reviews_raw_source_and_completes_when_facts_are_limited(tmp_path):
-    """A partially parsed app.py is reviewed, completes with its limitation, and resume makes no provider calls."""
+    """A partially parsed app.py is reviewed and completes with its facts:app.py:3:12 limitation reported."""
     target = tmp_path / "opaque"
     target.mkdir()
     (target / "app.py").write_text("from flask import Flask\napp = Flask(__name__)\ndef broken(:\n")
@@ -213,24 +281,21 @@ def test_repository_reviews_raw_source_and_completes_when_facts_are_limited(tmp_
     assert provider.calls
     assert result.outcome.errors == 0
     assert result.outcome.complete is True
-    assert result.outcome.grounding.limitations
-    assert len(result.outcome.grounding.limitations) == 1
-
-    resumed_provider = MockProvider(default=EMPTY_REPLY)
-    resumed = run_repository_review(target, tmp_path / "ws", provider=resumed_provider)
-
-    assert resumed_provider.calls == []
-    assert resumed.outcome.complete is True
-    assert resumed.outcome.grounding.limitations == result.outcome.grounding.limitations
+    assert result.outcome.grounding.limitations == ("facts:app.py:3:12",)
 
 
-def test_run_fails_loud_on_zero_units(tmp_path):
-    """A repository with only README.md raises ValueError about no readable production source files."""
-    repository = tmp_path / "empty"
-    repository.mkdir()
-    (repository / "README.md").write_text("nothing to review here\n")
-    with pytest.raises(ValueError, match="no readable production source files"):
-        run_repository_review(repository, tmp_path / "ws")
+def test_repository_run_counts_an_unreceipted_finder_candidate_as_incomplete(tmp_path):
+    """A finding at app.py line 99 without a source receipt leaves the run incomplete and the unit unclean."""
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    (repo / "app.py").write_text("def get(request):\n    return 1\n", encoding="utf-8")
+    provider = MockProvider(default=finder_reply([finding("app.py", 99, title="missing source receipt")]))
+
+    result = run_repository_review(repo, tmp_path / "ws", provider=provider)
+
+    assert not result.outcome.complete
+    assert len(result.outcome.incomplete) == 1
+    assert [record["clean"] for record in _unit_records(tmp_path / "ws")] == [False]
 
 
 def test_resume_skips_reviewed_units(custody_repository, tmp_path):
@@ -328,18 +393,30 @@ def test_a_corrupt_unit_payload_on_resume_raises_loud(custody_repository, tmp_pa
     assert resumed.calls == []
 
 
-def test_repository_run_counts_an_unreceipted_finder_candidate_as_incomplete(tmp_path):
-    """A finding at app.py line 99 without a source receipt leaves the run incomplete and the unit unclean."""
-    repo = tmp_path / "svc"
-    repo.mkdir()
-    (repo / "app.py").write_text("def get(request):\n    return 1\n", encoding="utf-8")
-    provider = MockProvider(default=finder_reply([finding("app.py", 99, title="missing source receipt")]))
+def test_diff_review_groups_its_findings_into_issues_through_the_shared_step(tmp_path):
+    """Two same-line findings and one other-line finding form one issue linked by judgment and location."""
+    (tmp_path / "app.py").write_text("first = 1\nsecond = 2\n", encoding="utf-8")
+    diff_text = "+++ b/app.py\n@@ -0,0 +1,2 @@\n+first = 1\n+second = 2\n"
+    provider = MockProvider(
+        default=diff.reply(
+            [
+                {"file": "app.py", "line": 1, "title": "first claim", "severity": "HIGH", "category": "c"},
+                {"file": "app.py", "line": 1, "title": "second claim", "severity": "HIGH", "category": "c"},
+                {"file": "app.py", "line": 2, "title": "other line", "severity": "HIGH", "category": "c"},
+            ]
+        )
+    )
+    judge = StubIssueJudge()
+    context = GroundingContext(text="context", source_spans=(SourceSpan(file="app.py", start_line=1, end_line=2),))
 
-    result = run_repository_review(repo, tmp_path / "ws", provider=provider)
+    result = diff.review(diff_text, provider=provider, context=context, issue_judge=judge, root=tmp_path)
 
-    assert not result.outcome.complete
-    assert len(result.outcome.incomplete) == 1
-    assert [record["clean"] for record in _unit_records(tmp_path / "ws")] == [False]
+    assert len(result.findings.findings) == 3
+    assert len(judge.pairs) == 1
+    (issue,) = result.findings.issues
+    assert issue.linked_by == ("judgment", "location")
+    assert set(issue.members) == {record.id for record in result.findings.findings}
+    assert result.outcome.complete
 
 
 _RECORDS = (
@@ -355,24 +432,31 @@ _RECORDS = (
 )
 
 
-@pytest.mark.parametrize(("same_fix", "issues"), [(True, 1), (False, 2)])
-def test_repository_review_folds_one_line_and_links_judged_issues(tmp_path, same_fix, issues):
-    """Two line-5 findings fold by location, the judge links line 9 only when it says same fix, and resume reuses it."""
+def _records_target(tmp_path):
     target = tmp_path / "svc"
     target.mkdir()
     (target / "records.py").write_text(_RECORDS, encoding="utf-8")
-    provider = unit_provider(
+    return target
+
+
+def _records_provider():
+    return unit_provider(
         lambda file: [
             finding(file, 5, title="save drops the owner"),
             finding(file, 5, title="stored record has no owner"),
             finding(file, 9, title="load skips the owner check"),
         ]
     )
+
+
+@pytest.mark.parametrize(("same_fix", "issues"), [(True, 1), (False, 2)])
+def test_repository_review_groups_one_line_and_links_judged_issues(tmp_path, same_fix, issues):
+    """Two line-5 findings group by location, and the judge links line 9 to them only when it says same fix."""
     judge = StubIssueJudge(lambda pair: same_fix)
 
-    result = run_repository_review(target, tmp_path / "ws", provider=provider, issue_judge=judge)
-    resumed_judge = StubIssueJudge(lambda pair: not same_fix)
-    resumed = run_repository_review(target, tmp_path / "ws", provider=provider, issue_judge=resumed_judge)
+    result = run_repository_review(
+        _records_target(tmp_path), tmp_path / "ws", provider=_records_provider(), issue_judge=judge
+    )
 
     artifact = result.findings
     assert len(artifact.findings) == 3
@@ -380,16 +464,26 @@ def test_repository_review_folds_one_line_and_links_judged_issues(tmp_path, same
     save = next(issue for issue in artifact.issues if len(issue.members) >= 2)
     assert save.linked_by == (("judgment", "location") if same_fix else ("location",))
     assert len(judge.pairs) == 1
+
+
+@pytest.mark.parametrize("same_fix", [True, False])
+def test_resume_reuses_recorded_issue_link_judgments(tmp_path, same_fix):
+    """A resumed run with an opposite judge asks it nothing and returns the first run's findings and issues."""
+    target = _records_target(tmp_path)
+    first = run_repository_review(
+        target, tmp_path / "ws", provider=_records_provider(), issue_judge=StubIssueJudge(lambda pair: same_fix)
+    )
+    resumed_judge = StubIssueJudge(lambda pair: not same_fix)
+
+    resumed = run_repository_review(target, tmp_path / "ws", provider=_records_provider(), issue_judge=resumed_judge)
+
     assert resumed_judge.pairs == []
-    assert resumed.findings == artifact
-    assert (tmp_path / "ws" / "link" / "items").is_dir()
+    assert resumed.findings == first.findings
 
 
 def test_a_failed_issue_link_judgment_leaves_the_link_stage_incomplete(tmp_path):
     """A judge raising down keeps two separate issues and a complete review, and the link stage is incomplete."""
-    target = tmp_path / "svc"
-    target.mkdir()
-    (target / "records.py").write_text(_RECORDS, encoding="utf-8")
+    target = _records_target(tmp_path)
     provider = unit_provider(
         lambda file: [finding(file, 5, title="save drops the owner"), finding(file, 9, title="load skips the check")]
     )
@@ -410,5 +504,5 @@ def test_a_failed_issue_link_judgment_leaves_the_link_stage_incomplete(tmp_path)
     assert link.status == "incomplete"
     assert "down" in link.error.message
     [item] = [read_record(path) for path in (tmp_path / "ws" / "link" / "items").glob("*.json")]
-    assert list(item.attributes) == ["pair", "same_fix", "rationale"]
+    assert set(item.attributes) == {"pair", "same_fix", "rationale"}
     assert (item.attributes["same_fix"], item.attributes["rationale"]) == (None, None)

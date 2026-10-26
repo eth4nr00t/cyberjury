@@ -2,24 +2,12 @@
 
 import pytest
 
-from tests.review.syntax.support import syntax_facts
-
-
-def _chain(root):
-    (root / "app").mkdir(parents=True)
-    (root / "app" / "routes.py").write_text(
-        "from app.handler import handle_request\n\n\ndef get_order(oid):\n    return handle_request(oid)\n"
-    )
-    (root / "app" / "handler.py").write_text(
-        "from app.repository import load_order\n\n\ndef handle_request(oid):\n    return load_order(oid)\n"
-    )
-    (root / "app" / "repository.py").write_text("def load_order(oid):\n    return run_query(oid)\n")
-    return root
+from tests.review.syntax.support import syntax_facts, write_call_chain
 
 
 def test_by_file_carries_each_file_own_graph_as_prompt_text(tmp_path):
     """The app/handler.py block shows its own calls and imports of load_order but not get_order."""
-    _chain(tmp_path)
+    write_call_chain(tmp_path)
     block = syntax_facts(tmp_path).by_file["app/handler.py"]
     assert "handle_request()" in block
     assert "calls load_order" in block
@@ -330,3 +318,21 @@ def test_relationship_evidence_keeps_a_recursive_callsite(tmp_path):
     evidence = syntax_facts(tmp_path).relationships.to_data()
 
     assert [item["expression"] for item in evidence["callsites"]] == ["walk(node.parent)"]
+
+
+def test_typescript_default_import_alias_call_and_import_edge_are_kept(tmp_path):
+    """Facts keep the client(value) default-import call, the route.ts import edge, and tsconfig.json as a source."""
+    (tmp_path / "service.ts").write_text("export default function actual(value: number) { return value; }\n")
+    (tmp_path / "route.ts").write_text(
+        "import client from './service';\nexport function route(value: number) { return client(value); }\n"
+    )
+    (tmp_path / "tsconfig.json").write_text('{"compilerOptions":{"paths":{"@app/*":["./*"]}}}\n')
+
+    evidence = syntax_facts(tmp_path).relationships
+
+    assert any(callsite.expression == "client(value)" for callsite in evidence.callsites)
+    assert any(
+        relationship.kind == "import" and relationship.source.path == "route.ts"
+        for relationship in evidence.structural_relationships
+    )
+    assert "tsconfig.json" in {source.path for source in evidence.sources}

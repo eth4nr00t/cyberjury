@@ -1,0 +1,811 @@
+"""Review command tests cover the stage records each review writes and prints, and how its attempt ends."""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+import os
+import re
+import signal
+from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+import cyberjury.review.command as commandmod
+from cyberjury.envfile import load_env_file
+from cyberjury.providers import configuration as provider_configuration_module
+from cyberjury.providers.mock import MockProvider
+from cyberjury.record import STAGES, Record
+from cyberjury.review.command import ReviewCommand, attempt_output, run_review_command
+from cyberjury.review.request import TargetInput
+from cyberjury.review.result import FindingsArtifact
+from tests.support import git
+
+
+@pytest.fixture(autouse=True)
+def _no_env_file(monkeypatch):
+    monkeypatch.setattr(commandmod, "load_env_file", lambda: [])
+
+
+@dataclass(frozen=True)
+class _Run:
+    record: Record
+    out: str
+    err: str
+
+
+def _review(
+    target: TargetInput,
+    workspace: Path,
+    *,
+    dry_run: bool = True,
+    fresh: bool | None = None,
+    concurrency: int | None = None,
+) -> _Run:
+    stdout, stderr = io.StringIO(), io.StringIO()
+    command = ReviewCommand(
+        target=target, workspace=str(workspace), dry_run=dry_run, fresh=fresh, concurrency=concurrency
+    )
+    record = run_review_command(command, stdout=stdout, stderr=stderr)
+    return _Run(record=record, out=stdout.getvalue(), err=stderr.getvalue())
+
+
+def _diff(repository: Path, git_range: str) -> TargetInput:
+    return TargetInput(kind="diff", repository=str(repository.resolve()), git_range=git_range)
+
+
+def _repository(directory: Path) -> TargetInput:
+    return TargetInput(kind="repository", repository=str(directory.resolve()))
+
+
+def _records(output: str) -> list[dict]:
+    decoder, position, records = json.JSONDecoder(), 0, []
+    while position < len(output):
+        record, position = decoder.raw_decode(output, position)
+        records.append(record)
+        while position < len(output) and output[position].isspace():
+            position += 1
+    return records
+
+
+def _stage(records: list[dict], name: str) -> dict:
+    return next(record for record in records if record["id"] == name)
+
+
+def _review_dir(state: Path) -> Path:
+    [review] = (state / "reviews").iterdir()
+    return review
+
+
+def _attempt_dir(state: Path) -> Path:
+    [attempt] = (_review_dir(state) / "attempts").iterdir()
+    return attempt
+
+
+def _attempt_record(attempt: Path) -> dict:
+    return json.loads((attempt / "record.json").read_text())
+
+
+def _stub_review(*, incomplete: str = "", seen: dict | None = None):
+    def review(prepared, *, recorder, **kwargs):
+        if seen is not None:
+            seen.update(kwargs, units=list(prepared.units), root=prepared.shared.root)
+        with recorder.stage("review") as measure:
+            measure.metrics.update(items=len(prepared.units))
+            if incomplete:
+                measure.incomplete(incomplete)
+        recorder.skip("link", "stub review")
+        with recorder.stage("result") as measure:
+            measure.bind(FindingsArtifact.create((), ()))
+
+    return review
+
+
+def _live_provider(monkeypatch, default: str = "{}") -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(default=default))
+
+
+def _seed_source(repository: Path) -> Path:
+    repository.mkdir(parents=True, exist_ok=True)
+    source = repository / "app.py"
+    if not source.exists():
+        source.write_text("value = 1\n")
+    return repository
+
+
+def _git_change(repo: Path, base: dict[str, str], head: dict[str, str], *, three_dot: bool = False) -> SimpleNamespace:
+    repo.mkdir()
+    git(repo, "init", "--quiet")
+    for files, message in ((base, "base"), (head, "head")):
+        for relative, text in files.items():
+            path = repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        git(repo, "add", ".")
+        git(repo, "commit", "--quiet", "--allow-empty", "-m", message)
+        if message == "base":
+            base_revision = git(repo, "rev-parse", "HEAD")
+    separator = "..." if three_dot else ".."
+    return SimpleNamespace(
+        target=_diff(repo, f"{base_revision}{separator}HEAD"),
+        repository=repo,
+        base=base_revision,
+    )
+
+
+@pytest.fixture
+def diff_target(tmp_path):
+    """Commit one added file over an empty base and return its two-dot range target."""
+    return _git_change(tmp_path / "repo", {}, {"a.py": "x = 1\n"})
+
+
+def _flask_repository(root):
+    root.mkdir()
+    (root / "app.py").write_text(
+        "from flask import Flask, request\napp = Flask(__name__)\n"
+        '@app.route("/x/<i>")\ndef h(i):\n    return request.args.get("y", "")\n'
+    )
+    (root / "requirements.txt").write_text("Flask==3.0\n")
+    return root
+
+
+def _graphable(root):
+    root.mkdir()
+    (root / "app.py").write_text("def handle(req):\n    return lookup(req)\n")
+    (root / "store.py").write_text("def lookup(key):\n    return key\n")
+    return root
+
+
+def test_a_dry_run_prints_every_stage_record_file_and_then_the_attempt_record(diff_target, tmp_path):
+    """Stdout is the stage record files in stage order and then record.json, byte for byte."""
+    state = tmp_path / "state"
+
+    run = _review(diff_target.target, state)
+
+    attempt = _attempt_dir(state)
+    records = _records(run.out)
+    assert run.out == attempt_output(attempt)
+    assert [record["id"] for record in records] == [*STAGES, attempt.name]
+    assert [record["status"] for record in records] == ["ok"] * 8 + ["skipped", "ok", "ok"]
+
+
+def test_stderr_prints_the_line_of_every_record_it_writes(diff_target, tmp_path):
+    """Each stage and the attempt record print their one-line view, and each review unit prints its item line."""
+    state = tmp_path / "state"
+
+    run = _review(diff_target.target, state)
+
+    lines = run.err.splitlines()
+    paths = sorted(_review_dir(state).glob("review/items/*.json"))
+    items = [Record.from_dict(json.loads(path.read_text())) for path in paths]
+    expected = [Record.from_dict(record).line() for record in _records(run.out)]
+    assert [line for line in lines if not line.startswith("review/")] == expected
+    assert sorted(line for line in lines if line.startswith("review/")) == sorted(item.line() for item in items)
+
+
+def test_every_record_kind_carries_its_fixed_metrics_and_attributes(diff_target, tmp_path):
+    """Stages, review items, and the attempt each carry one fixed metric set in vocabulary order and attribute set."""
+    state = tmp_path / "state"
+    usage = ["calls", "input_tokens", "cached_tokens", "output_tokens"]
+
+    records = _records(_review(diff_target.target, state).out)
+
+    item = next((_review_dir(state) / "review" / "items").glob("*.json"))
+    assert {record["id"]: list(record["metrics"]) for record in records[:-1]} == {
+        "config": [],
+        "target": [],
+        "session": [],
+        "source": ["files", "bytes"],
+        "facts": ["limitations"],
+        "plan": ["skipped_files", "items"],
+        "grounding": ["items"],
+        "review": ["items", "restored", "failed", "findings", "unlocated", *usage],
+        "link": [],
+        "result": ["findings", "issues", "critical", "high", "medium", "low"],
+    }
+    assert {record["id"]: list(record["attributes"]) for record in records[:-1]} == {
+        "config": ["provider", "model", "version"],
+        "target": ["kind", "repository", "range"],
+        "session": ["path"],
+        "source": ["snapshot"],
+        "facts": [],
+        "plan": [],
+        "grounding": [],
+        "review": [],
+        "link": ["reason"],
+        "result": [],
+    }
+    item_record = json.loads(item.read_text())
+    assert list(item_record["metrics"]) == ["findings", "unlocated", *usage]
+    assert list(item_record["attributes"]) == ["paths"]
+    assert list(records[-1]["metrics"]) == ["failed", *usage]
+    assert records[-1]["attributes"] == {"source_changed": False}
+
+
+def test_the_attempt_record_sums_failures_and_the_usage_of_every_call(diff_target, tmp_path):
+    """The attempt metrics carry the summed failed count and the model usage of every recorded call."""
+    state = tmp_path / "state"
+
+    attempt = _records(_review(diff_target.target, state).out)[-1]
+
+    calls = json.loads((_attempt_dir(state) / "model-calls.json").read_text())["calls"]
+    assert attempt["metrics"]["failed"] == 0
+    assert attempt["metrics"]["calls"] == len(calls) > 0
+    assert attempt["artifacts"] == [f"attempts/{attempt['id']}/model-calls.json"]
+
+
+def test_a_missing_api_key_fails_the_config_stage_before_any_workspace_exists(monkeypatch, diff_target, tmp_path):
+    """Without provider keys the config record fails with a config error and no state directory is created."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    state = tmp_path / "state"
+
+    run = _review(diff_target.target, state, dry_run=False)
+
+    records = _records(run.out)
+    assert [record["status"] for record in records] == ["failed", "failed"]
+    assert records[0]["id"] == "config"
+    assert records[-1]["error"] == records[0]["error"]
+    assert records[0]["error"]["code"] == "config"
+    assert "no reachable API key" in records[0]["error"]["message"]
+    assert not state.exists()
+
+
+def test_an_invalid_git_range_fails_the_target_stage_before_any_workspace_exists(diff_target, tmp_path):
+    """A bare HEAD range fails the target record with an input error and no state directory is created."""
+    state = tmp_path / "state"
+
+    run = _review(_diff(diff_target.repository, "HEAD"), state)
+
+    target = _stage(_records(run.out), "target")
+    assert target["error"] == {"code": "input", "message": "git range must use A..B or A...B"}
+    assert not state.exists()
+
+
+def test_state_root_inside_the_repository_is_rejected_before_workspace_creation(tmp_path):
+    """A workspace inside the repository fails the target stage with an input error and is never created."""
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    state = repository / ".state"
+
+    run = _review(_repository(repository), state)
+
+    target = _stage(_records(run.out), "target")
+    assert target["error"]["code"] == "input"
+    assert "state root cannot be inside" in target["error"]["message"]
+    assert not state.exists()
+
+
+def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, diff_target, tmp_path):
+    """A dry-run diff review checks out its revision exactly once and deletes that checkout afterwards."""
+    original = commandmod.materialize_diff_target
+    roots = []
+
+    @contextlib.contextmanager
+    def counted(target):
+        with original(target) as root:
+            roots.append(root)
+            yield root
+
+    monkeypatch.setattr(commandmod, "materialize_diff_target", counted)
+
+    assert _review(diff_target.target, tmp_path / "state").record.status == "ok"
+    assert len(roots) == 1
+    assert not roots[0].exists()
+
+
+def test_review_diff_dry_run_uses_real_git_range_and_grounding(tmp_path):
+    """A three-dot range adding a SQL concat dry-runs to empty findings and issues in findings.json."""
+    change = _git_change(
+        tmp_path / "repo",
+        {"app.py": "def run(name):\n    return name\n"},
+        {"app.py": "def run(name):\n    return cursor.execute('SELECT ' + name)\n"},
+        three_dot=True,
+    )
+    state = tmp_path / "state"
+
+    assert _review(change.target, state).record.status == "ok"
+
+    findings = json.loads((_attempt_dir(state) / "findings.json").read_text())
+    assert (findings["findings"], findings["issues"]) == ([], [])
+
+
+def test_docs_only_diff_skips_model_calls(tmp_path):
+    """A range touching only README.md lists it as a noise skip in plan/skipped-files.json and the plan record."""
+    change = _git_change(
+        tmp_path / "repo",
+        {"app.py": "def run():\n    return True\n", "README.md": "Before\n"},
+        {"README.md": "After\n"},
+    )
+    state = tmp_path / "state"
+
+    plan = _stage(_records(_review(change.target, state).out), "plan")
+
+    skipped = json.loads((_review_dir(state) / "plan" / "skipped-files.json").read_text())
+    assert skipped["files"] == [{"path": "README.md", "reason": "noise"}]
+    assert plan["metrics"] == {"items": 0, "skipped_files": 1}
+    assert json.loads((_attempt_dir(state) / "model-calls.json").read_text())["calls"] == []
+
+
+def test_hunkless_diff_sections_are_listed_as_skipped_files(tmp_path):
+    """Mode-only, rename-only, and empty new files are skipped with reasons while the attempt stays ok."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "--quiet")
+    (repo / "app.py").write_text("def run():\n    return True\n")
+    (repo / "run.sh").write_text("echo run\n")
+    (repo / "old.py").write_text("def old():\n    return 1\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "--quiet", "-m", "base")
+    base = git(repo, "rev-parse", "HEAD")
+    (repo / "run.sh").chmod(0o755)
+    git(repo, "mv", "old.py", "renamed.py")
+    (repo / "empty.py").write_text("")
+    git(repo, "add", ".")
+    git(repo, "commit", "--quiet", "-m", "hunkless")
+    state = tmp_path / "state"
+
+    assert _review(_diff(repo, f"{base}..HEAD"), state).record.status == "ok"
+
+    skipped = json.loads((_review_dir(state) / "plan" / "skipped-files.json").read_text())["files"]
+    assert sorted(skipped, key=lambda item: item["path"]) == [
+        {"path": "empty.py", "reason": "empty_new_file"},
+        {"path": "renamed.py", "reason": "rename_only"},
+        {"path": "run.sh", "reason": "mode_only"},
+    ]
+
+
+def test_review_diff_grounds_units_and_judges_issue_links_on_the_finder(monkeypatch, diff_target, tmp_path):
+    """The single diff unit carries +x = 1 and a.py source, with a seat-labelled judge and concurrency 8."""
+    seen = {}
+    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
+    _live_provider(monkeypatch)
+
+    assert _review(diff_target.target, tmp_path / "state", dry_run=False).record.status == "ok"
+
+    [unit] = seen["units"]
+    assert "+x = 1" in unit.diff
+    assert "# file: a.py lines 1-1" in unit.grounding.prompt.source
+    assert Path(seen["root"]).name == diff_target.repository.name
+    assert not Path(seen["root"]).exists()
+    assert seen["seats"].issue_judge is not None
+    assert seen["seats"].finder_label.startswith("seat-")
+    assert seen["concurrency"] == 8
+
+
+def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
+    """Of app.py, docs, and tests changes only app.py is planned, and grounding.json binds to plan.json."""
+    change = _git_change(
+        tmp_path / "repo",
+        {},
+        dict.fromkeys(("app.py", "docs/readme.md", "tests/test_app.py"), "changed\n"),
+    )
+    seen = {}
+    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
+    _live_provider(monkeypatch)
+    state = tmp_path / "state"
+
+    assert _review(change.target, state, dry_run=False).record.status == "ok"
+
+    [unit] = seen["units"]
+    assert unit.paths == ("app.py",)
+    assert "docs/readme.md" not in unit.diff
+    assert "tests/test_app.py" not in unit.diff
+    review = _review_dir(state)
+    plan = json.loads((review / "plan" / "plan.json").read_text())
+    grounding = json.loads((review / "grounding" / "grounding.json").read_text())
+    assert plan["expected_owned_paths"] == ["app.py"]
+    assert grounding["unit_plan_receipt_sha256"] == plan["receipt_sha256"]
+    assert [context["unit_id"] for context in grounding["contexts"]] == [unit["id"] for unit in plan["units"]]
+
+
+def test_review_diff_empty_git_range_is_ok(monkeypatch, diff_target, tmp_path):
+    """A HEAD..HEAD range with a mock provider ends ok with no findings."""
+    _live_provider(monkeypatch, '{"findings": []}')
+    state = tmp_path / "state"
+
+    run = _review(_diff(diff_target.repository, "HEAD..HEAD"), state, dry_run=False)
+
+    assert run.record.status == "ok"
+    assert json.loads((_attempt_dir(state) / "findings.json").read_text())["findings"] == []
+
+
+def test_an_incomplete_review_makes_the_attempt_incomplete_with_its_reason(monkeypatch, diff_target, tmp_path):
+    """An incomplete review stage makes the attempt incomplete with that stage's reason."""
+    monkeypatch.setattr(commandmod, "run_review", _stub_review(incomplete="review unit 1/1 failed for a.py: blocked"))
+    state = tmp_path / "state"
+
+    attempt = _records(_review(diff_target.target, state).out)[-1]
+
+    assert attempt["status"] == "incomplete"
+    assert attempt["error"] == {"code": "model", "message": "review unit 1/1 failed for a.py: blocked"}
+    assert _attempt_record(_attempt_dir(state)) == attempt
+
+
+def test_repository_review_with_model_errors_marks_units_failed(tmp_path, monkeypatch):
+    """A provider answering 'not json at all' fails every unit item and leaves the review stage incomplete."""
+    _live_provider(monkeypatch, "not json at all")
+    state = tmp_path / "state"
+
+    run = _review(_repository(_flask_repository(tmp_path / "svc")), state, dry_run=False)
+
+    review = _stage(_records(run.out), "review")
+    assert run.record.status == review["status"] == "incomplete"
+    items = list((_review_dir(state) / "review" / "items").glob("*.json"))
+    assert review["metrics"]["failed"] == review["metrics"]["items"] == len(items) > 0
+    assert {json.loads(path.read_text())["status"] for path in items} == {"failed"}
+
+
+def test_partially_parsed_sources_are_counted_as_fact_limitations(tmp_path):
+    """A repository with a syntax error in app.py reports one limitation on the facts record and stays ok."""
+    repository = tmp_path / "svc"
+    repository.mkdir()
+    (repository / "app.py").write_text("from flask import Flask\napp = Flask(__name__)\ndef broken(:\n")
+
+    run = _review(_repository(repository), tmp_path / "state")
+
+    assert _stage(_records(run.out), "facts")["metrics"]["limitations"] == 1
+    assert run.record.status == "ok"
+
+
+def test_review_repository_writes_the_unit_plan(tmp_path):
+    """A dry-run over a directory with only app.py writes plan/plan.json listing a single app.py unit."""
+    repository = tmp_path / "svc"
+    repository.mkdir()
+    (repository / "app.py").write_text("x = 1\n")
+    state = tmp_path / "state"
+
+    assert _review(_repository(repository), state).record.status == "ok"
+
+    plan = json.loads((_review_dir(state) / "plan" / "plan.json").read_text())
+    assert [unit["name"] for unit in plan["units"]] == ["app.py"]
+
+
+def test_review_repository_skips_ignored_trees_of_a_git_work_tree(tmp_path):
+    """A .gitignore'd .venv tree and its lib64 symlink are left out of the source snapshot and the unit plan."""
+    repository = tmp_path / "svc"
+    repository.mkdir()
+    git(repository, "init", "--quiet")
+    (repository / ".gitignore").write_text(".venv/\n")
+    (repository / "app.py").write_text("x = 1\n")
+    (repository / ".venv" / "lib").mkdir(parents=True)
+    (repository / ".venv" / "lib" / "site.py").write_text("y = 2\n")
+    (repository / ".venv" / "lib64").symlink_to("lib", target_is_directory=True)
+    state = tmp_path / "state"
+
+    assert _review(_repository(repository), state).record.status == "ok"
+
+    review = _review_dir(state)
+    files = [entry["path"] for entry in json.loads((review / "source" / "snapshot.json").read_text())["files"]]
+    assert files == [".gitignore", "app.py"]
+    plan = json.loads((review / "plan" / "plan.json").read_text())
+    assert plan["expected_owned_paths"] == [".gitignore", "app.py"]
+
+
+def test_review_repository_grounds_units_with_syntax_facts(tmp_path):
+    """Review extracts syntax facts before it grounds the planned units, delivering candidate callee source."""
+    state = tmp_path / "state"
+
+    assert _review(_repository(_graphable(tmp_path / "svc")), state).record.status == "ok"
+
+    grounding = json.loads((_review_dir(state) / "grounding" / "grounding.json").read_text())
+    assert grounding["schema"] == "cyberjury.grounding/v1"
+    assert all(context["seed_chars"] > 0 for context in grounding["contexts"])
+    assert [
+        span["source_span"]["file"] for context in grounding["contexts"] for span in context["source_evidence"]
+    ] == ["store.py"]
+
+
+def test_a_review_whose_live_source_changes_keeps_its_result_and_says_so(tmp_path, monkeypatch):
+    """Editing app.py after the review finishes marks the attempt source_changed but keeps it ok."""
+    repository = _flask_repository(tmp_path / "svc")
+    original = commandmod.run_review
+
+    def review_then_edit(*args, **kwargs):
+        result = original(*args, **kwargs)
+        (repository / "app.py").write_text("changed = True\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(commandmod, "run_review", review_then_edit)
+
+    attempt = _records(_review(_repository(repository), tmp_path / "state").out)[-1]
+
+    assert attempt["status"] == "ok"
+    assert attempt["attributes"] == {"source_changed": True}
+
+
+def test_repository_review_builds_one_finder_provider(monkeypatch, tmp_path):
+    """A live repository review calls make_provider exactly once for its single finder seat."""
+    providers = []
+
+    def fake_make_provider(name, **kwargs):
+        provider = MockProvider(default='{"findings": []}')
+        providers.append(provider)
+        return provider
+
+    monkeypatch.setattr(provider_configuration_module, "make_provider", fake_make_provider)
+    monkeypatch.setattr(commandmod, "run_review", _stub_review())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    run = _review(_repository(_seed_source(tmp_path / "svc")), tmp_path / "state", dry_run=False)
+
+    assert run.record.status == "ok"
+    assert len(providers) == 1
+
+
+@pytest.mark.parametrize(("concurrency", "expected"), [(None, 8), (4, 4)])
+def test_repository_review_concurrency_uses_the_api_default(monkeypatch, tmp_path, concurrency, expected):
+    """Repository concurrency is 8 when unset and 4 when set to 4, on the finder seat."""
+    seen = {}
+    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    run = _review(
+        _repository(_seed_source(tmp_path / "svc")), tmp_path / "state", dry_run=False, concurrency=concurrency
+    )
+
+    assert run.record.status == "ok"
+    assert seen["concurrency"] == expected
+    assert seen["seats"].finder_label.startswith("seat-")
+
+
+def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target, tmp_path):
+    """The request.json records the seat id and concurrency 5, model-calls.json is empty, and no key leaks."""
+    seen = {}
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-canary")
+    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
+    state = tmp_path / "state"
+
+    assert _review(diff_target.target, state, dry_run=False, concurrency=5).record.status == "ok"
+
+    attempt = _attempt_dir(state)
+    request = json.loads((attempt / "request.json").read_text())
+    model_calls = json.loads((attempt / "model-calls.json").read_text())
+    assert request["providers"]["seat"]["seat_id"].startswith("seat-")
+    assert request["concurrency"] == {"review": 5}
+    assert seen["concurrency"] == 5
+    assert model_calls["schema"] == "cyberjury.model-calls/v1"
+    assert model_calls["calls"] == []
+    assert "secret-canary" not in "".join(path.read_text() for path in _review_dir(state).rglob("*.json"))
+
+
+def test_the_review_reads_its_model_from_the_working_directory_env(monkeypatch, diff_target, tmp_path):
+    """CYBERJURY_MODEL and OPENAI_API_KEY from ./.env select an openai seat running model-from-env."""
+    monkeypatch.setattr(commandmod, "load_env_file", load_env_file)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".env").write_text("CYBERJURY_MODEL=model-from-env\nOPENAI_API_KEY=key-from-env\n", encoding="utf-8")
+    monkeypatch.chdir(project)
+    for name in ("CYBERJURY_MODEL", "OPENAI_API_KEY"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+    seen = {}
+    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
+
+    run = _review(diff_target.target, tmp_path / "state", dry_run=False)
+
+    config = _stage(_records(run.out), "config")
+    assert seen["seats"].finder_model == "model-from-env"
+    assert (config["attributes"]["provider"], config["attributes"]["model"]) == ("openai", "model-from-env")
+
+
+@pytest.mark.parametrize("scope", ["diff", "repository"])
+def test_dry_runs_persist_calls_bound_to_planned_units(tmp_path, scope):
+    """A dry run records model calls whose unit_id names a planned unit and whose trigger is a finder trigger."""
+    change = _git_change(tmp_path / "repo", {}, {"app.py": "def run(name):\n    return name\n"})
+    state = tmp_path / "state"
+
+    assert _review(change.target if scope == "diff" else _repository(change.repository), state).record.status == "ok"
+
+    unit_ids = {unit["id"] for unit in json.loads((_review_dir(state) / "plan" / "plan.json").read_text())["units"]}
+    calls = json.loads((_attempt_dir(state) / "model-calls.json").read_text())["calls"]
+    assert calls
+    assert all(call["unit_id"] in unit_ids for call in calls)
+    assert all(call["trigger"] in {"initial_judgment", "evidence_followup"} for call in calls)
+
+
+def test_a_review_directory_holds_lowercase_kebab_case_files_named_after_their_schemas(tmp_path):
+    """A dry run leaves lowercase kebab case files, each naming the schema its file name or record kind implies."""
+    state = tmp_path / "state"
+
+    assert _review(_repository(_flask_repository(tmp_path / "svc")), state).record.status == "ok"
+
+    review = _review_dir(state)
+    attempt = _attempt_dir(state).name
+    units = [path.name for path in (review / "review" / "items").glob("*.json")]
+    files = sorted(str(path.relative_to(review)) for path in review.rglob("*") if path.is_file())
+    assert files == sorted(
+        [
+            "session.json",
+            "session/intent.json",
+            "session/judgment-configuration.json",
+            "target/target.json",
+            "source/snapshot.json",
+            "source/contract.json",
+            "facts/facts.json",
+            "plan/plan.json",
+            "plan/skipped-files.json",
+            "grounding/grounding.json",
+            *(f"review/items/{unit}" for unit in units),
+            *(f"review/findings/{unit}" for unit in units),
+            f"attempts/{attempt}/request.json",
+            f"attempts/{attempt}/record.json",
+            f"attempts/{attempt}/findings.json",
+            f"attempts/{attempt}/model-calls.json",
+            *(f"attempts/{attempt}/stages/{stage}.json" for stage in STAGES),
+        ]
+    )
+    assert all(re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*(?:\.json)?", part) for name in files for part in name.split("/"))
+
+    def expected_schema(name: str) -> str:
+        if name.startswith(("review/items/", f"attempts/{attempt}/stages/")) or name.endswith("/record.json"):
+            return "cyberjury.record/v1"
+        if name.startswith("review/findings/"):
+            return "cyberjury.unit-findings/v1"
+        return f"cyberjury.{Path(name).stem}/v1"
+
+    assert {name: json.loads((review / name).read_text())["schema"] for name in files} == {
+        name: expected_schema(name) for name in files
+    }
+
+
+def test_repository_reruns_share_review_with_distinct_attempts(tmp_path):
+    """Two dry runs of one repository reuse one review directory, and the second restores every unit."""
+    target = _repository(_flask_repository(tmp_path / "svc"))
+    state = tmp_path / "state"
+
+    assert _review(target, state).record.status == "ok"
+    run = _review(target, state)
+
+    review = _stage(_records(run.out), "review")
+    attempts = sorted((_review_dir(state) / "attempts").iterdir())
+    assert len(attempts) == 2
+    assert [_attempt_record(attempt)["status"] for attempt in attempts] == ["ok", "ok"]
+    assert review["metrics"]["restored"] == review["metrics"]["items"] > 0
+
+
+@pytest.mark.parametrize("scope", ["diff", "repository"])
+def test_every_stage_record_lists_the_artifacts_it_wrote(monkeypatch, tmp_path, scope):
+    """Each stage artifact a record lists exists under the review directory and carries its schema."""
+    monkeypatch.setattr(commandmod, "run_review", _stub_review())
+    change = _git_change(tmp_path / "repo", {}, {"app.py": "source\n"})
+    state = tmp_path / "state"
+
+    run = _review(change.target if scope == "diff" else _repository(change.repository), state)
+
+    review = _review_dir(state)
+    artifacts = {record["id"]: record["artifacts"] for record in _records(run.out)}
+    schemas = {
+        path: json.loads((review / path).read_text())["schema"]
+        for paths in artifacts.values()
+        for path in paths
+        if not path.startswith("attempts/")
+    }
+    assert artifacts["target"] == ["target/target.json"]
+    assert artifacts["source"] == ["source/snapshot.json", "source/contract.json"]
+    assert artifacts["plan"] == ["plan/plan.json", "plan/skipped-files.json"]
+    assert schemas == {
+        "target/target.json": "cyberjury.target/v1",
+        "source/snapshot.json": "cyberjury.snapshot/v1",
+        "source/contract.json": "cyberjury.contract/v1",
+        "facts/facts.json": "cyberjury.facts/v1",
+        "plan/plan.json": "cyberjury.plan/v1",
+        "plan/skipped-files.json": "cyberjury.skipped-files/v1",
+        "grounding/grounding.json": "cyberjury.grounding/v1",
+    }
+    assert all((review / path).is_file() for paths in artifacts.values() for path in paths)
+
+
+def test_repository_without_reviewable_source_fails_the_review_stage_before_model_calls(tmp_path):
+    """A repository holding only README.md plans no units and fails the review stage with an input error."""
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    (repository / "README.md").write_text("unknown target\n")
+    state = tmp_path / "state"
+
+    review = _stage(_records(_review(_repository(repository), state).out), "review")
+
+    assert review["status"] == "failed"
+    assert review["error"]["code"] == "input"
+    assert json.loads((_review_dir(state) / "plan" / "plan.json").read_text())["units"] == []
+    assert json.loads((_attempt_dir(state) / "model-calls.json").read_text())["calls"] == []
+
+
+def test_a_repository_edited_before_resuming_fails_the_source_stage_with_a_fresh_hint(tmp_path):
+    """Re-running after app.py changes fails the source stage with a config error naming --fresh."""
+    repository = _seed_source(tmp_path / "svc")
+    state = tmp_path / "state"
+    assert _review(_repository(repository), state).record.status == "ok"
+    (repository / "app.py").write_text("value = 2\n")
+
+    source = _stage(_records(_review(_repository(repository), state).out), "source")
+
+    assert source["error"]["code"] == "config"
+    assert "--fresh" in source["error"]["message"]
+
+
+def test_diff_runs_get_independent_review_sessions(monkeypatch, diff_target, tmp_path):
+    """Two identical diff dry runs create two review directories with the same target and snapshot hashes."""
+    monkeypatch.setattr(commandmod, "run_review", _stub_review())
+
+    assert _review(diff_target.target, tmp_path).record.status == "ok"
+    assert _review(diff_target.target, tmp_path).record.status == "ok"
+
+    reviews = list((tmp_path / "reviews").iterdir())
+    assert len(reviews) == 2
+    targets = [json.loads((review / "target" / "target.json").read_text()) for review in reviews]
+    snapshots = [json.loads((review / "source" / "snapshot.json").read_text()) for review in reviews]
+    assert len({target["target_sha256"] for target in targets}) == 1
+    assert len({snapshot["snapshot_id"] for snapshot in snapshots}) == 1
+
+
+def test_repository_configuration_change_requires_fresh(monkeypatch, tmp_path):
+    """Changing CYBERJURY_MODEL between runs fails the session stage citing --fresh, which then starts a new review."""
+    monkeypatch.setattr(commandmod, "run_review", _stub_review())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    target = _repository(_seed_source(tmp_path / "repo"))
+    state = tmp_path / "state"
+
+    monkeypatch.setenv("CYBERJURY_MODEL", "model-a")
+    assert _review(target, state, dry_run=False).record.status == "ok"
+    monkeypatch.setenv("CYBERJURY_MODEL", "model-b")
+    session = _stage(_records(_review(target, state, dry_run=False).out), "session")
+    assert _review(target, state, dry_run=False, fresh=True).record.status == "ok"
+
+    assert session["error"]["code"] == "config"
+    assert "--fresh" in session["error"]["message"]
+    reviews = sorted((state / "reviews").iterdir(), key=lambda path: len(list(path.glob("attempts/*"))))
+    assert [len(list(review.glob("attempts/*"))) for review in reviews] == [1, 1]
+
+
+def _terminate(*_args, **_kwargs):
+    assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL
+    os.kill(os.getpid(), signal.SIGTERM)
+    raise AssertionError("SIGTERM did not stop the review")
+
+
+def test_a_terminated_review_keeps_its_model_calls_and_ends_interrupted(monkeypatch, diff_target, tmp_path):
+    """A SIGTERM during the review keeps model-calls.json and records the attempt interrupted."""
+    monkeypatch.setattr(commandmod, "run_review", _terminate)
+    state = tmp_path / "state"
+
+    run = _review(diff_target.target, state)
+
+    attempt = _attempt_dir(state)
+    record = _attempt_record(attempt)
+    assert run.record.status == record["status"] == "interrupted"
+    assert record["attributes"]["reason"] == "operator interrupted the command"
+    assert (attempt / "model-calls.json").is_file()
+
+
+def test_a_review_terminated_during_source_capture_ends_the_source_stage_interrupted(
+    monkeypatch, diff_target, tmp_path
+):
+    """A SIGTERM while the contract receipt is captured records the source stage and the attempt interrupted."""
+    monkeypatch.setattr(commandmod.ContractReceipt, "capture", _terminate)
+
+    records = _records(_review(diff_target.target, tmp_path / "state").out)
+
+    assert [record["id"] for record in records[:-1]] == ["config", "target", "session", "source"]
+    assert records[-2]["status"] == records[-1]["status"] == "interrupted"
+
+
+def test_model_call_persistence_failure_marks_the_attempt_failed(monkeypatch, diff_target, tmp_path):
+    """When writing model-calls.json raises, record.json carries a failed status and an internal error."""
+    monkeypatch.setattr(commandmod, "run_review", _stub_review())
+
+    def fail_write(_attempt, _document):
+        raise RuntimeError("model call artifact failed")
+
+    monkeypatch.setattr(commandmod.ReviewAttempt, "write_model_calls", fail_write)
+    state = tmp_path / "state"
+
+    _review(diff_target.target, state)
+
+    record = _attempt_record(_attempt_dir(state))
+    assert record["status"] == "failed"
+    assert record["error"] == {"code": "internal", "message": "RuntimeError: model call artifact failed"}

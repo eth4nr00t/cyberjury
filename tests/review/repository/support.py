@@ -47,9 +47,20 @@ def finding(file: str, line: int, title: str = "finding", **fields: object) -> d
     }
 
 
-def finder_reply(findings: list[dict] | None = None) -> str:
-    """Return one finder reply with no evidence requests."""
-    return json.dumps({"findings": findings or [], "evidence_requests": [], "source_queries": []})
+def finder_reply(
+    findings: list[dict] | None = None,
+    *,
+    evidence_requests: list[str] | None = None,
+    source_queries: list[dict] | None = None,
+) -> str:
+    """Return one finder reply with the given findings, evidence requests, and source queries."""
+    return json.dumps(
+        {
+            "findings": findings or [],
+            "evidence_requests": evidence_requests or [],
+            "source_queries": source_queries or [],
+        }
+    )
 
 
 def prompt_unit(messages) -> str:

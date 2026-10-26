@@ -1,10 +1,6 @@
 """Detection config data drives source, noise, and test path classification."""
 
 from cyberjury.review.detection import MAX_SOURCE_BYTES, detection_for, load_detection
-from cyberjury.review.diff.model import strip_unreviewable_files
-from cyberjury.review.result import SkippedFile
-from cyberjury.review.selection import select_files
-from cyberjury.review.syntax.facts import extract_syntax_facts
 
 
 def test_detection_ignores_tool_directories_and_marks_dependency_directories():
@@ -162,63 +158,14 @@ def test_project_declarations_override_the_contract_defaults(tmp_path):
     assert load_detection().is_dependency("vendor/internal/auth.go")
 
 
-def test_vendored_files_leave_review_selection_and_syntax_facts(tmp_path):
-    """A linguist-vendored public/plugins/lib.js is navigable but neither reviewed nor parsed, while app.py is both."""
-    files = _write(
-        tmp_path,
-        {
-            ".gitattributes": "public/plugins/** linguist-vendored\n",
-            "app.py": "def handler(value):\n    return value\n",
-            "public/plugins/lib.js": "function helper(value) { return value }\n",
-        },
-    )
-    detection = detection_for(tmp_path, files)
-
-    selection = select_files(tmp_path, files, detection)
-    facts = extract_syntax_facts(tmp_path, files, selection.navigation_files, detection)
-
-    assert selection.review_files == (".gitattributes", "app.py")
-    assert selection.dependency_files == ("public/plugins/lib.js",)
-    assert "public/plugins/lib.js" in selection.navigation_files
-    assert set(facts.by_file) == {"app.py"}
-
-
-def test_diff_review_skips_changes_to_vendored_files_as_noise(tmp_path):
-    """A change to linguist-vendored public/plugins/lib.js is skipped as noise, and the app.py change stays."""
-    files = _write(tmp_path, {".gitattributes": "public/plugins/** linguist-vendored\n"})
-    diff = (
-        "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-a = 1\n+a = 2\n"
-        "diff --git a/public/plugins/lib.js b/public/plugins/lib.js\n--- a/public/plugins/lib.js\n"
-        "+++ b/public/plugins/lib.js\n@@ -1 +1 @@\n-var a = 1\n+var a = 2\n"
-    )
-
-    kept, skipped = strip_unreviewable_files(diff, detection_for(tmp_path, files))
-
-    assert "app.py" in kept
-    assert "lib.js" not in kept
-    assert skipped == (SkippedFile(path="public/plugins/lib.js", reason="noise"),)
-
-
-def test_files_over_the_size_limit_are_skipped_as_too_large(tmp_path):
-    """A bindata.go over MAX_SOURCE_BYTES is skipped as too_large in selection, facts, and diff review."""
-    limit = MAX_SOURCE_BYTES
+def test_files_over_the_size_limit_are_classified_as_oversized(tmp_path):
+    """A bindata.go over MAX_SOURCE_BYTES is the only oversized file, while app.py is not."""
     files = _write(
         tmp_path,
         {
             "app.py": "def handler(value):\n    return value\n",
-            "bindata.go": "package bindata\n\nvar data = `" + "a" * limit + "`\n",
+            "bindata.go": "package bindata\n\nvar data = `" + "a" * MAX_SOURCE_BYTES + "`\n",
         },
     )
-    detection = detection_for(tmp_path, files)
-    diff = "diff --git a/bindata.go b/bindata.go\n--- a/bindata.go\n+++ b/bindata.go\n@@ -1 +1 @@\n-x\n+y\n"
 
-    selection = select_files(tmp_path, files, detection)
-    facts = extract_syntax_facts(tmp_path, files, selection.navigation_files, detection)
-    kept, skipped = strip_unreviewable_files(diff, detection)
-
-    assert selection.review_files == ("app.py",)
-    assert selection.skipped_files == (SkippedFile(path="bindata.go", reason="too_large"),)
-    assert "bindata.go" not in selection.navigation_files
-    assert not facts.limitations
-    assert kept == ""
-    assert skipped == (SkippedFile(path="bindata.go", reason="too_large"),)
+    assert detection_for(tmp_path, files).oversized_files == frozenset({"bindata.go"})

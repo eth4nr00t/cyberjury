@@ -46,8 +46,8 @@ def test_snapshot_detects_file_and_scope_drift(tmp_path, change):
     assert snapshot.matches() is False
 
 
-def test_snapshot_records_internal_symlink_identity_and_rejects_external_target(tmp_path):
-    """Retargeting a link between same-content files is drift, and a link outside the root fails capture."""
+def test_snapshot_counts_a_repointed_internal_symlink_as_drift(tmp_path):
+    """Re-pointing current.py from first.py to second.py with the same content makes matches() return False."""
     first = tmp_path / "first.py"
     second = tmp_path / "second.py"
     first.write_text("same\n")
@@ -60,28 +60,15 @@ def test_snapshot_records_internal_symlink_identity_and_rejects_external_target(
 
     assert snapshot.matches() is False
 
+
+def test_snapshot_capture_rejects_a_symlink_to_a_file_outside_the_root(tmp_path):
+    """A current.py link to a file beside the root raises SourceSnapshotError at capture."""
     outside = tmp_path.parent / f"{tmp_path.name}-outside.py"
     outside.write_text("same\n")
-    link.unlink()
-    link.symlink_to(outside)
+    (tmp_path / "current.py").symlink_to(outside)
+
     with pytest.raises(SourceSnapshotError):
         SourceSnapshot.capture(tmp_path, ("current.py",))
-
-
-@pytest.mark.parametrize(
-    "files",
-    [
-        ("../outside.py",),
-        ("/absolute.py",),
-        ("a.py", "a.py"),
-        ("dir/./a.py",),
-        ("dir\\a.py",),
-    ],
-)
-def test_snapshot_rejects_unsafe_or_duplicate_paths(tmp_path, files):
-    """Parent-escaping, absolute, duplicated, dot-segment, or backslash paths raise SourceSnapshotError."""
-    with pytest.raises(SourceSnapshotError):
-        SourceSnapshot.capture(tmp_path, files)
 
 
 def test_snapshot_accepts_names_that_are_only_unportable_to_other_filesystems(tmp_path):
@@ -119,19 +106,6 @@ def test_git_work_tree_snapshot_lists_tracked_and_unignored_files_without_walkin
     assert snapshot.matches()
     (tmp_path / "later.py").write_text("added\n", encoding="utf-8")
     assert not snapshot.matches()
-
-
-def test_git_work_tree_listing_leaves_out_a_checked_out_submodule(tmp_path):
-    """A gitlink at lib/dep whose directory is checked out is left out, and app.py is listed."""
-    git(tmp_path, "init", "--quiet")
-    (tmp_path / "app.py").write_text("app\n", encoding="utf-8")
-    git(tmp_path, "add", "app.py")
-    git(tmp_path, "commit", "--quiet", "-m", "base")
-    git(tmp_path, "update-index", "--add", "--cacheinfo", f"160000,{git(tmp_path, 'rev-parse', 'HEAD')},lib/dep")
-    (tmp_path / "lib" / "dep").mkdir(parents=True)
-    (tmp_path / "lib" / "dep" / "Dep.sol").write_text("contract Dep {}\n", encoding="utf-8")
-
-    assert source_snapshot_files(tmp_path) == ("app.py",)
 
 
 def test_listing_skips_symlinks_that_do_not_resolve_to_a_contained_file(tmp_path):

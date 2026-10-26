@@ -8,16 +8,10 @@ from dataclasses import replace
 
 import pytest
 
-from evals.benchmarks.cases import checks_sha256, load_cases
+from evals.benchmarks.cases import checks_sha256
 from evals.packets import RUBRIC, build_packets, default_mapping_path, write_ledgers
 
 A, B, C, D = ("candidate-" + letter * 20 for letter in "abcd")
-
-
-@pytest.fixture
-def cases(benchmark_project):
-    """Load every case of the benchmark project."""
-    return load_cases([benchmark_project.benchmark])
 
 
 @pytest.fixture
@@ -28,6 +22,11 @@ def runs_dirs(tmp_path, write_attempt):
     write_attempt(first_runs, 2, (), complete=False)
     write_attempt(second_runs, 1, (C,))
     return first_runs, second_runs
+
+
+def _labels_by_candidate(packets):
+    mapping = json.loads(default_mapping_path(packets).read_text(encoding="utf-8"))
+    return {where["candidate_id"]: label for label, where in mapping["labels"].items()}
 
 
 def _result(packets, verdicts):
@@ -55,8 +54,21 @@ def _result(packets, verdicts):
     return result
 
 
-def test_packets_hide_report_provenance_and_include_no_earlier_verdicts(tmp_path, cases, runs_dirs, benchmark_project):
-    """Two runs give one packet of three reports labelled by run A/B, without candidate ids or verdicts."""
+def test_packets_hide_report_provenance_and_include_no_earlier_verdicts(tmp_path, cases, runs_dirs):
+    """Two runs give reports labelled by run A/B, without candidate ids, reviewers, or earlier verdicts."""
+    out = tmp_path / "adjudication"
+
+    counts = build_packets(cases, list(runs_dirs), out, groups=1)
+
+    assert counts["references"] is None
+    (entry,) = json.loads((out / "packet-1.json").read_text(encoding="utf-8"))
+    assert "reference_decisions" not in entry
+    assert {report["run"] for report in entry["reports"]} == {"A", "B"}
+    assert all(not {"id", "candidate_id", "supporting_reviewers"} & set(report) for report in entry["reports"])
+
+
+def test_packets_carry_the_case_and_keep_the_label_mapping_outside(tmp_path, cases, runs_dirs, benchmark_project):
+    """Two runs give one packet of three reports with the case target and checks, and a private sibling mapping."""
     out = tmp_path / "adjudication"
 
     counts = build_packets(cases, list(runs_dirs), out, groups=1)
@@ -67,7 +79,6 @@ def test_packets_hide_report_provenance_and_include_no_earlier_verdicts(tmp_path
         "skipped": 1,
         "reports": 3,
     }
-    assert counts["references"] is None
     (entry,) = json.loads((out / "packet-1.json").read_text(encoding="utf-8"))
     assert entry["commit"] == benchmark_project.commit
     assert entry["base"] == benchmark_project.base
@@ -80,9 +91,6 @@ def test_packets_hide_report_provenance_and_include_no_earlier_verdicts(tmp_path
             "change_anchors": [{"file": "views.py", "line": 2, "side": "new"}],
         }
     ]
-    assert "reference_decisions" not in entry
-    assert {report["run"] for report in entry["reports"]} == {"A", "B"}
-    assert all(not {"id", "candidate_id", "supporting_reviewers"} & set(report) for report in entry["reports"])
     assert (out / "INSTRUCTIONS.md").read_bytes() == RUBRIC.read_bytes()
     assert sorted(path.name for path in out.iterdir()) == ["INSTRUCTIONS.md", "packet-1.json"]
     mapping = json.loads(default_mapping_path(out).read_text(encoding="utf-8"))
@@ -326,8 +334,7 @@ def test_a_duplicate_must_name_a_report_of_its_own_run(tmp_path, cases, runs_dir
     out = tmp_path / "adjudication"
     build_packets(cases, list(runs_dirs), out, groups=1)
     result = _result(out, {})
-    mapping = json.loads(default_mapping_path(out).read_text(encoding="utf-8"))
-    by_candidate = {where["candidate_id"]: label for label, where in mapping["labels"].items()}
+    by_candidate = _labels_by_candidate(out)
     record = next(item for item in result[0]["records"] if item["label"] == by_candidate[A])
     record.update(verdict="duplicate", canonical=by_candidate[C])
     (out / "result-1.json").write_text(json.dumps(result), encoding="utf-8")
@@ -337,7 +344,7 @@ def test_a_duplicate_must_name_a_report_of_its_own_run(tmp_path, cases, runs_dir
 
 
 def test_a_later_round_does_not_silently_mix_with_ledgers_of_an_earlier_round(tmp_path, cases, runs_dirs):
-    """Ledgers from round one block round two until supersede=True, which removes the stale ledger."""
+    """Round-one ledgers block round two until supersede, which deletes a stale ledger even if its replacement fails."""
     first, second = tmp_path / "round-one", tmp_path / "round-two"
     build_packets(cases, list(runs_dirs), first, groups=1)
     _result(first, {f"Claim {A}": "supported", f"Claim {C}": "supported"})
@@ -345,9 +352,7 @@ def test_a_later_round_does_not_silently_mix_with_ledgers_of_an_earlier_round(tm
     second_ledger = next(runs_dirs[1].rglob("ledger-01.json"))
     build_packets(cases, list(runs_dirs), second, groups=1)
     result = _result(second, {f"Claim {A}": "supported"})
-    mapping = json.loads(default_mapping_path(second).read_text(encoding="utf-8"))
-    by_candidate = {where["candidate_id"]: label for label, where in mapping["labels"].items()}
-    record = next(item for item in result[0]["records"] if item["label"] == by_candidate[C])
+    record = next(item for item in result[0]["records"] if item["label"] == _labels_by_candidate(second)[C])
     record["evidence"] = [{"file": "views.py", "line": 30}]
     (second / "result-1.json").write_text(json.dumps(result), encoding="utf-8")
 
@@ -359,4 +364,5 @@ def test_a_later_round_does_not_silently_mix_with_ledgers_of_an_earlier_round(tm
     assert "evidence line does not exist" in failures[0]
     assert not second_ledger.exists()
     (ledger,) = runs_dirs[0].rglob("ledger-*.json")
-    assert json.loads(ledger.read_text(encoding="utf-8"))["round_id"] == mapping["round_id"]
+    round_id = json.loads(default_mapping_path(second).read_text(encoding="utf-8"))["round_id"]
+    assert json.loads(ledger.read_text(encoding="utf-8"))["round_id"] == round_id

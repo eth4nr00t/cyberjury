@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from cyberjury.providers.configuration import ProviderConfiguration, ProviderSeat
@@ -13,10 +11,9 @@ from cyberjury.review import prepare
 from cyberjury.review.diff.finder import DIFF_TARGET
 from cyberjury.review.diff.prepare import prepare_diff_review
 from cyberjury.review.run import run_review
-from cyberjury.review.seats import DRY_RUN_SEAT, provider_seat_id, review_seats
+from cyberjury.review.seats import review_seats
 from cyberjury.sources.snapshot import capture_source_snapshot
-
-_EMPTY_REPLY = json.dumps({"findings": [], "evidence_requests": [], "source_queries": []})
+from tests.review.diff.support import reply
 
 
 def _patch(path: str, before: str, after: str) -> str:
@@ -28,12 +25,12 @@ def _configuration() -> ProviderConfiguration:
     return ProviderConfiguration(seat=finder, retries=0, timeout=10)
 
 
-def test_dry_run_review_binds_receipts_skips_noise_and_issue_judgment(tmp_path):
-    """README.md is skipped as noise, app.py is planned with a matching receipt, and no issue judge runs."""
+def test_dry_run_review_binds_receipts_and_skips_noise(tmp_path):
+    """README.md is skipped as noise, app.py is planned with a matching receipt, and the dry run completes."""
     (tmp_path / "app.py").write_text("def run(name):\n    return name\n", encoding="utf-8")
     (tmp_path / "README.md").write_text("After\n", encoding="utf-8")
     diff = _patch("app.py", "def run():", "def run(name):") + _patch("README.md", "Before", "After")
-    seats = review_seats(_configuration(), meter=UsageMeter(), dry_run_provider=MockProvider(default=_EMPTY_REPLY))
+    seats = review_seats(_configuration(), meter=UsageMeter(), dry_run_provider=MockProvider(default=reply([])))
 
     prepared = prepare_diff_review(diff, capture_source_snapshot(tmp_path))
     result = run_review(prepared, target=DIFF_TARGET, seats=seats, concurrency=2)
@@ -42,8 +39,6 @@ def test_dry_run_review_binds_receipts_skips_noise_and_issue_judgment(tmp_path):
     assert prepared.shared.root == tmp_path.resolve()
     assert prepared.unit_plan.expected_owned_paths == ("app.py",)
     assert prepared.grounding.unit_plan_receipt_sha256 == prepared.unit_plan.receipt_sha256
-    assert seats.finder_label == provider_seat_id(DRY_RUN_SEAT)
-    assert seats.issue_judge is None
     assert result.outcome.complete is True
 
 

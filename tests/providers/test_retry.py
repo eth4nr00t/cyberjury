@@ -6,7 +6,7 @@ from typing import ClassVar
 import pytest
 
 from cyberjury.providers.base import CompletionResult, Message, Provider, ResponseSchema, Usage
-from cyberjury.providers.retry import EmptyResponseError, RetryProvider, _is_rate_limit, _retry_after
+from cyberjury.providers.retry import EmptyResponseError, RetryProvider
 
 
 class _Flaky(Provider):
@@ -218,44 +218,38 @@ def test_rate_limit_caps_at_max_delay():
     assert slept == [30.0]
 
 
-def test_non_rate_limit_keeps_linear_backoff():
-    """Two generic network errors sleep 1.0 then 2.0 seconds rather than doubling."""
+class _RateLimitError(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (_RateLimitError("boom"), [0.0]),
+        (RuntimeError("429 Too Many Requests"), [0.0]),
+        (RuntimeError("hit the rate limit"), [0.0]),
+        (RuntimeError("connection reset by peer"), [1.0]),
+    ],
+)
+def test_rate_limits_are_recognized_by_class_name_and_message(exc, expected):
+    """A RateLimitError class or a 429 or rate limit message takes jittered backoff, and a reset takes 1.0 second."""
     slept = []
-    inner = _RateLimited(fail_times=2, exc=RuntimeError("transient network blip"))
-    provider = RetryProvider(inner, max_attempts=3, base_delay=1.0, sleep=slept.append)
+    inner = _RateLimited(fail_times=1, exc=exc)
+    provider = RetryProvider(inner, max_attempts=2, base_delay=1.0, sleep=slept.append, rand=lambda lo, _hi: lo)
     assert _call(provider).text == "ok"
-    assert slept == [1.0, 2.0]
+    assert slept == expected
 
 
-def test_is_rate_limit_matches_by_status_class_name_and_message():
-    """Rate limit detection checks status, class name, and message."""
-
-    class RateLimitError(Exception):
-        pass
-
-    assert _is_rate_limit(RateLimitError("boom"))
-    assert _is_rate_limit(RuntimeError("429 Too Many Requests"))
-    assert _is_rate_limit(RuntimeError("hit the rate limit"))
-    assert not _is_rate_limit(RuntimeError("connection reset by peer"))
-
-
-def test_retry_after_reads_the_exception_attribute_and_tolerates_garbage():
-    """A retry_after attribute of "7" parses to 7.0, while "soon" or a missing attribute yield None."""
-    exc = RuntimeError("x")
-    exc.retry_after = "7"
-    assert _retry_after(exc) == 7.0
-    bad = RuntimeError("y")
-    bad.retry_after = "soon"
-    assert _retry_after(bad) is None
-    assert _retry_after(RuntimeError("no attr")) is None
-
-
-def test_retry_after_reads_a_structured_provider_error_body():
-    """An overloaded gateway can put its required delay in the error body."""
-    exc = RuntimeError("origin overloaded")
-    exc.body = {"retryable": True, "retry_after": 60}
-
-    assert _retry_after(exc) == 60.0
+@pytest.mark.parametrize(("raw", "expected"), [("7", [7.0]), ("soon", [1.0])])
+def test_retry_after_attribute_sets_the_delay_unless_it_is_not_a_number(raw, expected):
+    """A retry_after attribute of "7" sleeps 7.0 seconds, while "soon" falls back to the 1.0 second linear delay."""
+    exc = RuntimeError("transient")
+    exc.retry_after = raw
+    slept = []
+    inner = _RateLimited(fail_times=1, exc=exc)
+    provider = RetryProvider(inner, max_attempts=2, base_delay=1.0, sleep=slept.append)
+    assert _call(provider).text == "ok"
+    assert slept == expected
 
 
 def test_a_non_rate_limit_error_honors_its_structured_retry_delay():

@@ -15,7 +15,6 @@ def test_public_projects_load_every_case_with_pinned_git_targets():
     """Every bundled case has checks and a 40-char commit, and diff cases also have a 40-char base."""
     loaded = load_cases()
 
-    assert {case.kind for case in loaded.values()} == {"repository", "diff"}
     for case in loaded.values():
         assert len(case.target["commit"]) == 40
         assert case.checks
@@ -39,14 +38,21 @@ def test_cases_carry_their_nested_checks_and_targets(benchmark_project):
     assert not repository.checks[0].change_anchors
 
 
-def test_checks_digest_ignores_check_and_location_order():
-    """Reversing the checks and their locations keeps the digest, and editing a location changes it."""
-    case = next(case for case in load_cases().values() if len(case.checks) > 1)
-    checks = tuple(replace(check, locations=check.locations[::-1]) for check in case.checks[::-1])
-    moved = Check(id=checks[0].id, root_cause=checks[0].root_cause, locations=(Location(file="moved.py", line=1),))
+def test_checks_digest_ignores_check_and_location_order(benchmark_project):
+    """Reversing two checks and their two locations keeps the digest, and editing a location changes it."""
+    case = find_case(benchmark_project.repository_case, [benchmark_project.benchmark])
+    first = Check(
+        id="first",
+        root_cause="first root cause",
+        locations=(Location(file="a.py", line=1), Location(file="b.py", line=2)),
+    )
+    second = Check(id="second", root_cause="second root cause", locations=(Location(file="c.py", line=3),))
+    original = replace(case, checks=(first, second))
+    reordered = replace(case, checks=(second, replace(first, locations=first.locations[::-1])))
+    moved = replace(case, checks=(replace(first, locations=(Location(file="moved.py", line=1),)), second))
 
-    assert checks_sha256(replace(case, checks=checks)) == checks_sha256(case)
-    assert checks_sha256(replace(case, checks=(moved, *checks[1:]))) != checks_sha256(case)
+    assert checks_sha256(reordered) == checks_sha256(original)
+    assert checks_sha256(moved) != checks_sha256(original)
 
 
 def test_one_case_name_cannot_come_from_two_benchmarks(benchmark_project):

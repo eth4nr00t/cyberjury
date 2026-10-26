@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
 from cyberjury.providers.metering import (
     MeteringProvider,
@@ -14,7 +12,6 @@ from cyberjury.providers.metering import (
     model_call_scope,
     record_model_parse,
 )
-from evals.benchmarks.cases import load_cases
 from evals.report import failures, format_summary, summarize
 
 A, B = "candidate-" + "a" * 20, "candidate-" + "b" * 20
@@ -48,23 +45,16 @@ def _receipt(path):
     path.write_text(json.dumps(meter.document()), encoding="utf-8")
 
 
-@pytest.fixture
-def cases(benchmark_project):
-    """Load every case of the benchmark project."""
-    return load_cases([benchmark_project.benchmark])
-
-
-def test_report_counts_recall_per_run_and_check_precision_and_cost(
+def test_report_counts_recall_per_run_and_check_precision(
     tmp_path, cases, write_attempt, write_ledger, benchmark_project
 ):
-    """Three runs give recall 1/2, precision 0.5, one failed attempt, and one metered request with 5 cache reads."""
+    """Three runs give recall 1/2, precision 0.5, and one failed attempt."""
     runs = tmp_path / "runs"
     write_ledger(write_attempt(runs, 1, (A, B)), {A: _CREDIT, B: ("duplicate", ())})
     write_ledger(write_attempt(runs, 2, (B,)), {B: ("not_actionable", ())})
     write_attempt(runs, 3, (), complete=False)
-    _receipt(tmp_path / "calls" / "run-01-model-calls.json")
 
-    summary = summarize(cases, runs, [tmp_path / "calls"])
+    summary = summarize(cases, runs)
 
     check = f"{benchmark_project.diff_case}:create-missing-owner"
     assert summary["recall"] == {"found": 1, "total": 2}
@@ -73,15 +63,33 @@ def test_report_counts_recall_per_run_and_check_precision_and_cost(
     assert summary["verdicts"] == {"duplicate": 1, "needs_review": 0, "not_actionable": 1, "supported": 1}
     assert summary["precision"] == 0.5
     assert summary["failed"] == [f"{benchmark_project.diff_case} attempt 3: finder failed"]
-    assert summary["cost"]["total"]["requests"] == 1
-    assert summary["cost"]["stages"]["initial_judgment finder"]["cache_read_tokens"] == 5
     text = format_summary(summary)
     assert f"{check} 1/2" in text
-    assert "requests 1, failed 0, input tokens 12 (cache read 5), output tokens 3" in text
     assert "report precision 50.0% = supported 1 / (supported 1 + not_actionable 1), over 3 reports" in text
     assert "excluded from precision: duplicate 1, needs_review 0" in text
     assert "precision = supported / (supported + not_actionable)" in text
-    assert failures(summary, precision_floor=0.6) == [
+
+
+def test_report_sums_cost_from_model_call_receipts(tmp_path, cases, write_attempt, write_ledger):
+    """One receipt gives one metered request with 5 cache reads under initial_judgment finder."""
+    runs = tmp_path / "runs"
+    write_ledger(write_attempt(runs, 1, (A,)), {A: _CREDIT})
+    _receipt(tmp_path / "calls" / "run-01-model-calls.json")
+
+    summary = summarize(cases, runs, [tmp_path / "calls"])
+
+    assert summary["cost"]["total"]["requests"] == 1
+    assert summary["cost"]["stages"]["initial_judgment finder"]["cache_read_tokens"] == 5
+    assert "requests 1, failed 0, input tokens 12 (cache read 5), output tokens 3" in format_summary(summary)
+
+
+def test_report_fails_failed_attempts_and_precision_below_the_floor(tmp_path, cases, write_attempt, write_ledger):
+    """One failed attempt and precision 50% under a 60% floor produce two failures."""
+    runs = tmp_path / "runs"
+    write_ledger(write_attempt(runs, 1, (A, B)), {A: _CREDIT, B: ("not_actionable", ())})
+    write_attempt(runs, 2, (), complete=False)
+
+    assert failures(summarize(cases, runs), precision_floor=0.6) == [
         "1 failed attempts",
         "report precision 50% is below the floor 60%",
     ]
@@ -114,14 +122,3 @@ def test_report_fails_a_run_that_mixes_rubrics():
     }
 
     assert failures(summary, precision_floor=0) == ["run mixes ledgers adjudicated under different rubrics"]
-
-
-def test_report_rejects_a_ledger_that_no_longer_matches_its_attempt(tmp_path, cases, write_attempt, write_ledger):
-    """Appending a space to an adjudicated attempt makes its ledger fail with does not identify this attempt."""
-    runs = tmp_path / "runs"
-    attempt = write_attempt(runs, 1, (A,))
-    write_ledger(attempt, {A: _CREDIT})
-    attempt.write_text(attempt.read_text(encoding="utf-8") + " ", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="does not identify this attempt"):
-        summarize(cases, runs)

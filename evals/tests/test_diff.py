@@ -14,7 +14,6 @@ from cyberjury.providers import configuration as configuration_module
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review import command as commandmod
 from evals import diff
-from evals.benchmarks.cases import find_case
 from evals.benchmarks.contract import ChangeAnchor
 
 
@@ -63,26 +62,14 @@ def owner_finding():
     )
 
 
-@pytest.fixture
-def case(benchmark_project):
-    """Return the benchmark project's diff case."""
-    return find_case(benchmark_project.diff_case, [benchmark_project.benchmark])
-
-
 def test_run_reviews_the_pinned_range_through_the_product_command(
     monkeypatch, tmp_path, case, scripted_model, owner_finding
 ):
     """A scripted finding is recorded with its anchor, the CYBERJURY_MODEL override, and attempt artifacts."""
     provider = scripted_model([owner_finding.reply])
     monkeypatch.setenv("CYBERJURY_MODEL", "override")
-    events = []
 
-    (record,) = diff.run(
-        [case],
-        workspace=tmp_path / "reviews",
-        concurrency=3,
-        progress=events.append,
-    )
+    (record,) = diff.run([case], workspace=tmp_path / "reviews")
 
     assert (record["case"], record["attempt"], record["complete"], record["error"]) == (case.name, 1, True, "")
     [finding] = record["findings"]
@@ -97,12 +84,28 @@ def test_run_reviews_the_pinned_range_through_the_product_command(
     }
     assert finding["change_anchor"] == {"file": "views.py", "line": 2, "side": "new"}
     assert {call["model"] for call in provider.calls} == {"override"}
-    finder_prompt = provider.calls[0]["messages"][0].content
-    assert finder_prompt.startswith("Code under review, cited as `seed` (numbered unified diff):")
-    assert "+    return save(owner=None)" in finder_prompt
+    assert "+    return save(owner=None)" in provider.calls[0]["messages"][0].content
+    [attempt] = (tmp_path / "reviews").glob("demo/*/run-01/reviews/*/attempts/*")
+    assert json.loads((attempt / "model-calls.json").read_text())["usage"]["model_requests"] == len(provider.calls)
+
+
+def test_run_forwards_its_concurrency_to_the_review(tmp_path, case, scripted_model):
+    """Running with concurrency=3 records a review request with review concurrency 3."""
+    scripted_model()
+
+    diff.run([case], workspace=tmp_path / "reviews", concurrency=3)
+
     [attempt] = (tmp_path / "reviews").glob("demo/*/run-01/reviews/*/attempts/*")
     assert json.loads((attempt / "request.json").read_text())["concurrency"]["review"] == 3
-    assert json.loads((attempt / "model-calls.json").read_text())["usage"]["model_requests"] == len(provider.calls)
+
+
+def test_run_reports_each_case_start_and_finish(tmp_path, case, scripted_model, owner_finding):
+    """One case with one scripted finding emits a started event and a finished event with reports=1."""
+    scripted_model([owner_finding.reply])
+    events = []
+
+    diff.run([case], workspace=tmp_path / "reviews", progress=events.append)
+
     assert events[0] == f"[1/1] {case.name} started"
     assert events[-1].startswith(f"[1/1] {case.name} finished in ")
     assert events[-1].endswith("s, reports=1")
@@ -121,12 +124,12 @@ def test_run_records_a_failed_review_with_its_reason(tmp_path, case, scripted_mo
     assert events[1].startswith(f"run 1/2 [1/1] {case.name} failed after ")
 
 
-def test_run_rejects_a_change_anchor_absent_from_the_reviewed_patch(tmp_path, case, scripted_model):
+def test_run_validates_change_anchors_before_any_model_call(tmp_path, case, scripted_model):
     """A check anchoring views.py:9, outside the patch, raises ValueError before any model call."""
     provider = scripted_model()
     check = replace(case.checks[0], change_anchors=(ChangeAnchor(file="views.py", line=9, side="new"),))
 
-    with pytest.raises(ValueError, match=r"change anchor .* is absent from the reviewed patch"):
+    with pytest.raises(ValueError, match="change anchor"):
         diff.run([replace(case, checks=(check,))], workspace=tmp_path / "reviews")
     assert provider.calls == []
 

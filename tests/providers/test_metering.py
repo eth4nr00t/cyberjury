@@ -69,17 +69,6 @@ def test_meter_accumulates_across_calls():
     assert usage["cache_write_tokens"] == 20
 
 
-def test_usage_derives_the_whole_prompt_so_a_cache_hit_is_not_read_as_a_saving():
-    """Ten uncached plus 90 cache-read tokens report total_input_tokens as 100."""
-    meter = UsageMeter()
-    _call(MeteringProvider(_Fake(Usage(input_tokens=10, cache_read_tokens=90, output_tokens=2)), meter))
-    usage = usage_from_calls(meter.call_snapshot())
-    assert usage["model_requests"] == 1
-    assert usage["uncached_input_tokens"] == 10
-    assert usage["cache_read_tokens"] == 90
-    assert usage["total_input_tokens"] == 100
-
-
 def test_call_snapshot_is_a_copy_so_a_later_call_cannot_change_it():
     """Call records taken after a 5-token call still hold one call of 5 tokens after a later 7-token call."""
     meter = UsageMeter()

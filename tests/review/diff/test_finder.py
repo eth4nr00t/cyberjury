@@ -1,17 +1,14 @@
-"""Diff reviewers parse responses and reuse grounded evidence."""
+"""The Diff Finder corrects change anchors and locates findings on changed lines or cited source."""
 
-import json
+from types import SimpleNamespace
 
-import pytest
-
-from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
-from cyberjury.review.context import EvidenceItem, GroundingContext
+from cyberjury.review.context import GroundingContext, GroundingCoverage, SourceEvidence, SourceSpan
+from cyberjury.review.diff.finder import locate
+from cyberjury.review.diff.model import DiffLineRanges
+from cyberjury.review.finding import ChangeAnchor, Finding
 from cyberjury.review.union import MERGE_RULE
-from tests.review.diff.support import diff_unit, finder, reply, review
-from tests.review.support import navigator_from_callgraph
-
-_DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
+from tests.review.diff.support import SQL_DIFF, diff_unit, finder, reply, review
 
 
 def _run(runner, diff, *, context=""):
@@ -21,68 +18,23 @@ def _run(runner, diff, *, context=""):
     return cycle.findings
 
 
-def test_diff_finder_parses_findings():
-    """A CRITICAL sql_injection reply yields one finding with category normalized to sql-injection."""
-    response = reply(
-        [
-            {
-                "file": "app.py",
-                "line": 1,
-                "severity": "CRITICAL",
-                "category": "sql_injection",
-                "evidence": "string-concatenated query",
-            },
-        ]
+def _finding(file, line, change_anchor):
+    return Finding(
+        title="unsafe operation",
+        entrypoint="GET /",
+        evidence="unsafe operation",
+        attack_path="request reaches it",
+        severity="HIGH",
+        category="other",
+        file=file,
+        line=line,
+        change_anchor=change_anchor,
+        evidence_refs=("seed",),
     )
-    provider = MockProvider(responses=[response, response])
-    out = _run(finder(provider), _DIFF)
-    assert len(out) == 1
-    assert out[0].severity == "CRITICAL"
-    assert out[0].category == "sql-injection"
-    assert provider.calls[0]["messages"][0].content.endswith("A further request makes this judgment incomplete.")
 
 
-def test_diff_candidate_rejects_a_model_supplied_mismatched_identity():
-    """A reply carrying candidate_id fails parsing with an "unknown fields: candidate_id" error."""
-    finding = {
-        "candidate_id": "candidate-wrong",
-        "file": "app.py",
-        "line": 3,
-        "severity": "HIGH",
-        "category": "sql-injection",
-        "entrypoint": "POST /query",
-        "evidence": "string-concatenated query",
-        "attack_path": "public request reaches the query sink",
-        "change_anchor": {"file": "app.py", "line": 3, "side": "new"},
-        "evidence_refs": ["seed"],
-    }
-
-    with pytest.raises(RuntimeError, match="unknown fields: candidate_id"):
-        _run(finder(MockProvider(default=reply([finding]))), _DIFF)
-
-
-def test_diff_candidate_accepts_a_model_supplied_category():
-    """A free-form category such as "sqli" is kept verbatim on the parsed finding."""
-    finding = {
-        "file": "app.py",
-        "line": 1,
-        "severity": "HIGH",
-        "category": "sqli",
-        "evidence": "string-concatenated query",
-    }
-
-    assert _run(finder(MockProvider(default=reply([finding]))), _DIFF)[0].category == "sqli"
-
-
-def test_diff_review_reports_a_malformed_finding_as_failed_work():
-    """A finding with only severity leaves no findings and records a missing-fields unit failure."""
-    provider = MockProvider(default=reply([{"severity": "HIGH"}]))
-
-    result = review(_DIFF, provider=provider)
-
-    assert result.outcome.findings == ()
-    assert result.outcome.complete is False
-    assert "$response.findings[0] is missing fields" in result.outcome.failures[0].reason
+def _locate(finding, ranges, source_evidence=(), seed_spans=()):
+    return locate(SimpleNamespace(line_ranges=ranges), finding, source_evidence, seed_spans)
 
 
 def test_diff_review_reports_a_malformed_change_anchor_as_failed_work():
@@ -102,7 +54,7 @@ def test_diff_review_reports_a_malformed_change_anchor_as_failed_work():
         )
     )
 
-    result = review(_DIFF, provider=provider)
+    result = review(SQL_DIFF, provider=provider)
 
     assert result.outcome.findings == ()
     assert result.outcome.complete is False
@@ -122,7 +74,7 @@ def test_diff_review_corrects_one_anchor_that_is_not_an_exact_changed_line():
     corrected = {**finding, "change_anchor": {"file": "app.py", "line": 1, "side": "new"}}
     provider = MockProvider(responses=[reply([finding]), reply([corrected])])
 
-    findings = _run(finder(provider), _DIFF)
+    findings = _run(finder(provider), SQL_DIFF)
 
     assert len(findings) == 1
     assert findings[0].change_anchor is not None
@@ -150,7 +102,7 @@ def test_diff_review_preserves_a_valid_sibling_during_anchor_correction():
     corrected = {**invalid, "change_anchor": {"file": "app.py", "line": 1, "side": "new"}}
     provider = MockProvider(responses=[reply([valid, invalid]), reply([corrected])])
 
-    findings = _run(finder(provider), _DIFF)
+    findings = _run(finder(provider), SQL_DIFF)
 
     assert [finding.evidence for finding in findings] == ["first unsafe operation", "second unsafe operation"]
     correction = provider.calls[1]["messages"][0].content
@@ -171,7 +123,7 @@ def test_diff_review_keeps_an_invalid_anchor_candidate_when_correction_fails():
     }
     provider = MockProvider(responses=[reply([finding]), "not json"])
 
-    result = review(_DIFF, provider=provider)
+    result = review(SQL_DIFF, provider=provider)
 
     assert result.outcome.findings == ()
     assert [item.evidence for item in result.outcome.incomplete] == ["unsafe operation"]
@@ -190,198 +142,363 @@ def test_diff_review_allows_anchor_correction_to_remove_an_unreportable_candidat
     }
     provider = MockProvider(responses=[reply([finding]), reply([])])
 
-    assert _run(finder(provider), _DIFF) == []
+    assert _run(finder(provider), SQL_DIFF) == []
 
 
-def test_diff_finder_empty_on_no_findings():
-    """A reply with an empty findings list produces an empty result for the SQL concatenation diff."""
-    assert _run(finder(MockProvider(default=reply([]))), _DIFF) == []
-
-
-def test_diff_finder_rejects_invalid_finding_semantics():
-    """Severity "spicy" raises a "severity has a value outside the allowed set" error."""
-    response = reply(
-        [
-            {
-                "file": "app.py",
-                "line": 1,
-                "severity": "spicy",
-                "category": "other",
-                "evidence": "unsafe operation",
-            }
-        ]
-    )
-    with pytest.raises(RuntimeError, match="severity has a value outside the allowed set"):
-        _run(finder(MockProvider(default=response)), _DIFF)
-
-
-def test_diff_finder_sends_the_contract_as_a_cacheable_system_prompt():
-    """The kernel and rubric go in the system prompt, while the cached prefix carries the diff text."""
-    provider = MockProvider(default=reply([]))
-    _run(finder(provider), _DIFF)
-    call = provider.calls[0]
-    prompt = call["messages"][0].content
-    assert call["cache"] is True
-    assert prompt.startswith(call["cache_prefix"])
-    assert "SELECT * FROM u" in call["cache_prefix"]
-    assert "# Security Reasoning Kernel" in call["system"]
-    assert "# Severity Rubric" in call["system"]
-    assert "# Security Reasoning Kernel" not in prompt
-
-
-def test_diff_system_is_identical_across_units():
-    """Two units with different diffs and context share one system prompt free of unit context."""
-    provider = MockProvider(default=reply([]))
-    runner = finder(provider)
-    _run(runner, _DIFF, context="first unit")
-    _run(runner, "+++ b/other.py\n@@ -0,0 +1 @@\n+other()\n", context="second unit")
-
-    assert provider.calls[0]["system"] == provider.calls[1]["system"]
-    assert "first unit" not in provider.calls[0]["system"]
-
-
-def test_diff_repository_evidence_does_not_change_the_profile_brief():
-    """Published evidence ids enter the cache prefix while their source text stays out of the prompt."""
-    provider = MockProvider(default=reply([]))
-    runner = finder(provider)
-    evidence = EvidenceItem.create(
-        identity="app.py:handler:10:40",
-        label="app.py:handler",
-        text="def handler():\n    return sensitive_operation()\n",
-        preview="def handler():",
-    )
-
-    cycle = runner.review_unit(
-        diff_unit(
-            "+++ b/app.py\n@@ -0,0 +1 @@\n+def handler(): ...\n",
-            GroundingContext(text="initial context", evidence=(evidence,)),
-        )
-    )
-
-    assert cycle.clean is True
-    prompt = provider.calls[0]["messages"][0].content
-    assert evidence.id in provider.calls[0]["cache_prefix"]
-    assert "sensitive_operation" not in prompt
-    assert "# Security Reasoning Kernel" in provider.calls[0]["system"]
-
-
-def test_diff_navigation_keeps_profile_coverage_and_runs_a_final_evidence_sweep(tmp_path):
-    """A symbol search is followed by a call that shares the cache prefix and carries the found source."""
-    source = "class ModelWithOwner:\n    owner_scope = True\n"
-    (tmp_path / "models.py").write_text(source, encoding="utf-8")
-    navigator = navigator_from_callgraph(
-        tmp_path,
-        {
-            "callgraph": {"models.py": {"ModelWithOwner": [{"range": [0, len(source)], "calls": []}]}},
-        },
-    )
-    raw_provider = MockProvider(
-        responses=[
-            json.dumps(
+def test_diff_review_keeps_an_out_of_range_location_explicitly_incomplete():
+    """Line 45 outside hunk +30,3 is incomplete, while b/app.py:31 is accepted as app.py with an anchor."""
+    diff = "diff --git a/app.py b/app.py\n@@ -20,2 +30,3 @@\n context\n+sink(user)\n context\n"
+    provider = MockProvider(
+        default=reply(
+            [
                 {
-                    **json.loads(reply([])),
-                    "source_queries": [{"kind": "search_symbols", "query": "ModelWithOwner", "page": 0}],
+                    "file": "app.py",
+                    "line": 45,
+                    "severity": "HIGH",
+                    "category": "missing-authorization",
+                    "evidence": "unguarded route",
+                },
+                {
+                    "file": "b/app.py",
+                    "line": 31,
+                    "severity": "HIGH",
+                    "category": "missing-authorization",
+                    "evidence": "unguarded sink",
+                },
+            ]
+        )
+    )
+
+    result = review(diff, provider=provider)
+
+    assert [(f.evidence, f.line) for f in result.outcome.findings] == [("unguarded sink", 31)]
+    assert result.outcome.findings[0].file == "app.py"
+    assert [(f.evidence, f.line) for f in result.outcome.incomplete] == [("unguarded route", 45)]
+    assert result.outcome.complete is False
+    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="app.py", line=31, side="new")
+
+
+def test_diff_review_accepts_an_unchanged_location_with_a_new_change_anchor():
+    """A finding on unchanged line 20 anchored to added line 21 is accepted with that anchor intact."""
+    diff = (
+        "diff --git a/policy.py b/policy.py\n"
+        "--- a/policy.py\n"
+        "+++ b/policy.py\n"
+        "@@ -20,2 +20,3 @@\n"
+        " existing_operation()\n"
+        "+expose_operation()\n"
+        " finish_request()\n"
+    )
+    provider = MockProvider(
+        default=reply(
+            [
+                {
+                    "file": "policy.py",
+                    "line": 20,
+                    "change_anchor": {"file": "policy.py", "line": 21, "side": "new"},
+                    "severity": "HIGH",
+                    "category": "other",
+                    "evidence": "the existing operation is newly exposed",
                 }
-            ),
-            reply([]),
-        ]
-    )
-    meter = UsageMeter()
-    provider = MeteringProvider(raw_provider, meter)
-    runner = finder(provider)
-
-    cycle = runner.review_unit(
-        diff_unit(
-            "+++ b/app.py\n@@ -0,0 +1 @@\n+initial_signal()\n", GroundingContext(text="seed", navigator=navigator)
+            ]
         )
     )
 
-    assert cycle.clean is True
-    assert len(raw_provider.calls) == 2
-    first, final = raw_provider.calls
-    assert first["system"] == final["system"]
-    assert "# Source Navigation" in first["system"]
-    assert first["cache"] is True
-    assert final["cache"] is True
-    assert first["cache_prefix"] == final["cache_prefix"]
-    assert first["messages"][0].content.startswith(first["cache_prefix"])
-    final_prompt = final["messages"][0].content
-    assert final_prompt.startswith(first["cache_prefix"])
-    assert first["messages"][0].content.endswith("Evidence request budget: 8 request batches remain.")
-    assert "owner_scope = True" in final_prompt[len(first["cache_prefix"]) :]
-    assert [call["trigger"] for call in meter.call_snapshot()] == ["initial_judgment", "evidence_followup"]
+    result = review(diff, provider=provider)
+
+    assert result.outcome.complete is True
+    assert result.outcome.findings[0].line == 20
+    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="policy.py", line=21, side="new")
 
 
-def test_diff_repeated_navigation_query_fails_the_unit(tmp_path):
-    """Returning the same search_symbols "Record" query on every reply fails with "repeats an earlier query"."""
-    source = "class Record:\n    owner_scope = True\n"
-    (tmp_path / "models.py").write_text(source, encoding="utf-8")
-    navigator = navigator_from_callgraph(
-        tmp_path,
-        {"callgraph": {"models.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
+def test_diff_review_accepts_a_surviving_location_anchored_to_a_deleted_control():
+    """A finding on surviving line 10 anchored to the deleted old-side auth line is accepted as complete."""
+    diff = (
+        "diff --git a/app.py b/app.py\n"
+        "--- a/app.py\n"
+        "+++ b/app.py\n"
+        "@@ -10,2 +10 @@\n"
+        "-app.use(auth)\n"
+        " app.use('/admin', admin)\n"
     )
-    response = json.dumps(
-        {
-            **json.loads(reply([])),
-            "source_queries": [{"kind": "search_symbols", "query": "Record", "page": 0}],
-        }
-    )
-    meter = UsageMeter()
-    provider = MeteringProvider(MockProvider(responses=[response, response, response]), meter)
-    runner = finder(provider)
-
-    cycle = runner.review_unit(
-        diff_unit(
-            "+++ b/app.py\n@@ -0,0 +1 @@\n+initial_signal()\n", GroundingContext(text="seed", navigator=navigator)
+    provider = MockProvider(
+        default=reply(
+            [
+                {
+                    "file": "app.py",
+                    "line": 10,
+                    "change_anchor": {"file": "app.py", "line": 10, "side": "old"},
+                    "severity": "CRITICAL",
+                    "category": "missing-authorization",
+                    "evidence": "the admin route lost authentication",
+                }
+            ]
         )
     )
 
-    assert cycle.clean is False
-    assert "repeats an earlier query" in cycle.failure_reason
+    result = review(diff, provider=provider)
+
+    assert result.outcome.complete is True
+    assert result.outcome.findings[0].line == 10
+    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="app.py", line=10, side="old")
 
 
-@pytest.mark.parametrize(
-    ("change", "message"),
-    [
-        ({"evidence": "  "}, "must have nonempty fields: evidence"),
-        ({"line": 0}, "line must be a positive integer"),
-        ({"file": "/etc/app.py"}, "file must be a relative repository path"),
-        ({"evidence_refs": []}, "evidence_refs must be a nonempty string list"),
-        ({"evidence_refs": [""]}, "evidence_refs must be a nonempty string list"),
-        (
-            {"change_anchor": {"file": "app.py", "line": 0, "side": "new"}},
-            "change_anchor must name a nonempty file and a positive line",
+def test_diff_review_rejects_an_anchor_that_is_only_context():
+    """An anchor on a context line yields no findings and puts the claim in incomplete."""
+    diff = "diff --git a/app.py b/app.py\n@@ -20,2 +20,2 @@\n context\n+sink(user)\n"
+    provider = MockProvider(
+        default=reply(
+            [
+                {
+                    "file": "app.py",
+                    "line": 20,
+                    "change_anchor": {"file": "app.py", "line": 20, "side": "new"},
+                    "severity": "HIGH",
+                    "category": "other",
+                    "evidence": "context is not a change anchor",
+                }
+            ]
+        )
+    )
+
+    result = review(diff, provider=provider)
+
+    assert result.outcome.findings == ()
+    assert [finding.evidence for finding in result.outcome.incomplete] == ["context is not a change anchor"]
+    assert result.outcome.complete is False
+
+
+def test_diff_review_accepts_a_cross_file_change_anchor():
+    """A finding in operation.py anchored to an added line in exposure.py is accepted with that anchor."""
+    diff = (
+        "diff --git a/operation.py b/operation.py\n"
+        "--- a/operation.py\n"
+        "+++ b/operation.py\n"
+        "@@ -10,2 +10,3 @@\n"
+        " sensitive_operation()\n"
+        "+record_operation()\n"
+        " finish_operation()\n"
+        "diff --git a/exposure.py b/exposure.py\n"
+        "--- a/exposure.py\n"
+        "+++ b/exposure.py\n"
+        "@@ -20 +20,2 @@\n"
+        " keep_private()\n"
+        "+expose_operation()\n"
+    )
+    provider = MockProvider(
+        default=reply(
+            [
+                {
+                    "file": "operation.py",
+                    "line": 10,
+                    "change_anchor": {"file": "exposure.py", "line": 21, "side": "new"},
+                    "severity": "HIGH",
+                    "category": "other",
+                    "evidence": "the existing operation is newly exposed",
+                }
+            ]
+        )
+    )
+
+    result = review(diff, provider=provider)
+
+    assert result.outcome.complete is True
+    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="exposure.py", line=21, side="new")
+
+
+def test_diff_review_accepts_a_cited_repository_location_outside_the_patch():
+    """A handler.py:41 location outside the patch is accepted when it cites evidence covering lines 40-41."""
+    evidence = SourceEvidence(
+        id="src-handler",
+        identity="handler.py:handle:0:80",
+        text="40 | def handle(request):\n41 |     dangerous(request.data)",
+        source_span=SourceSpan(
+            file="handler.py",
+            start_line=40,
+            end_line=41,
         ),
-    ],
-)
-def test_diff_finder_rejects_schema_valid_findings_with_invalid_semantics(change, message):
-    """Blank evidence, line 0, absolute paths, empty refs, or a line-0 anchor raise the matching error."""
-    finding = {
-        "file": "app.py",
-        "line": 1,
-        "severity": "HIGH",
-        "category": "other",
-        "evidence": "unsafe operation",
-        **change,
-    }
-    with pytest.raises(RuntimeError, match=message):
-        _run(finder(MockProvider(default=reply([finding]))), _DIFF)
+    )
+    context = GroundingContext(
+        text="repository context",
+        source_evidence=(evidence,),
+        coverage=GroundingCoverage(
+            required=(evidence.identity,),
+            included=(evidence.identity,),
+            references=(evidence.id,),
+        ),
+    )
+    diff = "diff --git a/routes.py b/routes.py\n@@ -0,0 +1 @@\n+register(handle)\n"
+    provider = MockProvider(
+        default=reply(
+            [
+                {
+                    "file": "handler.py",
+                    "line": 41,
+                    "change_anchor": {"file": "routes.py", "line": 1, "side": "new"},
+                    "severity": "HIGH",
+                    "category": "other",
+                    "evidence": "the new route exposes the existing unsafe handler",
+                    "evidence_refs": [evidence.id],
+                }
+            ]
+        )
+    )
+
+    result = review(diff, provider=provider, context=context)
+
+    assert [(finding.file, finding.line) for finding in result.outcome.findings] == [("handler.py", 41)]
+    assert result.outcome.complete is True
 
 
-def test_semantic_violation_in_one_finding_keeps_the_valid_findings_of_the_reply():
-    """A blank title on findings[1] keeps findings[0], fails the cycle, and names the field."""
-    valid = {
-        "file": "app.py",
-        "line": 1,
-        "severity": "HIGH",
-        "category": "sql-injection",
-        "evidence": "string-concatenated query",
-    }
-    invalid = {**valid, "evidence": "second unsafe operation", "title": " "}
-    provider = MockProvider(default=reply([valid, invalid]))
+def test_diff_review_rejects_an_uncited_repository_location_outside_the_patch():
+    """A handler.py:41 location outside the patch is not located when the finding cites no evidence for it."""
+    ranges = DiffLineRanges(
+        current={"routes.py": ((1, 1),)},
+        old={},
+        new={"routes.py": ((1, 1),)},
+    )
+    evidence = SourceEvidence(
+        id="src-handler",
+        identity="handler.py:handle:0:80",
+        text="40 | def handle(request):\n41 |     dangerous(request.data)",
+        source_span=SourceSpan(
+            file="handler.py",
+            start_line=40,
+            end_line=41,
+        ),
+    )
+    finding = _finding("handler.py", 41, ChangeAnchor(file="routes.py", line=1, side="new"))
 
-    cycle = finder(provider).review_unit(diff_unit(_DIFF))
+    assert _locate(finding, ranges, (evidence,)) is None
 
-    assert cycle.clean is False
-    assert [finding.evidence for finding in cycle.findings] == ["string-concatenated query"]
-    assert "findings[1] must have nonempty fields: title" in provider.calls[1]["messages"][0].content
+
+def test_diff_accepts_an_unchanged_primary_location_covered_by_seed():
+    """A ./handler.py:41 location inside a seed span maps to handler.py, with b/ stripped from the anchor."""
+    ranges = DiffLineRanges(
+        current={"routes.py": ((1, 1),)},
+        old={},
+        new={"routes.py": ((1, 1),)},
+    )
+    finding = _finding("./handler.py", 41, ChangeAnchor(file="b/routes.py", line=1, side="new"))
+
+    result = _locate(finding, ranges, seed_spans=(SourceSpan(file="handler.py", start_line=40, end_line=41),))
+
+    assert result.file == "handler.py"
+    assert result.change_anchor == ChangeAnchor(file="routes.py", line=1, side="new")
+
+
+def test_diff_path_normalization_prefers_a_real_side_named_directory():
+    """When the diff itself has a b/app.py path, the b/ prefix is kept rather than stripped as a side."""
+    ranges = DiffLineRanges(
+        current={"b/app.py": ((1, 1),)},
+        old={},
+        new={"b/app.py": ((1, 1),)},
+    )
+    finding = _finding("b/app.py", 1, ChangeAnchor(file="b/app.py", line=1, side="new"))
+
+    result = _locate(finding, ranges)
+
+    assert result.file == "b/app.py"
+    assert result.change_anchor == ChangeAnchor(file="b/app.py", line=1, side="new")
+
+
+def test_diff_review_keeps_a_canonicalized_path_when_every_finding_is_valid():
+    """A b/app.py finding and anchor are canonicalized to app.py and the review stays complete."""
+    provider = MockProvider(
+        default=reply(
+            [
+                {
+                    "file": "b/app.py",
+                    "line": 1,
+                    "change_anchor": {"file": "b/app.py", "line": 1, "side": "new"},
+                    "severity": "HIGH",
+                    "category": "other",
+                    "evidence": "new unsafe operation",
+                }
+            ]
+        )
+    )
+
+    result = review(SQL_DIFF, provider=provider)
+
+    assert result.outcome.complete is True
+    assert result.outcome.findings[0].file == "app.py"
+    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="app.py", line=1, side="new")
+
+
+def test_diff_unit_rejects_an_invalid_anchor_instead_of_overwriting_it():
+    """An anchor naming b.py, which is absent from the ranges, makes the a.py finding unlocatable."""
+    ranges = DiffLineRanges(
+        current={"a.py": ((1, 1),)},
+        old={},
+        new={"a.py": ((1, 1),)},
+    )
+    finding = _finding("a.py", 1, ChangeAnchor(file="b.py", line=1, side="new"))
+
+    assert _locate(finding, ranges) is None
+
+
+def test_diff_unit_preserves_a_distinct_valid_anchor_for_an_added_location():
+    """A finding on added line 1 keeps its own anchor on added line 2 instead of being re-anchored."""
+    ranges = DiffLineRanges(
+        current={"a.py": ((1, 2),)},
+        old={},
+        new={"a.py": ((1, 2),)},
+    )
+    finding = _finding("a.py", 1, ChangeAnchor(file="a.py", line=2, side="new"))
+
+    assert _locate(finding, ranges).change_anchor == ChangeAnchor(file="a.py", line=2, side="new")
+
+
+def test_diff_review_accepts_a_non_source_change_location_and_anchor():
+    """A policy.yaml change flipping require_approval is accepted as both finding location and anchor."""
+    diff = (
+        "diff --git a/policy.yaml b/policy.yaml\n"
+        "--- a/policy.yaml\n"
+        "+++ b/policy.yaml\n"
+        "@@ -1 +1 @@\n"
+        "-require_approval: true\n"
+        "+require_approval: false\n"
+    )
+    provider = MockProvider(
+        default=reply(
+            [
+                {
+                    "file": "policy.yaml",
+                    "line": 1,
+                    "change_anchor": {"file": "policy.yaml", "line": 1, "side": "new"},
+                    "severity": "HIGH",
+                    "category": "other",
+                    "evidence": "the policy no longer requires approval",
+                }
+            ]
+        )
+    )
+
+    result = review(diff, provider=provider)
+
+    assert result.outcome.complete is True
+    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="policy.yaml", line=1, side="new")
+
+
+def test_diff_review_keeps_a_deleted_file_location_incomplete():
+    """A finding on a line of a file deleted to /dev/null is incomplete and yields no findings."""
+    provider = MockProvider(
+        default=reply(
+            [
+                {
+                    "file": "app.py",
+                    "line": 1,
+                    "severity": "HIGH",
+                    "category": "sql-injection",
+                    "evidence": "old sink",
+                }
+            ]
+        )
+    )
+    diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-def sink(value): pass\n"
+    result = review(diff, provider=provider)
+
+    assert result.outcome.findings == ()
+    assert [(finding.file, finding.line) for finding in result.outcome.incomplete] == [("app.py", 1)]
+    assert result.outcome.complete is False

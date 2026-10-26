@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-import cyberjury.sources.git as gitmod
 from cyberjury.review.target import (
     TargetResolutionError,
     materialize_diff_target,
@@ -128,62 +127,6 @@ def test_option_like_git_range_cannot_write_an_output_file(tmp_path):
     assert not unexpected.exists()
 
 
-def test_operator_git_diff_configuration_does_not_change_patch(tmp_path):
-    """Setting diff.renames, diff.external, color.ui, core.abbrev and similar leaves patch and hash unchanged."""
-    repository, base, head = _repository(tmp_path / "repo")
-    first = resolve_diff_target(repository, f"{base}..{head}")
-    git(repository, "config", "diff.renames", "true")
-    git(repository, "config", "diff.external", "/bin/false")
-    git(repository, "config", "color.ui", "always")
-    git(repository, "config", "core.abbrev", "4")
-    git(repository, "config", "diff.indentHeuristic", "true")
-    git(repository, "config", "diff.interHunkContext", "20")
-
-    second = resolve_diff_target(repository, f"{base}..{head}")
-
-    assert second.patch == first.patch
-    assert second.target_sha256 == first.target_sha256
-
-
-def test_git_materialization_uses_exact_blobs_without_smudge_filter(tmp_path):
-    """A configured smudge filter on *.txt is skipped, so value.txt materializes as blob-head."""
-    repository = tmp_path / "repo"
-    repository.mkdir()
-    git(repository, "init", "--quiet")
-    (repository / ".gitattributes").write_text("*.txt filter=demo\n")
-    (repository / "value.txt").write_text("blob-base\n")
-    git(repository, "add", ".")
-    git(repository, "commit", "--quiet", "-m", "base")
-    base = git(repository, "rev-parse", "HEAD")
-    (repository / "value.txt").write_text("blob-head\n")
-    git(repository, "commit", "--quiet", "-am", "head")
-    git(repository, "config", "filter.demo.smudge", "sed s/blob/worktree/")
-    target = resolve_diff_target(repository, f"{base}..HEAD")
-
-    with materialize_diff_target(target) as source_root:
-        assert (source_root / "value.txt").read_bytes() == b"blob-head\n"
-
-
-def test_canonical_patch_keeps_the_default_rename_representation(tmp_path):
-    """With diff.renames=false configured, the patch still shows rename from before.py to after.py."""
-    repository = tmp_path / "repo"
-    repository.mkdir()
-    git(repository, "init", "--quiet")
-    (repository / "before.py").write_text("value = 1\n")
-    git(repository, "add", ".")
-    git(repository, "commit", "--quiet", "-m", "base")
-    base = git(repository, "rev-parse", "HEAD")
-    git(repository, "mv", "before.py", "after.py")
-    git(repository, "commit", "--quiet", "-m", "rename")
-    git(repository, "config", "diff.renames", "false")
-
-    target = resolve_diff_target(repository, f"{base}..HEAD")
-
-    assert target.patch is not None
-    assert "rename from before.py" in target.patch.text
-    assert "rename to after.py" in target.patch.text
-
-
 def test_diff_target_with_a_submodule_materializes_without_it(tmp_path):
     """A head commit holding a gitlink at lib/dependency resolves and materializes app.py without lib/dependency."""
     repository, base, _head = _repository(tmp_path / "repo")
@@ -195,18 +138,6 @@ def test_diff_target_with_a_submodule_materializes_without_it(tmp_path):
     with materialize_diff_target(target) as source_root:
         assert (source_root / "app.py").read_text(encoding="utf-8") == "head\n"
         assert not (source_root / "lib" / "dependency").exists()
-
-
-def test_diff_target_patch_ignores_a_repository_submodule_diff_setting(tmp_path):
-    """With diff.submodule=log in the repository config, the gitlink still appears as a 160000 patch section."""
-    repository, base, _head = _repository(tmp_path / "repo")
-    git(repository, "update-index", "--add", "--cacheinfo", f"160000,{base},lib/dependency")
-    git(repository, "commit", "--quiet", "-m", "gitlink")
-    git(repository, "config", "diff.submodule", "log")
-
-    target = resolve_diff_target(repository, f"{base}..HEAD")
-
-    assert "diff --git a/lib/dependency b/lib/dependency\nnew file mode 160000" in target.patch.text
 
 
 def test_repository_target_with_a_submodule_resolves(tmp_path):
@@ -229,10 +160,11 @@ def test_repository_target_requires_a_real_nonsymlink_directory(tmp_path):
         resolve_repository_target(link)
 
 
-def test_diff_target_fails_loud_before_returning_an_oversized_patch(monkeypatch, tmp_path):
-    """With the patch byte limit set to 1, resolving raises patch exceeds the byte limit."""
-    repository, base, _head = _repository(tmp_path / "repo")
-    monkeypatch.setattr(gitmod, "_MAX_PATCH_BYTES", 1)
+def test_a_materialized_revision_is_removed_on_exit(tmp_path):
+    """The materialized root of a base..head range is deleted once its context exits."""
+    repository, base, head = _repository(tmp_path / "repo")
 
-    with pytest.raises(TargetResolutionError, match="patch exceeds the byte limit"):
-        resolve_diff_target(repository, f"{base}..HEAD")
+    with materialize_diff_target(resolve_diff_target(repository, f"{base}..{head}")) as source_root:
+        assert source_root.is_dir()
+
+    assert not source_root.exists()

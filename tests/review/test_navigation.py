@@ -192,7 +192,7 @@ def test_unique_symbol_search_delivers_exact_source_in_the_same_exchange(tmp_pat
     assert len(result.source_evidence) == 1
 
 
-def _python_navigator(tmp_path, files: dict[str, str]) -> SourceNavigator:
+def _extracted_navigator(tmp_path, files: dict[str, str]) -> SourceNavigator:
     for path, source in files.items():
         (tmp_path / path).write_text(source, encoding="utf-8")
     facts = syntax_facts(tmp_path)
@@ -207,7 +207,7 @@ def _python_navigator(tmp_path, files: dict[str, str]) -> SourceNavigator:
 
 def test_dotted_symbol_search_is_exact_only_for_the_enclosing_definition_name(tmp_path):
     """Repo.save reads only the save under class Repo, not the same-named method on Other."""
-    navigator = _python_navigator(
+    navigator = _extracted_navigator(
         tmp_path,
         {
             "store.py": (
@@ -230,7 +230,7 @@ def test_dotted_symbol_search_is_exact_only_for_the_enclosing_definition_name(tm
 
 def test_dotted_symbol_search_lists_last_segment_matches_as_unread_candidates(tmp_path):
     """Repo.save with only a top-level save() lists store.py:save as a candidate and reads nothing."""
-    navigator = _python_navigator(tmp_path, {"store.py": "def save():\n    return 3\n"})
+    navigator = _extracted_navigator(tmp_path, {"store.py": "def save():\n    return 3\n"})
 
     result = navigator.session().execute(
         [{"kind": "search_symbols", "query": "Repo.save", "page": 0}],
@@ -245,7 +245,7 @@ def test_dotted_symbol_search_lists_last_segment_matches_as_unread_candidates(tm
 
 def test_symbol_search_without_a_definition_lists_the_aliased_import_that_binds_it(tmp_path):
     """S imported as an alias of requests.Session has no local definition, so the search names its import."""
-    navigator = _python_navigator(
+    navigator = _extracted_navigator(
         tmp_path, {"client.py": "from requests import Session as S\n\ndef fetch():\n    return S()\n"}
     )
 
@@ -260,7 +260,7 @@ def test_symbol_search_without_a_definition_lists_the_aliased_import_that_binds_
 
 def test_dotted_symbol_search_without_a_definition_lists_the_module_import_of_its_first_segment(tmp_path):
     """np.array with numpy imported as np names the import statement that binds np."""
-    navigator = _python_navigator(
+    navigator = _extracted_navigator(
         tmp_path, {"calc.py": "import numpy as np\n\ndef total(values):\n    return np.array(values).sum()\n"}
     )
 
@@ -483,8 +483,8 @@ def test_search_requires_the_documented_page_field(tmp_path):
         )
 
 
-def test_read_source_requires_a_target_returned_by_the_same_session(tmp_path):
-    """Only session-published ids are readable, read_source is an unknown kind, and rereads are marked delivered."""
+def test_reading_requires_a_target_published_by_the_same_session(tmp_path):
+    """A target id returned by this session's search is readable, and an invented id raises unknown target."""
     source = "class Record:\n    owner = 'user'\n"
     (tmp_path / "src").mkdir()
     (tmp_path / "src/one.py").write_text(source, encoding="utf-8")
@@ -502,25 +502,6 @@ def test_read_source_requires_a_target_returned_by_the_same_session(tmp_path):
     assert target is not None
     assert session.can_read(target.group(1)) is True
     assert session.can_read("src-invented") is False
-
-    with pytest.raises(SourceNavigationError, match="repeats an earlier query"):
-        session.execute(
-            [{"kind": "search_symbols", "query": "Record", "page": 0}],
-            target_chars=10_000,
-        )
-
-    with pytest.raises(SourceNavigationError, match="unknown kind 'read_source'"):
-        session.execute(
-            [{"kind": "read_source", "target": target.group(1)}],
-            target_chars=10_000,
-        )
-
-    read = session.read([target.group(1)], target_chars=10_000)
-
-    assert "owner = 'user'" in searched.text
-    assert "owner = 'user'" not in read.text
-    assert f"`{target.group(1)}` src/one.py:Record lines 1-2 is already delivered" in read.text
-    assert read.coverage.included == (f"src/one.py:Record:0:{len(source)}",)
     with pytest.raises(SourceNavigationError, match="unknown target"):
         session.read(["src-invented"], target_chars=10_000)
 
@@ -630,7 +611,7 @@ def test_ambiguous_text_search_publishes_choices_without_reading_them(tmp_path):
 
 def test_call_candidate_navigation_keeps_binding_with_the_model(tmp_path):
     """Callees of route() list the target(value) callsite and service.py:target as a candidate."""
-    navigator = _python_navigator(
+    navigator = _extracted_navigator(
         tmp_path,
         {
             "service.py": "def target(value):\n    return value\n",
@@ -663,7 +644,7 @@ def test_call_candidate_navigation_keeps_binding_with_the_model(tmp_path):
 
 def test_structural_candidate_navigation_keeps_binding_with_the_model(tmp_path):
     """Child(Base) lists Base as an outgoing inheritance candidate and Child as Base's incoming owner."""
-    navigator = _python_navigator(tmp_path, {"models.py": "class Base:\n    pass\n\nclass Child(Base):\n    pass\n"})
+    navigator = _extracted_navigator(tmp_path, {"models.py": "class Base:\n    pass\n\nclass Child(Base):\n    pass\n"})
     session = navigator.session()
     searched = session.execute(
         [{"kind": "search_symbols", "query": "Child", "page": 0}],
@@ -711,7 +692,7 @@ def test_structural_candidate_navigation_keeps_binding_with_the_model(tmp_path):
 
 def test_inheritance_without_a_local_target_stays_an_unbound_source_clue(tmp_path):
     """Child(ExternalBase) reports no repository candidate but keeps a readable syntax source."""
-    navigator = _python_navigator(tmp_path, {"models.py": "class Child(ExternalBase):\n    pass\n"})
+    navigator = _extracted_navigator(tmp_path, {"models.py": "class Child(ExternalBase):\n    pass\n"})
     session = navigator.session()
     searched = session.execute(
         [{"kind": "search_symbols", "query": "Child", "page": 0}],
@@ -890,3 +871,30 @@ def test_an_auto_read_source_is_not_delivered_again_by_a_later_search(tmp_path):
     assert "Unique exact symbol match" in first.text
     assert "Unique exact text match" not in second.text
     assert "already delivered in `src-" in second.text
+
+
+def test_caller_search_returns_the_go_function_calling_a_definition(tmp_path):
+    """Searching callers of Go CheckPolicy returns ApplyPolicy and its CheckPolicy(value) call on page 0."""
+    (tmp_path / "policy.go").write_text(
+        'package app\n\nfunc CheckPolicy(value string) bool {\n    return value != ""\n}\n'
+    )
+    (tmp_path / "service.go").write_text(
+        "package app\n\nfunc ApplyPolicy(value string) bool {\n    return CheckPolicy(value)\n}\n"
+    )
+    facts = syntax_facts(tmp_path)
+    target = next(item for item in facts.relationships.definitions if item.name == "CheckPolicy")
+    navigator = SourceNavigator.from_facts(
+        tmp_path, import_files=facts.import_files, relationship_evidence=facts.relationships
+    )
+    assert navigator is not None
+    session = navigator.session()
+    session.execute([{"kind": "search_symbols", "query": "CheckPolicy", "page": 0}], target_chars=10_000)
+
+    candidates = session.execute(
+        [{"kind": "search_call_candidates", "definition_id": target.id, "direction": "callers", "page": 0}],
+        target_chars=10_000,
+    )
+
+    assert "ApplyPolicy" in candidates.text
+    assert "CheckPolicy(value)" in candidates.text
+    assert "page 0" in candidates.text

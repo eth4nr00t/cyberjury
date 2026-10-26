@@ -12,7 +12,6 @@ from cyberjury.workspace import (
     SessionConflictError,
     SessionLocator,
     SessionWorkspace,
-    UnsupportedSessionFormatError,
     WorkspaceCorruptionError,
     read_json_object,
     write_json_atomic,
@@ -138,18 +137,6 @@ def test_locator_session_id_must_match_requested_kind(tmp_path):
         locator.select_with_state(key, kind="review", reuse=True)
 
 
-def test_a_locator_naming_an_older_session_id_is_reported_as_unsupported(tmp_path):
-    """A locator entry holding a review-<32 hex> session id raises an unsupported format error suggesting --fresh."""
-    locator = SessionLocator.open(tmp_path, namespace="reviews")
-    key = "e" * 64
-    locator.select_with_state(key, kind="review", reuse=True)
-    path = locator.path / f"{key}.json"
-    path.write_text(json.dumps(json.loads(path.read_text()) | {"session_id": "review-" + "a" * 32}))
-
-    with pytest.raises(UnsupportedSessionFormatError, match="--fresh"):
-        locator.select_with_state(key, kind="review", reuse=True)
-
-
 def test_existing_state_root_permissions_are_not_changed(tmp_path):
     """A pre-existing 0755 state root keeps its mode while the created reviews namespace is 0700."""
     root = tmp_path / "shared"
@@ -166,42 +153,42 @@ def test_existing_state_root_permissions_are_not_changed(tmp_path):
     assert stat.S_IMODE((root / "reviews").stat().st_mode) == 0o700
 
 
-def test_namespace_symlink_is_rejected(tmp_path):
-    """A reviews namespace that is a symlink to another directory raises ValueError naming symlink."""
+def _symlinked_state_root(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    return link
+
+
+def _symlinked_namespace(tmp_path):
     root = tmp_path / "state"
     root.mkdir(mode=0o700)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     (root / "reviews").symlink_to(elsewhere, target_is_directory=True)
+    return root
 
+
+@pytest.mark.parametrize("layout", [_symlinked_state_root, _symlinked_namespace])
+def test_symlinked_state_directories_are_rejected(tmp_path, layout):
+    """A state root or reviews namespace that is a symlink to another directory raises ValueError naming symlink."""
     with pytest.raises(ValueError, match="symlink"):
         SessionWorkspace.open_or_create(
-            root,
+            layout(tmp_path),
             namespace="reviews",
             session_id="review-20260101-000000-" + "5" * 8,
             kind="review",
         )
 
 
-def test_session_rejects_traversal_and_symlink_roots(tmp_path):
-    """A review-../escape session id and a state root that is a symlink each raise ValueError."""
+def test_session_rejects_a_traversal_session_id(tmp_path):
+    """A review-../escape session id raises ValueError naming the session id."""
     with pytest.raises(ValueError, match="session id"):
         SessionWorkspace.open_or_create(
             tmp_path,
             namespace="reviews",
             session_id="review-../escape",
-            kind="review",
-        )
-
-    real = tmp_path / "real"
-    real.mkdir()
-    link = tmp_path / "link"
-    link.symlink_to(real, target_is_directory=True)
-    with pytest.raises(ValueError, match="symlink"):
-        SessionWorkspace.open_or_create(
-            link,
-            namespace="reviews",
-            session_id="review-20260101-000000-" + "f" * 8,
             kind="review",
         )
 
@@ -237,31 +224,3 @@ def test_public_json_reader_rejects_duplicate_keys(tmp_path):
 
     with pytest.raises(WorkspaceCorruptionError, match="duplicate JSON key"):
         read_json_object(path)
-
-
-def _older_attempt_layout(session):
-    attempt = session.start_attempt({"schema": "test.request/v1"})
-    attempt.finish(_terminal(attempt))
-    (attempt.path / "record.json").unlink()
-    (attempt.path / "attempt.json").write_text(json.dumps({"schema": "cyberjury.attempt/v1"}))
-
-
-def _older_attempt_name(session):
-    path = session.path / "attempts" / ("attempt-20260101T000000Z-" + "1" * 8)
-    path.mkdir()
-    (path / "attempt.json").write_text(json.dumps({"schema": "cyberjury.attempt/v1"}))
-
-
-def _older_session_schema(session):
-    path = session.path / "session.json"
-    path.write_text(json.dumps(json.loads(path.read_text()) | {"schema": "cyberjury.session/v0"}))
-
-
-@pytest.mark.parametrize("age", [_older_attempt_layout, _older_attempt_name, _older_session_schema])
-def test_an_older_session_format_is_reported_as_unsupported(tmp_path, age):
-    """An attempt without record.json, an older attempt id, or a v0 session schema raises a --fresh hint."""
-    session = _session(tmp_path, "7")
-    age(session)
-
-    with pytest.raises(UnsupportedSessionFormatError, match=r"unsupported session format.*--fresh"):
-        _session(tmp_path, "7").start_attempt({"schema": "test.request/v1"})

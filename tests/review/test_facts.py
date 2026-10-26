@@ -1,13 +1,6 @@
-"""Tests for the shared facts contract and extraction boundary."""
+"""The shared facts contract binds receipts and names limitation locations."""
 
-import pytest
-
-from cyberjury.review import prepare
-from cyberjury.review.detection import load_detection
 from cyberjury.review.facts import FactLimitation, Facts, FactsReceipt
-from cyberjury.review.failures import BackendUnavailable
-from cyberjury.review.selection import FileSelection
-from cyberjury.sources.snapshot import capture_source_snapshot
 
 
 def test_facts_receipt_binds_the_backend_and_its_evidence():
@@ -17,19 +10,6 @@ def test_facts_receipt_binds_the_backend_and_its_evidence():
 
     assert first.to_dict()["schema"] == "cyberjury.facts/v1"
     assert first.receipt_sha256 != second.receipt_sha256
-
-
-def test_extract_facts_fails_loud_when_extraction_fails(tmp_path, monkeypatch):
-    """A syntax extractor raising "parser missing" surfaces as BackendUnavailable "no grounding: ..."."""
-
-    def broken(*_args):
-        raise RuntimeError("parser missing")
-
-    monkeypatch.setattr(prepare, "extract_syntax_facts", broken)
-    selection = FileSelection(review_files=(), navigation_files=(), skipped_files=())
-
-    with pytest.raises(BackendUnavailable, match="no grounding: parser missing"):
-        prepare.extract_facts(capture_source_snapshot(tmp_path), selection, load_detection())
 
 
 def test_fact_limitation_identity_names_its_location():

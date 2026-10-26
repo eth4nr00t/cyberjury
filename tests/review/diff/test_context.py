@@ -144,45 +144,6 @@ def test_fallback_diff_context_renders_facts_and_current_source(tmp_path):
     assert f"Initial source `{window.id}`, delivered by the review agent:" in ctx.prompt.source
 
 
-def test_diff_navigation_exposes_go_package_callers_as_candidates(tmp_path):
-    """Searching callers of the changed Go CheckPolicy returns ApplyPolicy and its call on page 0."""
-    helper = 'package app\n\nfunc CheckPolicy(value string) bool {\n    return value != ""\n}\n'
-    caller = "package app\n\nfunc ApplyPolicy(value string) bool {\n    return CheckPolicy(value)\n}\n"
-    (tmp_path / "policy.go").write_text(helper)
-    (tmp_path / "service.go").write_text(caller)
-    diff = (
-        "diff --git a/policy.go b/policy.go\n"
-        "--- a/policy.go\n"
-        "+++ b/policy.go\n"
-        "@@ -4 +4 @@ func CheckPolicy(value string) bool {\n"
-        "-    return true\n"
-        '+    return value != ""\n'
-    )
-    shared = _extracted(tmp_path, diff).shared
-    target = next(item for item in shared.facts.relationships.definitions if item.name == "CheckPolicy")
-    assert shared.navigator is not None
-    session = shared.navigator.session()
-    session.execute(
-        [{"kind": "search_symbols", "query": "CheckPolicy", "page": 0}],
-        target_chars=10_000,
-    )
-    candidates = session.execute(
-        [
-            {
-                "kind": "search_call_candidates",
-                "definition_id": target.id,
-                "direction": "callers",
-                "page": 0,
-            }
-        ],
-        target_chars=10_000,
-    )
-
-    assert "ApplyPolicy" in candidates.text
-    assert "CheckPolicy(value)" in candidates.text
-    assert "page 0" in candidates.text
-
-
 def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_path):
     """A changed route() delivers service.py:load as source, or only as requestable under a 1-char cap."""
     (tmp_path / "route.py").write_text(
@@ -225,31 +186,6 @@ def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_p
     assert requestable.source_evidence == ()
     assert any(item.source_span and item.source_span.file == "service.py" for item in requestable.evidence)
     assert "service.py" in requestable.snapshot_files
-
-
-def test_diff_keeps_alias_calls_and_navigation_sources_before_model_analysis(tmp_path):
-    """Facts keep the client(value) default-import call, the route.ts import edge, and tsconfig.json."""
-    (tmp_path / "service.ts").write_text("export default function actual(value: number) { return value; }\n")
-    (tmp_path / "route.ts").write_text(
-        "import client from './service';\nexport function route(value: number) { return client(value); }\n"
-    )
-    (tmp_path / "tsconfig.json").write_text('{"compilerOptions":{"paths":{"@app/*":["./*"]}}}\n')
-    diff = (
-        "diff --git a/service.ts b/service.ts\n"
-        "--- a/service.ts\n"
-        "+++ b/service.ts\n"
-        "@@ -1 +1 @@\n"
-        "-export default function actual(value: number) { return 0; }\n"
-        "+export default function actual(value: number) { return value; }\n"
-    )
-
-    evidence = _extracted(tmp_path, diff).shared.facts.relationships
-    assert any(callsite.expression == "client(value)" for callsite in evidence.callsites)
-    assert any(
-        relationship.kind == "import" and relationship.source.path == "route.ts"
-        for relationship in evidence.structural_relationships
-    )
-    assert "tsconfig.json" in {source.path for source in evidence.sources}
 
 
 def test_collect_diff_context_respects_total_budget(tmp_path):

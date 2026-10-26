@@ -3,7 +3,7 @@
 import pytest
 
 from cyberjury.review.definitions import DefinitionUnitPlan
-from cyberjury.review.detection import load_detection
+from cyberjury.review.detection import MAX_SOURCE_BYTES, detection_for, load_detection
 from cyberjury.review.diff.model import (
     DiffUnit,
     changed_line_ranges,
@@ -15,18 +15,16 @@ from cyberjury.review.diff.model import (
     split_diff_by_file,
     strip_unreviewable_files,
 )
+from cyberjury.review.result import SkippedFile
+from tests.review.diff.support import FILE_A_DIFF, FILE_B_DIFF
 
 _DETECTION = load_detection()
-
-_FILE_A = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
-
-_FILE_B = "diff --git a/b.py b/b.py\n@@ -0,0 +1 @@\n+y = 2\n"
 
 
 def test_split_diff_by_file():
     """A two-file patch splits into one chunk per diff --git header, preserving each chunk verbatim."""
-    chunks = split_diff_by_file(_FILE_A + _FILE_B)
-    assert chunks == [_FILE_A, _FILE_B]
+    chunks = split_diff_by_file(FILE_A_DIFF + FILE_B_DIFF)
+    assert chunks == [FILE_A_DIFF, FILE_B_DIFF]
 
 
 def test_split_diff_empty_and_unbounded():
@@ -42,19 +40,19 @@ def test_pack_diff_chunks_empty_is_no_batches():
 
 def test_pack_diff_chunks_greedily_combines_files():
     """Two files share one batch when the bound fits both, and split into two when it fits only one."""
-    batches = pack_diff_chunks(_FILE_A + _FILE_B, max_chars=len(_FILE_A) + len(_FILE_B))
-    assert batches == [_FILE_A + _FILE_B]
-    batches = pack_diff_chunks(_FILE_A + _FILE_B, max_chars=len(_FILE_A))
-    assert batches == [_FILE_A, _FILE_B]
+    batches = pack_diff_chunks(FILE_A_DIFF + FILE_B_DIFF, max_chars=len(FILE_A_DIFF) + len(FILE_B_DIFF))
+    assert batches == [FILE_A_DIFF + FILE_B_DIFF]
+    batches = pack_diff_chunks(FILE_A_DIFF + FILE_B_DIFF, max_chars=len(FILE_A_DIFF))
+    assert batches == [FILE_A_DIFF, FILE_B_DIFF]
 
 
 def test_pack_diff_chunks_keeps_an_indivisible_oversized_line_observable():
     """A 200-character added line that exceeds the bound gets its own over-limit batch, kept intact."""
     big = "diff --git a/big.py b/big.py\n@@ -0,0 +1 @@\n+" + "z" * 200 + "\n"
-    batches = pack_diff_chunks(_FILE_A + big, max_chars=len(_FILE_A) + 5)
-    assert batches[0] == _FILE_A
+    batches = pack_diff_chunks(FILE_A_DIFF + big, max_chars=len(FILE_A_DIFF) + 5)
+    assert batches[0] == FILE_A_DIFF
     assert len(batches) == 2
-    assert len(batches[1]) > len(_FILE_A) + 5
+    assert len(batches[1]) > len(FILE_A_DIFF) + 5
     assert "+" + "z" * 200 in batches[1]
 
 
@@ -83,7 +81,7 @@ def test_diff_unit_plan_record_exposes_patch_ownership():
     unit = DiffUnit(
         index=1,
         total=1,
-        diff=_FILE_A,
+        diff=FILE_A_DIFF,
         paths=("a.py",),
         definition_plan=DefinitionUnitPlan(seed_files=("a.py",)),
     )
@@ -96,7 +94,7 @@ def test_diff_unit_plan_record_exposes_patch_ownership():
 
 
 def test_diff_model_excludes_test_files_before_review():
-    """Diff unit construction applies the same test exclusion as repository units."""
+    """A tests/test_views.py change is skipped as noise while the app/views.py change is kept."""
     production = "diff --git a/app/views.py b/app/views.py\n+++ b/app/views.py\n@@ -0,0 +1 @@\n+x = 1\n"
     test = "diff --git a/tests/test_views.py b/tests/test_views.py\n+++ b/tests/test_views.py\n@@ -0,0 +1 @@\n+x = 1\n"
 
@@ -262,3 +260,30 @@ def test_diff_line_ranges_keep_reportable_non_source_files():
     assert ranges.old == {"policy.yaml": ((1, 1),)}
     assert ranges.new == {"policy.yaml": ((1, 1),)}
     assert changed_line_ranges(diff, _DETECTION) == {"policy.yaml": ((1, 1),)}
+
+
+def test_strip_unreviewable_files_skips_changes_to_vendored_files_as_noise(tmp_path):
+    """A change to linguist-vendored public/plugins/lib.js is skipped as noise, and the app.py change stays."""
+    (tmp_path / ".gitattributes").write_text("public/plugins/** linguist-vendored\n", encoding="utf-8")
+    diff = (
+        "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-a = 1\n+a = 2\n"
+        "diff --git a/public/plugins/lib.js b/public/plugins/lib.js\n--- a/public/plugins/lib.js\n"
+        "+++ b/public/plugins/lib.js\n@@ -1 +1 @@\n-var a = 1\n+var a = 2\n"
+    )
+
+    kept, skipped = strip_unreviewable_files(diff, detection_for(tmp_path, [".gitattributes"]))
+
+    assert "app.py" in kept
+    assert "lib.js" not in kept
+    assert skipped == (SkippedFile(path="public/plugins/lib.js", reason="noise"),)
+
+
+def test_strip_unreviewable_files_skips_oversized_files_as_too_large(tmp_path):
+    """A change to a bindata.go over MAX_SOURCE_BYTES is skipped as too_large and nothing is kept."""
+    (tmp_path / "bindata.go").write_text("package bindata\n\nvar data = `" + "a" * MAX_SOURCE_BYTES + "`\n")
+    diff = "diff --git a/bindata.go b/bindata.go\n--- a/bindata.go\n+++ b/bindata.go\n@@ -1 +1 @@\n-x\n+y\n"
+
+    kept, skipped = strip_unreviewable_files(diff, detection_for(tmp_path, ["bindata.go"]))
+
+    assert kept == ""
+    assert skipped == (SkippedFile(path="bindata.go", reason="too_large"),)

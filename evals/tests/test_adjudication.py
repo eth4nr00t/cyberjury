@@ -8,15 +8,8 @@ import pytest
 
 from evals.adjudication import adjudicate
 from evals.attempts import load_attempt, read_json
-from evals.benchmarks.cases import find_case
 
 A, B = "candidate-" + "a" * 20, "candidate-" + "b" * 20
-
-
-@pytest.fixture
-def case(benchmark_project):
-    """Return the benchmark project's diff case."""
-    return find_case(benchmark_project.diff_case, [benchmark_project.benchmark])
 
 
 @pytest.fixture
@@ -50,16 +43,11 @@ def test_ledger_must_assess_every_report_exactly_once(case, attempt, write_ledge
         _adjudicate(case, attempt)
 
 
-def test_a_grouped_attempt_is_assessed_per_report_and_measures_its_issues(case, tmp_path, write_attempt, write_ledger):
+def test_an_issue_is_mixed_only_when_two_of_its_reports_are_supported(case, tmp_path, write_attempt, write_ledger):
     """One issue of A and B counts as mixed only when both reports are supported."""
     grouped = write_attempt(tmp_path / "grouped", 1, (A, B), issues=((B, A),))
-    write_ledger(grouped, {A: ("supported", ("create-missing-owner",)), B: ("duplicate", ())})
-
-    result = _adjudicate(case, grouped)
-
-    assert result.found == ("create-missing-owner",)
-    assert result.counts == {"duplicate": 1, "needs_review": 0, "not_actionable": 0, "supported": 1}
-    assert (result.issues, result.duplicate_issues, result.mixed_issues) == (1, 0, 0)
+    write_ledger(grouped, {A: ("supported", ()), B: ("duplicate", ())})
+    assert _adjudicate(case, grouped).mixed_issues == 0
     write_ledger(grouped, {A: ("supported", ()), B: ("supported", ())})
     assert _adjudicate(case, grouped).mixed_issues == 1
     write_ledger(grouped, {A: ("supported", ()), B: ("not_actionable", ())})
@@ -74,12 +62,6 @@ def test_one_root_cause_in_two_issues_is_a_duplicate_issue(case, tmp_path, write
     result = _adjudicate(case, split)
 
     assert (result.issues, result.duplicate_issues, result.mixed_issues) == (2, 1, 0)
-
-
-def test_attempt_issues_must_partition_its_reports(tmp_path, write_attempt):
-    """An attempt whose issues cover only A of reports A and B fails to load with "partition"."""
-    with pytest.raises(ValueError, match="partition"):
-        load_attempt(write_attempt(tmp_path / "runs", 1, (A, B), issues=((A,),)))
 
 
 def test_a_check_credited_by_two_reports_counts_once_and_a_duplicate_may_credit_it(case, attempt, write_ledger):
@@ -103,7 +85,7 @@ def test_ledger_rejects_check_credit_on_an_unsupported_report(case, attempt, wri
     """A not_actionable report crediting a check fails eval-ledger-v1 schema validation."""
     write_ledger(attempt, {A: ("not_actionable", ("create-missing-owner",)), B: ("not_actionable", ())})
 
-    with pytest.raises(ValueError, match=r"ledger-v1\.schema"):
+    with pytest.raises(ValueError, match=r"eval-ledger-v1\.schema"):
         _adjudicate(case, attempt)
 
 

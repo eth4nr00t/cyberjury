@@ -1,6 +1,6 @@
 """File selection decides which files are reviewed, navigable, or skipped."""
 
-from cyberjury.review.detection import load_detection
+from cyberjury.review.detection import MAX_SOURCE_BYTES, detection_for, load_detection
 from cyberjury.review.result import SkippedFile
 from cyberjury.review.selection import select_files
 
@@ -40,3 +40,34 @@ def test_documentation_is_navigable_but_not_reviewed(tmp_path):
     assert selection.review_files == ("app.py",)
     assert selection.documentation_files == ("README.md",)
     assert "README.md" in selection.navigation_files
+
+
+def test_vendored_files_are_navigable_but_not_reviewed(tmp_path):
+    """A linguist-vendored public/plugins/lib.js is a navigable dependency file, while app.py is reviewed."""
+    files = {
+        ".gitattributes": b"public/plugins/** linguist-vendored\n",
+        "app.py": b"def handler(value):\n    return value\n",
+        "public/plugins/lib.js": b"function helper(value) { return value }\n",
+    }
+    _select(tmp_path, files)
+
+    selection = select_files(tmp_path, sorted(files), detection_for(tmp_path, sorted(files)))
+
+    assert selection.review_files == (".gitattributes", "app.py")
+    assert selection.dependency_files == ("public/plugins/lib.js",)
+    assert "public/plugins/lib.js" in selection.navigation_files
+
+
+def test_files_over_the_size_limit_are_skipped_as_too_large(tmp_path):
+    """A bindata.go over MAX_SOURCE_BYTES is skipped as too_large and offered neither to review nor navigation."""
+    files = {
+        "app.py": b"def handler(value):\n    return value\n",
+        "bindata.go": b"package bindata\n\nvar data = `" + b"a" * MAX_SOURCE_BYTES + b"`\n",
+    }
+    _select(tmp_path, files)
+
+    selection = select_files(tmp_path, sorted(files), detection_for(tmp_path, sorted(files)))
+
+    assert selection.review_files == ("app.py",)
+    assert selection.skipped_files == (SkippedFile(path="bindata.go", reason="too_large"),)
+    assert "bindata.go" not in selection.navigation_files

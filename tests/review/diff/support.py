@@ -15,6 +15,12 @@ from cyberjury.review.seats import ReviewSeats
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from tests.review.support import prepared_units
 
+SQL_DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
+
+FILE_A_DIFF = "diff --git a/a.py b/a.py\n@@ -0,0 +1 @@\n+x = 1\n"
+
+FILE_B_DIFF = "diff --git a/b.py b/b.py\n@@ -0,0 +1 @@\n+y = 2\n"
+
 
 def diff_units(
     diff: str,

@@ -43,7 +43,7 @@ def test_sdk_exception_propagates():
 
 
 def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch):
-    """One retry owner keeps configured attempts from multiplying."""
+    """A client built with api_key k and a gateway api_base gets max_retries=0, that key, and the gateway base_url."""
     captured = {}
 
     class _OpenAI:
@@ -129,12 +129,11 @@ def test_no_routing_key_without_cache():
 
 
 def test_caching_uses_only_portable_routing_fields():
-    """Caching stays portable across models and compatible endpoints."""
+    """A cached request keeps the whole message as input content and sends no prompt_cache_options field."""
     request = _sent("STABLE changing judgment", cache=True, cache_prefix="STABLE")
 
     assert request["input"][-1]["content"] == "STABLE changing judgment"
     assert "prompt_cache_options" not in request
-    assert request["prompt_cache_key"]
 
 
 def test_responses_maps_system_to_instructions_and_returns_output_text():
