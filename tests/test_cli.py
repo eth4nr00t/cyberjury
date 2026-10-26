@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import signal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -787,6 +789,37 @@ def test_provider_preflight_failure_is_terminal_and_redacted(monkeypatch, diff_t
     state = json.loads((attempt_dir / "attempt.json").read_text())
     assert state["state"] == "failed"
     assert "authorization=" not in json.dumps(state).lower()
+
+
+def _terminate(*_args):
+    assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL
+    os.kill(os.getpid(), signal.SIGTERM)
+    raise AssertionError("SIGTERM did not stop the review")
+
+
+def _terminated_attempt(diff_target, tmp_path) -> Path:
+    with pytest.raises(KeyboardInterrupt):
+        main(["review", "diff", *diff_target.args, "--workspace", str(tmp_path), "--dry-run"])
+    return next(next((tmp_path / "reviews").iterdir()).joinpath("attempts").iterdir())
+
+
+def test_a_terminated_review_keeps_its_model_calls_and_ends_interrupted(monkeypatch, diff_target, tmp_path):
+    """A SIGTERM during a dry-run review leaves model-calls.json and an attempt.json in state interrupted."""
+    monkeypatch.setattr(climod, "_execute_review", _terminate)
+
+    attempt = _terminated_attempt(diff_target, tmp_path)
+
+    assert json.loads((attempt / "attempt.json").read_text())["state"] == "interrupted"
+    assert (attempt / "model-calls.json").is_file()
+
+
+def test_a_review_terminated_during_source_preparation_ends_interrupted(monkeypatch, diff_target, tmp_path):
+    """A SIGTERM while the contract receipt is captured leaves attempt.json in state interrupted, not failed."""
+    monkeypatch.setattr(climod.ContractReceipt, "capture", _terminate)
+
+    attempt = _terminated_attempt(diff_target, tmp_path)
+
+    assert json.loads((attempt / "attempt.json").read_text())["state"] == "interrupted"
 
 
 def test_model_call_persistence_failure_marks_the_attempt_failed(monkeypatch, diff_target, tmp_path):

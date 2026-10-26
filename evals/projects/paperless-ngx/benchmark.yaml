@@ -225,6 +225,11 @@ cases:
         root_cause: TagSerializer.get_children serializes every child from get_children_queryset() without filtering to tags the requester may view, so a visible parent exposes private child tags
         locations:
           - {file: src/documents/serialisers.py, line: 584}
+      - id: tag-parent-cascade-missing-permission
+        root_cause: The tag parent field accepts any tag (src/documents/serialisers.py:563) and tn_parent cascades on delete (src/documents/migrations/1071_tag_tn_ancestors_count_tag_tn_ancestors_pks_and_more.py:122), so a user with only change permission on another user's tag moves it under a tag they own and deletes it by deleting their own tag
+        locations:
+          - {file: src/documents/migrations/1071_tag_tn_ancestors_count_tag_tn_ancestors_pks_and_more.py, line: 122}
+          - {file: src/documents/serialisers.py, line: 563}
       - id: tag-parent-missing-permission
         root_cause: TagViewSet.perform_update calls update_document_parent_tags on reparenting, which adds the parent tags to every document carrying the tag without checking change_document on those documents
         locations:
@@ -277,8 +282,8 @@ cases:
         locations:
           - {file: src/documents/matching.py, symbol: matches}
         change_anchors:
-          - {file: src/documents/serialisers.py, line: 18, side: new}
           - {file: src/documents/matching.py, line: 64, side: new}
+          - {file: src/documents/serialisers.py, line: 18, side: new}
   - id: diff-69ef26d
     kind: diff
     base: c3997c9f26130f1d1a1cdd409b372e2579ac67e3
@@ -291,8 +296,8 @@ cases:
           - {file: src-ui/src/app/components/document-list/bulk-editor/bulk-editor.component.ts, line: 339}
           - {file: src-ui/src/app/pipes/safehtml.pipe.ts, symbol: SafeHtmlPipe}
         change_anchors:
-          - {file: src-ui/src/app/components/document-list/bulk-editor/bulk-editor.component.ts, line: 339, side: new}
           - {file: src-ui/src/app/components/common/confirm-dialog/confirm-dialog.component.html, line: 8, side: new}
+          - {file: src-ui/src/app/components/document-list/bulk-editor/bulk-editor.component.ts, line: 339, side: new}
       - id: storage-path-template-path-traversal
         root_cause: StoragePathSerializer.validate_path only checks that the template formats, accepting '..' segments, and generate_filename uses doc.storage_path.path without confining the result to the media directories
         locations:
@@ -304,6 +309,126 @@ cases:
         change_anchors:
           - {file: src/documents/file_handling.py, line: 139, side: new}
           - {file: src/documents/serialisers.py, line: 547, side: new}
+  - id: diff-4333bd5
+    kind: diff
+    base: 96a29883cd9c3d961665fb9e51ac9ec1cb264caf
+    commit: 4333bd58cfeec5c613a8b9b5d3a3b713964f5c8e
+    checks:
+      - id: user-group-api-missing-permission
+        root_cause: UserViewSet and GroupViewSet use permission_classes IsAuthenticated only, and UserSerializer leaves is_staff/is_superuser writable, so any user gets full user and group CRUD
+        locations:
+          - {file: src/paperless/serialisers.py, line: 20}
+          - {file: src/paperless/serialisers.py, line: 22}
+          - {file: src/paperless/views.py, line: 58}
+          - {file: src/paperless/views.py, symbol: GroupViewSet}
+          - {file: src/paperless/views.py, symbol: UserViewSet}
+        change_anchors:
+          - {file: src/paperless/serialisers.py, line: 20, side: new}
+          - {file: src/paperless/serialisers.py, line: 22, side: new}
+          - {file: src/paperless/views.py, line: 38, side: new}
+          - {file: src/paperless/views.py, line: 45, side: new}
+          - {file: src/paperless/views.py, line: 58, side: new}
+  - id: diff-18e0012
+    kind: diff
+    base: 2554ced1983ef846c9a49dcfbf80dc342ede0df8
+    commit: 18e0012a5932d6f0858cad585691a8cc4ae62129
+    checks:
+      - id: owned-object-update-missing-permission
+        root_cause: OwnedObjectSerializer.update applies the new grant_permissions/revoke_permissions fields with no check that the requester owns the object, so any object-level change holder can regrant it
+        locations:
+          - {file: src/documents/serialisers.py, line: 96}
+        change_anchors:
+          - {file: src/documents/serialisers.py, line: 96, side: new}
+          - {file: src/documents/serialisers.py, line: 196, side: new}
+  - id: diff-2973e46
+    kind: diff
+    base: 18e0012a5932d6f0858cad585691a8cc4ae62129
+    commit: 2973e4672a612c1ac6f0c52030a35478141507df
+    checks:
+      - id: owned-object-update-missing-permission
+        root_cause: TagSerializer now exposes owner, grant_permissions and revoke_permissions, and OwnedObjectSerializer.update applies them without requiring the requester to own the tag, so any tag change holder can reassign or regrant it
+        locations:
+          - {file: src/documents/serialisers.py, line: 343}
+        change_anchors:
+          - {file: src/documents/serialisers.py, line: 343, side: new}
+      - id: tag-create-missing-owner
+        root_cause: TagViewSet does not use PassUserMixin (get_serializer_class sets user on a discarded kwargs dict), so the serializer has no user and API-created tags are saved without an owner
+        locations:
+          - {file: src/documents/views.py, line: 177}
+          - {file: src/documents/views.py, line: 186}
+        change_anchors:
+          - {file: src/documents/views.py, line: 177, side: new}
+  - id: diff-23fefc3
+    kind: diff
+    base: 0beb9f0b5f3911a663850b6b687217600a85948f
+    commit: 23fefc3ab7a888bc60c1c1b435f4eca9073ba16e
+    checks:
+      - id: mail-rule-account-idor
+        root_cause: MailRuleSerializer's AccountField keeps MailAccount.objects.all() while the diff adds per-owner mail account isolation, so rules can reference accounts the requester does not own
+        locations:
+          - {file: src/paperless_mail/serialisers.py, line: 56}
+        change_anchors:
+          - {file: src/paperless_mail/views.py, line: 30, side: new}
+      - id: mail-test-idor
+        root_cause: MailAccountTestView loads any MailAccount's stored password by request id (src/paperless_mail/views.py:58) without an owner or object-permission filter, bypassing the per-owner account isolation the diff adds
+        locations:
+          - {file: src/paperless_mail/views.py, line: 58}
+          - {file: src/paperless_mail/views.py, symbol: MailAccountTestView}
+        change_anchors:
+          - {file: src/paperless_mail/views.py, line: 29, side: new}
+          - {file: src/paperless_mail/views.py, line: 30, side: new}
+      - id: mail-test-missing-permission
+        root_cause: MailAccountTestView keeps permission_classes IsAuthenticated only (src/paperless_mail/views.py:44) while the diff gates the mail viewsets with model permissions, so users lacking mail-account permission can call it
+        locations:
+          - {file: src/paperless_mail/views.py, line: 44}
+          - {file: src/paperless_mail/views.py, symbol: MailAccountTestView}
+        change_anchors:
+          - {file: src/paperless_mail/views.py, line: 29, side: new}
+  - id: diff-7c9ab8c
+    kind: diff
+    base: 3a36d9b1aebb5d2ad5296db5db970d209c4f9495
+    commit: 7c9ab8c0b6ac7d6910ac8e4f98ca736a2e0e9ee7
+    checks:
+      - id: share-link-idor
+        root_cause: ShareLinkSerializer accepts any document id without checking that the requester can view that document before a public share link is created
+        locations:
+          - {file: src/documents/serialisers.py, symbol: ShareLinkSerializer}
+        change_anchors:
+          - {file: src/documents/serialisers.py, line: 948, side: new}
+  - id: diff-4af8070
+    kind: diff
+    base: d6d00711754087f57b297ee1529c140acc167bc8
+    commit: 4af8070450b0aa08b15b6c4ad7e795d364385447
+    checks:
+      - id: bulk-edit-merge-missing-owner
+        root_cause: merge consumes the merged document with empty DocumentMetadataOverrides when no metadata document is chosen (src/documents/bulk_edit.py:244) and never sets owner to the requesting user
+        locations:
+          - {file: src/documents/bulk_edit.py, line: 244}
+          - {file: src/documents/bulk_edit.py, symbol: merge}
+        change_anchors:
+          - {file: src/documents/bulk_edit.py, line: 243, side: new}
+          - {file: src/documents/bulk_edit.py, line: 244, side: new}
+          - {file: src/documents/bulk_edit.py, line: 247, side: new}
+      - id: bulk-edit-split-denial-of-service
+        root_cause: _validate_parameters_split expands caller-supplied a-b page ranges into full lists via range() (src/documents/serialisers.py:1017-1018) with no bound on the range size
+        locations:
+          - {file: src/documents/serialisers.py, line: 1017}
+        change_anchors:
+          - {file: src/documents/serialisers.py, line: 1017, side: new}
+          - {file: src/documents/serialisers.py, line: 1018, side: new}
+  - id: diff-c6e7d06
+    kind: diff
+    base: 40289cd714988d41287f1bd8bd4fd82084621be4
+    commit: c6e7d06bb7049367f015dc3b124bb0a3bcabcc22
+    checks:
+      - id: global-search-mail-information-disclosure
+        root_cause: GlobalSearchView returns MailRule and MailAccount matches gated only by the global view permission (src/documents/views.py:1229, src/documents/views.py:1234), without the owner-aware object filter used for other types
+        locations:
+          - {file: src/documents/views.py, line: 1229}
+          - {file: src/documents/views.py, line: 1234}
+        change_anchors:
+          - {file: src/documents/views.py, line: 1229, side: new}
+          - {file: src/documents/views.py, line: 1234, side: new}
   - id: diff-7c11a37
     kind: diff
     base: e49ed58f1a3222090bff08aef445ea142e87be9d
@@ -351,145 +476,6 @@ cases:
         change_anchors:
           - {file: src/documents/serialisers.py, line: 2023, side: new}
           - {file: src/documents/views.py, line: 1563, side: new}
-  - id: diff-7c9ab8c
-    kind: diff
-    base: 3a36d9b1aebb5d2ad5296db5db970d209c4f9495
-    commit: 7c9ab8c0b6ac7d6910ac8e4f98ca736a2e0e9ee7
-    checks:
-      - id: share-link-idor
-        root_cause: ShareLinkSerializer accepts any document id without checking that the requester can view that document before a public share link is created
-        locations:
-          - {file: src/documents/serialisers.py, symbol: ShareLinkSerializer}
-        change_anchors:
-          - {file: src/documents/serialisers.py, line: 948, side: new}
-  - id: diff-4333bd5
-    kind: diff
-    base: 96a29883cd9c3d961665fb9e51ac9ec1cb264caf
-    commit: 4333bd58cfeec5c613a8b9b5d3a3b713964f5c8e
-    checks:
-      - id: user-group-api-missing-permission
-        root_cause: UserViewSet and GroupViewSet use permission_classes IsAuthenticated only, and UserSerializer leaves is_staff/is_superuser writable, so any user gets full user and group CRUD
-        locations:
-          - {file: src/paperless/serialisers.py, line: 20}
-          - {file: src/paperless/serialisers.py, line: 22}
-          - {file: src/paperless/views.py, line: 58}
-          - {file: src/paperless/views.py, symbol: GroupViewSet}
-          - {file: src/paperless/views.py, symbol: UserViewSet}
-        change_anchors:
-          - {file: src/paperless/views.py, line: 45, side: new}
-          - {file: src/paperless/views.py, line: 58, side: new}
-          - {file: src/paperless/serialisers.py, line: 20, side: new}
-          - {file: src/paperless/serialisers.py, line: 22, side: new}
-          - {file: src/paperless/views.py, line: 38, side: new}
-  - id: diff-c6e7d06
-    kind: diff
-    base: 40289cd714988d41287f1bd8bd4fd82084621be4
-    commit: c6e7d06bb7049367f015dc3b124bb0a3bcabcc22
-    checks:
-      - id: global-search-mail-information-disclosure
-        root_cause: GlobalSearchView returns MailRule and MailAccount matches gated only by the global view permission (src/documents/views.py:1229, src/documents/views.py:1234), without the owner-aware object filter used for other types
-        locations:
-          - {file: src/documents/views.py, line: 1229}
-          - {file: src/documents/views.py, line: 1234}
-        change_anchors:
-          - {file: src/documents/views.py, line: 1229, side: new}
-          - {file: src/documents/views.py, line: 1234, side: new}
-  - id: diff-6d72ee7
-    kind: diff
-    base: 6730896894f3a6ee4a4f1a6c16c1e2e1936f9cf3
-    commit: 6d72ee795f2cacb72cc8fee9cc6f15acd34cbd67
-    checks:
-      - id: bulk-edit-originals-missing-permission
-        root_cause: BulkEditView's edit_pdf update_document clause (src/documents/views.py:1378) sets has_perms to the ownership result instead of AND-ing the change_document check, so owned or ownerless documents bypass it
-        locations:
-          - {file: src/documents/views.py, line: 1378}
-        change_anchors:
-          - {file: src/documents/views.py, line: 1378, side: new}
-          - {file: src/documents/views.py, line: 1371, side: new}
-      - id: edit-pdf-delete-original-missing-permission
-        root_cause: BulkEditView's delete_document check covers only delete and merge/split delete_originals, while the new edit_pdf delete_original parameter deletes the source document (src/documents/bulk_edit.py:584)
-        locations:
-          - {file: src/documents/bulk_edit.py, line: 584}
-          - {file: src/documents/views.py, line: 1397}
-        change_anchors:
-          - {file: src/documents/bulk_edit.py, line: 584, side: new}
-      - id: edit-pdf-denial-of-service
-        root_cause: edit_pdf allocates max(doc)+1 pikepdf output documents (src/documents/bulk_edit.py:528-529) from a caller-supplied per-operation doc index that _validate_parameters_edit_pdf only type-checks and never bounds
-        locations:
-          - {file: src/documents/bulk_edit.py, line: 528}
-        change_anchors:
-          - {file: src/documents/bulk_edit.py, line: 528, side: new}
-          - {file: src/documents/bulk_edit.py, line: 529, side: new}
-  - id: diff-18e0012
-    kind: diff
-    base: 2554ced1983ef846c9a49dcfbf80dc342ede0df8
-    commit: 18e0012a5932d6f0858cad585691a8cc4ae62129
-    checks:
-      - id: owned-object-update-missing-permission
-        root_cause: OwnedObjectSerializer.update applies the new grant_permissions/revoke_permissions fields with no check that the requester owns the object, so any object-level change holder can regrant it
-        locations:
-          - {file: src/documents/serialisers.py, line: 96}
-        change_anchors:
-          - {file: src/documents/serialisers.py, line: 96, side: new}
-          - {file: src/documents/serialisers.py, line: 196, side: new}
-  - id: diff-4cff907
-    kind: diff
-    base: 4b32c3228e63babe42d037e94a5e1b584122a7fb
-    commit: 4cff907ba0a5a2fd117a9bec3a0e61c1d5c8c5da
-    checks:
-      - id: tag-children-information-disclosure
-        root_cause: TagSerializer.get_children serializes obj.get_children() without a view-permission filter, so a visible parent exposes child tags the requester cannot view
-        locations:
-          - {file: src/documents/serialisers.py, line: 560}
-        change_anchors:
-          - {file: src/documents/serialisers.py, line: 560, side: new}
-          - {file: src/documents/serialisers.py, line: 561, side: new}
-      - id: tag-parent-missing-permission
-        root_cause: update_document_parent_tags (src/documents/tasks.py:528), called from perform_update, adds the parent tags to every document with the tag without checking change permission on those documents
-        locations:
-          - {file: src/documents/tasks.py, line: 528}
-          - {file: src/documents/views.py, line: 350}
-        change_anchors:
-          - {file: src/documents/tasks.py, line: 528, side: new}
-  - id: diff-2973e46
-    kind: diff
-    base: 18e0012a5932d6f0858cad585691a8cc4ae62129
-    commit: 2973e4672a612c1ac6f0c52030a35478141507df
-    checks:
-      - id: owned-object-update-missing-permission
-        root_cause: TagSerializer now exposes owner, grant_permissions and revoke_permissions, and OwnedObjectSerializer.update applies them without requiring the requester to own the tag, so any tag change holder can reassign or regrant it
-        locations:
-          - {file: src/documents/serialisers.py, line: 343}
-        change_anchors:
-          - {file: src/documents/serialisers.py, line: 343, side: new}
-      - id: tag-create-missing-owner
-        root_cause: TagViewSet does not use PassUserMixin (get_serializer_class sets user on a discarded kwargs dict), so the serializer has no user and API-created tags are saved without an owner
-        locations:
-          - {file: src/documents/views.py, line: 177}
-          - {file: src/documents/views.py, line: 186}
-        change_anchors:
-          - {file: src/documents/views.py, line: 177, side: new}
-  - id: diff-4af8070
-    kind: diff
-    base: d6d00711754087f57b297ee1529c140acc167bc8
-    commit: 4af8070450b0aa08b15b6c4ad7e795d364385447
-    checks:
-      - id: bulk-edit-merge-missing-owner
-        root_cause: merge consumes the merged document with empty DocumentMetadataOverrides when no metadata document is chosen (src/documents/bulk_edit.py:244) and never sets owner to the requesting user
-        locations:
-          - {file: src/documents/bulk_edit.py, line: 244}
-          - {file: src/documents/bulk_edit.py, symbol: merge}
-        change_anchors:
-          - {file: src/documents/bulk_edit.py, line: 243, side: new}
-          - {file: src/documents/bulk_edit.py, line: 244, side: new}
-          - {file: src/documents/bulk_edit.py, line: 247, side: new}
-      - id: bulk-edit-split-denial-of-service
-        root_cause: _validate_parameters_split expands caller-supplied a-b page ranges into full lists via range() (src/documents/serialisers.py:1017-1018) with no bound on the range size
-        locations:
-          - {file: src/documents/serialisers.py, line: 1017}
-        change_anchors:
-          - {file: src/documents/serialisers.py, line: 1017, side: new}
-          - {file: src/documents/serialisers.py, line: 1018, side: new}
   - id: diff-2353f7c
     kind: diff
     base: dcc8d4046ac7ca28d406bf4b5faa8930f17e5b16
@@ -516,29 +502,48 @@ cases:
           - {file: src/paperless_mail/views.py, line: 153}
         change_anchors:
           - {file: src/paperless_mail/views.py, line: 153, side: new}
-  - id: diff-23fefc3
+  - id: diff-6d72ee7
     kind: diff
-    base: 0beb9f0b5f3911a663850b6b687217600a85948f
-    commit: 23fefc3ab7a888bc60c1c1b435f4eca9073ba16e
+    base: 6730896894f3a6ee4a4f1a6c16c1e2e1936f9cf3
+    commit: 6d72ee795f2cacb72cc8fee9cc6f15acd34cbd67
     checks:
-      - id: mail-rule-account-idor
-        root_cause: MailRuleSerializer's AccountField keeps MailAccount.objects.all() while the diff adds per-owner mail account isolation, so rules can reference accounts the requester does not own
+      - id: bulk-edit-originals-missing-permission
+        root_cause: BulkEditView's edit_pdf update_document clause (src/documents/views.py:1378) sets has_perms to the ownership result instead of AND-ing the change_document check, so owned or ownerless documents bypass it
         locations:
-          - {file: src/paperless_mail/serialisers.py, line: 56}
+          - {file: src/documents/views.py, line: 1378}
         change_anchors:
-          - {file: src/paperless_mail/views.py, line: 30, side: new}
-      - id: mail-test-idor
-        root_cause: MailAccountTestView loads any MailAccount's stored password by request id (src/paperless_mail/views.py:58) without an owner or object-permission filter, bypassing the per-owner account isolation the diff adds
+          - {file: src/documents/views.py, line: 1371, side: new}
+          - {file: src/documents/views.py, line: 1378, side: new}
+      - id: edit-pdf-delete-original-missing-permission
+        root_cause: BulkEditView's delete_document check covers only delete and merge/split delete_originals, while the new edit_pdf delete_original parameter deletes the source document (src/documents/bulk_edit.py:584)
         locations:
-          - {file: src/paperless_mail/views.py, line: 58}
-          - {file: src/paperless_mail/views.py, symbol: MailAccountTestView}
+          - {file: src/documents/bulk_edit.py, line: 584}
+          - {file: src/documents/views.py, line: 1397}
         change_anchors:
-          - {file: src/paperless_mail/views.py, line: 29, side: new}
-          - {file: src/paperless_mail/views.py, line: 30, side: new}
-      - id: mail-test-missing-permission
-        root_cause: MailAccountTestView keeps permission_classes IsAuthenticated only (src/paperless_mail/views.py:44) while the diff gates the mail viewsets with model permissions, so users lacking mail-account permission can call it
+          - {file: src/documents/bulk_edit.py, line: 584, side: new}
+      - id: edit-pdf-denial-of-service
+        root_cause: edit_pdf allocates max(doc)+1 pikepdf output documents (src/documents/bulk_edit.py:528-529) from a caller-supplied per-operation doc index that _validate_parameters_edit_pdf only type-checks and never bounds
         locations:
-          - {file: src/paperless_mail/views.py, line: 44}
-          - {file: src/paperless_mail/views.py, symbol: MailAccountTestView}
+          - {file: src/documents/bulk_edit.py, line: 528}
         change_anchors:
-          - {file: src/paperless_mail/views.py, line: 29, side: new}
+          - {file: src/documents/bulk_edit.py, line: 528, side: new}
+          - {file: src/documents/bulk_edit.py, line: 529, side: new}
+  - id: diff-4cff907
+    kind: diff
+    base: 4b32c3228e63babe42d037e94a5e1b584122a7fb
+    commit: 4cff907ba0a5a2fd117a9bec3a0e61c1d5c8c5da
+    checks:
+      - id: tag-children-information-disclosure
+        root_cause: TagSerializer.get_children serializes obj.get_children() without a view-permission filter, so a visible parent exposes child tags the requester cannot view
+        locations:
+          - {file: src/documents/serialisers.py, line: 560}
+        change_anchors:
+          - {file: src/documents/serialisers.py, line: 560, side: new}
+          - {file: src/documents/serialisers.py, line: 561, side: new}
+      - id: tag-parent-missing-permission
+        root_cause: update_document_parent_tags (src/documents/tasks.py:528), called from perform_update, adds the parent tags to every document with the tag without checking change permission on those documents
+        locations:
+          - {file: src/documents/tasks.py, line: 528}
+          - {file: src/documents/views.py, line: 350}
+        change_anchors:
+          - {file: src/documents/tasks.py, line: 528, side: new}

@@ -6,7 +6,10 @@ import argparse
 import contextlib
 import json
 import re
+import signal
 import sys
+import threading
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -254,6 +257,10 @@ def _initialize_review_attempt(args: argparse.Namespace, *, source_stack: contex
         snapshot, source = _acquire_source(target, source_stack)
         attempt.bind_snapshot(snapshot)
         attempt.bind_contract(ContractReceipt.capture())
+    except KeyboardInterrupt:
+        with contextlib.suppress(BaseException):
+            attempt.interrupt()
+        raise
     except BaseException as exc:
         with contextlib.suppress(BaseException):
             attempt.fail(exc)
@@ -422,13 +429,29 @@ def _cmd_install_slash_command(args) -> int:
     return 0
 
 
+def _interrupt_on_terminate(_signum: int, _frame: object) -> None:
+    raise KeyboardInterrupt
+
+
+@contextlib.contextmanager
+def _terminate_as_interrupt() -> Iterator[None]:
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.signal(signal.SIGTERM, _interrupt_on_terminate)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     if args.command == "install-slash-command":
         return _cmd_install_slash_command(args)
     if args.command != "review":
         parser.print_help()
         return 1
-    with contextlib.ExitStack() as source_stack:
+    with _terminate_as_interrupt(), contextlib.ExitStack() as source_stack:
         run = _initialize_review_attempt(args, source_stack=source_stack)
         attempt = run.attempt
         try:

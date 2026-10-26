@@ -9,11 +9,11 @@ cases:
       - id: auction-clearable-head-accounting-error
         root_cause: RevertsHelper._revertIfAuctionClearable inspects only auctions_.head (src/libraries/helpers/RevertsHelper.sol:51, src/libraries/helpers/RevertsHelper.sol:57) while Auctions.settlePoolDebt lets any queued auction whose collateral was fully taken settle immediately (src/libraries/external/Auctions.sol:215), so while the older head auction is not yet clearable ERC20Pool.removeCollateral and ERC721Pool.removeCollateral (src/ERC20Pool.sol:322, src/ERC721Pool.sol:322), which have no debt lock, let LP holders redeem bucket collateral at the pre-forgiveness exchange rate before settlement forgives that bucket's deposit and leaves the loss to the remaining LP holders
         locations:
-          - {file: src/libraries/helpers/RevertsHelper.sol, line: 51}
-          - {file: src/libraries/helpers/RevertsHelper.sol, line: 57}
-          - {file: src/libraries/external/Auctions.sol, line: 215}
           - {file: src/ERC20Pool.sol, line: 322}
           - {file: src/ERC721Pool.sol, line: 322}
+          - {file: src/libraries/external/Auctions.sol, line: 215}
+          - {file: src/libraries/helpers/RevertsHelper.sol, line: 51}
+          - {file: src/libraries/helpers/RevertsHelper.sol, line: 57}
       - id: auction-loan-heap-denial-of-service
         root_cause: BorrowerActions.drawDebt and BorrowerActions.repayDebt read the borrower's auction state only when collateral is pledged or debt is repaid (src/libraries/external/BorrowerActions.sol:129, src/libraries/external/BorrowerActions.sol:281) and otherwise call Loans.update with inAuction false (src/libraries/external/BorrowerActions.sol:208, src/libraries/external/BorrowerActions.sol:347), so a zero-amount call for any borrower reinserts an auctioned loan into the loan heap (src/libraries/internal/Loans.sol:102) whose threshold price then fails the HTP check in removeQuoteToken (src/libraries/external/LenderActions.sol:352) and the max loan selection in kickWithDeposit (src/libraries/external/Auctions.sol:422)
         locations:
@@ -24,10 +24,10 @@ cases:
       - id: claimable-bond-reserves-accounting-error
         root_cause: Auctions._removeAuction moves a settled auction's bond into the kicker's claimable balance and subtracts it from auctions_.totalBondEscrowed (src/libraries/external/Auctions.sol:1247, src/libraries/external/Auctions.sol:1253) while the bond stays in the pool's quote balance until withdrawBonds (src/base/Pool.sol:323), so _claimableReserves (src/libraries/helpers/PoolHelper.sol:270, src/libraries/helpers/PoolHelper.sol:272) counts unwithdrawn kicker bonds as reserves that anyone can put up for a reserve auction and buy with AJNA (src/base/Pool.sol:343, src/base/Pool.sol:372), leaving kickers' bond withdrawals to be paid from lender deposits
         locations:
+          - {file: src/base/Pool.sol, line: 323}
           - {file: src/libraries/external/Auctions.sol, line: 1247}
           - {file: src/libraries/external/Auctions.sol, line: 1253}
           - {file: src/libraries/helpers/PoolHelper.sol, line: 272}
-          - {file: src/base/Pool.sol, line: 323}
       - id: cryptopunks-deposit-front-running
         root_cause: ERC721Pool._transferFromSenderToPool acquires a CryptoPunk with buyPunk(tokenId) (src/ERC721Pool.sol:577) without checking that msg.sender owns it, so the punk an owner offered to the pool is credited to whichever caller pledges or adds it first
         locations:
@@ -49,15 +49,15 @@ cases:
       - id: kick-with-deposit-lup-pricing-error
         root_cause: Auctions.kickWithDeposit compares the kicker's bucket price (src/libraries/external/Auctions.sol:437) with a LUP computed with the kicker's deposit added to pool debt (src/libraries/external/Auctions.sol:787, src/libraries/external/Auctions.sol:430), so a deposit below the real LUP kicks a loan that was not undercollateralized
         locations:
+          - {file: src/libraries/external/Auctions.sol, line: 430}
           - {file: src/libraries/external/Auctions.sol, line: 437}
           - {file: src/libraries/external/Auctions.sol, line: 787}
-          - {file: src/libraries/external/Auctions.sol, line: 430}
       - id: lp-transfer-denial-of-service
         root_cause: LenderActions.transferLPs reverts unless the approved amount equals the owner's entire LP balance (src/libraries/external/LenderActions.sol:538), so any change to that balance, including PositionManager holding several positions in one bucket, blocks the transfer that PositionManager.reedemPositions performs (src/PositionManager.sol:303, src/PositionManager.sol:311)
         locations:
-          - {file: src/libraries/external/LenderActions.sol, line: 538}
           - {file: src/PositionManager.sol, line: 303}
           - {file: src/PositionManager.sol, line: 311}
+          - {file: src/libraries/external/LenderActions.sol, line: 538}
       - id: lp-transfer-missing-permission
         root_cause: Pool.transferLPs accepts any caller (src/base/Pool.sol:238), so a third party executes an owner's LP approval to PositionManager outside memorializePositions and the LPs reach PositionManager without being credited to any position
         locations:
@@ -69,11 +69,11 @@ cases:
       - id: nft-take-remaining-collateral-accounting-error
         root_cause: Auctions.take and Auctions.bucketTake never set result_.remainingCollateral (src/libraries/external/Auctions.sol:583, src/libraries/external/Auctions.sol:517) while Auctions._takeLoan writes the collateral left after settlement only to the borrower record (src/libraries/external/Auctions.sol:1034), so ERC721Pool.take and bucketTake call _rebalanceTokens with zero (src/ERC721Pool.sol:460, src/ERC721Pool.sol:517) and move all of the borrower's NFTs out of the borrower's token list
         locations:
-          - {file: src/libraries/external/Auctions.sol, line: 583}
-          - {file: src/libraries/external/Auctions.sol, line: 517}
-          - {file: src/libraries/external/Auctions.sol, line: 1034}
           - {file: src/ERC721Pool.sol, line: 460}
           - {file: src/ERC721Pool.sol, line: 517}
+          - {file: src/libraries/external/Auctions.sol, line: 517}
+          - {file: src/libraries/external/Auctions.sol, line: 583}
+          - {file: src/libraries/external/Auctions.sol, line: 1034}
       - id: position-bankrupt-lps-accounting-error
         root_cause: PositionManager records each token's LPs in positionLPs (src/PositionManager.sol:161) and lets moveLiquidity move quote tokens against that record (src/PositionManager.sol:232, src/PositionManager.sol:259) without checking whether the bucket went bankrupt after memorialization, so a position whose LPs a bankruptcy wiped moves the LPs that later memorializations placed in PositionManager's shared balance
         locations:
@@ -87,16 +87,16 @@ cases:
       - id: pull-collateral-lup-pricing-error
         root_cause: BorrowerActions.drawDebt lets a borrower pull collateral down to the amount the current LUP encumbers (src/libraries/external/BorrowerActions.sol:321, src/libraries/external/BorrowerActions.sol:323), and a LUP raised by deposit in a bucket priced far above the market satisfies that check, so a loan left undercollateralized at the market price is kicked and Auctions.settlePoolDebt pays its remaining debt from pool reserves (src/libraries/external/Auctions.sol:280)
         locations:
+          - {file: src/libraries/external/Auctions.sol, line: 280}
           - {file: src/libraries/external/BorrowerActions.sol, line: 321}
           - {file: src/libraries/external/BorrowerActions.sol, line: 323}
-          - {file: src/libraries/external/Auctions.sol, line: 280}
       - id: rewards-cap-denial-of-service
         root_cause: RewardsManager keys rewardsClaimed and updateRewardsClaimed by epoch across all pools (src/RewardsManager.sol:70, src/RewardsManager.sol:71) while each cap is computed per pool, so rewardsCap - rewardsClaimedInEpoch (src/RewardsManager.sol:611, src/RewardsManager.sol:437) underflows once other pools' claims exceed a pool's cap and reverts claims, stakes, and unstakes for that pool
         locations:
           - {file: src/RewardsManager.sol, line: 70}
           - {file: src/RewardsManager.sol, line: 71}
-          - {file: src/RewardsManager.sol, line: 611}
           - {file: src/RewardsManager.sol, line: 437}
+          - {file: src/RewardsManager.sol, line: 611}
       - id: rewards-update-pool-missing-permission
         root_cause: RewardsManager.updateBucketExchangeRatesAndClaim (src/RewardsManager.sol:210) accepts an arbitrary pool_ and computes the AJNA reward from that contract's currentBurnEpoch and accumulators (src/RewardsManager.sol:562, src/RewardsManager.sol:585) without checking that it is an Ajna pool, so the reward paid from the manager's balance is set by an untrusted contract
         locations:
@@ -130,6 +130,131 @@ cases:
         locations:
           - {file: src/libraries/external/LenderActions.sol, line: 545}
           - {file: src/libraries/external/LenderActions.sol, line: 547}
+  - id: diff-36dcaa4
+    kind: diff
+    base: ae2d12f8833edf76b1a41f95d38b1db804185fa1
+    commit: 36dcaa471cf7b02e14e0d8706e65a7fd0a140db0
+    checks:
+      - id: interest-rate-collateral-accounting-error
+        root_cause: The new ERC20Pool.updateInterestRate scales the rate by actual minus target utilization (src/ERC20Pool.sol:298) where target utilization is the inverse of total collateral over encumbered collateral, so collateral added far beyond any debt lowers target utilization and raises the rate every borrower pays
+        locations:
+          - {file: src/ERC20Pool.sol, line: 298}
+        change_anchors:
+          - {file: src/ERC20Pool.sol, line: 298, side: new}
+      - id: interest-rate-update-accounting-error
+        root_cause: The new ERC20Pool.updateInterestRate lets any caller multiply the rate by one plus the utilization gap once per block (src/ERC20Pool.sol:291, src/ERC20Pool.sol:293, src/ERC20Pool.sol:296), so repeated calls compound the borrowing rate independent of elapsed time
+        locations:
+          - {file: src/ERC20Pool.sol, line: 291}
+          - {file: src/ERC20Pool.sol, line: 293}
+          - {file: src/ERC20Pool.sol, line: 296}
+        change_anchors:
+          - {file: src/ERC20Pool.sol, line: 291, side: new}
+          - {file: src/ERC20Pool.sol, line: 293, side: new}
+          - {file: src/ERC20Pool.sol, line: 296, side: new}
+  - id: diff-9f84664
+    kind: diff
+    base: 7a95c2fec5e75449b4744421a7e37ff851b925dc
+    commit: 9f84664c2b4ebf0adab7ebbda9300faa3c2d52d3
+    checks:
+      - id: lp-transfer-denial-of-service
+        root_cause: ScaledPool.transferLPTokens now reverts unless the approved amount equals the owner's entire LP balance (src/base/ScaledPool.sol:204) while PositionManager.memorializePositions pools every position's LPs in one PositionManager balance (src/base/PositionManager.sol:93) and reedemPositions approves only one token's LPs before transferring (src/base/PositionManager.sol:140, src/base/PositionManager.sol:150), so another memorialization in the same bucket blocks redemption
+        locations:
+          - {file: src/base/PositionManager.sol, line: 93}
+          - {file: src/base/PositionManager.sol, line: 140}
+          - {file: src/base/PositionManager.sol, line: 150}
+          - {file: src/base/ScaledPool.sol, line: 204}
+        change_anchors:
+          - {file: src/base/PositionManager.sol, line: 93, side: new}
+          - {file: src/base/PositionManager.sol, line: 140, side: new}
+          - {file: src/base/PositionManager.sol, line: 150, side: new}
+          - {file: src/base/ScaledPool.sol, line: 204, side: new}
+  - id: diff-d60225c
+    kind: diff
+    base: 29bfd5829ff85ade3cc859412b44c48f7b062fc5
+    commit: d60225cf8343490ffb6244239098f81f221401e7
+    checks:
+      - id: auction-clearable-guard-accounting-error
+        root_cause: The commit adds the Auctions.revertIfAuctionClearable check to removeAllQuoteToken, removeQuoteToken, and _removeCollateral (src/base/Pool.sol:148, src/base/Pool.sol:178, src/base/Pool.sol:555) but not to Pool.moveQuoteToken (src/base/Pool.sol:96), ERC20Pool.moveCollateral (src/erc20/ERC20Pool.sol:81), or ERC20Pool.removeAllCollateral (src/erc20/ERC20Pool.sol:112), so deposit and collateral leave the buckets that heal forgives before a clearable auction settles its bad debt against them
+        locations:
+          - {file: src/base/Pool.sol, line: 96}
+          - {file: src/erc20/ERC20Pool.sol, line: 81}
+          - {file: src/erc20/ERC20Pool.sol, line: 112}
+        change_anchors:
+          - {file: src/base/Pool.sol, line: 148, side: new}
+          - {file: src/base/Pool.sol, line: 178, side: new}
+          - {file: src/base/Pool.sol, line: 555, side: new}
+      - id: auction-clearable-head-accounting-error
+        root_cause: The new Auctions.revertIfAuctionClearable inspects only self.head (src/libraries/Auctions.sol:377, src/libraries/Auctions.sol:385) while the new Auctions.heal lets any queued auction with debt and no remaining collateral heal immediately (src/libraries/Auctions.sol:89), so while the older head auction is not yet clearable removeAllQuoteToken, removeQuoteToken, and _removeCollateral (src/base/Pool.sol:148, src/base/Pool.sol:178, src/base/Pool.sol:555) let depositors leave the buckets that heal forgives and shift the bad debt to the remaining lenders
+        locations:
+          - {file: src/libraries/Auctions.sol, line: 89}
+          - {file: src/libraries/Auctions.sol, line: 377}
+          - {file: src/libraries/Auctions.sol, line: 385}
+        change_anchors:
+          - {file: src/libraries/Auctions.sol, line: 89, side: new}
+          - {file: src/libraries/Auctions.sol, line: 377, side: new}
+          - {file: src/libraries/Auctions.sol, line: 378, side: new}
+          - {file: src/libraries/Auctions.sol, line: 385, side: new}
+      - id: position-bankrupt-lps-accounting-error
+        root_cause: PositionManager records each token's LPs in lps (src/base/PositionManager.sol:84) and moveLiquidity moves quote tokens against that record (src/base/PositionManager.sol:113, src/base/PositionManager.sol:124) without checking whether the bucket went bankrupt after memorialization, which the new Auctions.heal can now cause (src/libraries/Auctions.sol:128), so a position whose LPs a bankruptcy wiped moves the LPs that later memorializations placed in PositionManager's shared balance
+        locations:
+          - {file: src/base/PositionManager.sol, line: 84}
+          - {file: src/base/PositionManager.sol, line: 113}
+          - {file: src/base/PositionManager.sol, line: 124}
+        change_anchors:
+          - {file: src/libraries/Auctions.sol, line: 128, side: new}
+          - {file: src/libraries/Buckets.sol, line: 250, side: new}
+      - id: settle-dust-deposit-denial-of-service
+        root_cause: The new Auctions.heal consumes one bucket per bucketDepth_ step (src/libraries/Auctions.sol:93, src/libraries/Auctions.sol:140) while Pool.addQuoteToken accepts a deposit of any size in any bucket (src/base/Pool.sol:67), so dust buckets added above the highest priced bucket delay heal from writing off bad debt
+        locations:
+          - {file: src/base/Pool.sol, line: 67}
+          - {file: src/libraries/Auctions.sol, line: 93}
+          - {file: src/libraries/Auctions.sol, line: 140}
+        change_anchors:
+          - {file: src/libraries/Auctions.sol, line: 93, side: new}
+          - {file: src/libraries/Auctions.sol, line: 140, side: new}
+      - id: settle-reserves-accounting-error
+        root_cause: Pool.heal adds the raw quote token balanceOf (src/base/Pool.sol:375) to WAD-scaled pool debt before subtracting WAD-scaled deposits, bonds, and unclaimed reserves (src/base/Pool.sol:376) without applying the quote token scale, so for quote tokens with fewer than 18 decimals the reserves computation underflows and heal reverts, which leaves clearable auctions unsettled and lender removals blocked
+        locations:
+          - {file: src/base/Pool.sol, line: 375}
+          - {file: src/base/Pool.sol, line: 376}
+        change_anchors:
+          - {file: src/base/Pool.sol, line: 375, side: new}
+          - {file: src/base/Pool.sol, line: 376, side: new}
+      - id: transfer-lps-bankrupt-balance-accounting-error
+        root_cause: Buckets.transferLPs adds the transferred LPs to the receiver's balance and raises the receiver's depositTime (src/libraries/Buckets.sol:187, src/libraries/Buckets.sol:188) without first clearing a balance recorded before the bucket's bankruptcy, as Buckets.addQuoteToken does (src/libraries/Buckets.sol:60), so LPs wiped when Auctions.heal bankrupts the bucket (src/libraries/Auctions.sol:128) become redeemable against later depositors' funds
+        locations:
+          - {file: src/libraries/Buckets.sol, line: 187}
+          - {file: src/libraries/Buckets.sol, line: 188}
+        change_anchors:
+          - {file: src/libraries/Auctions.sol, line: 128, side: new}
+          - {file: src/libraries/Buckets.sol, line: 187, side: new}
+          - {file: src/libraries/Buckets.sol, line: 188, side: new}
+  - id: diff-9bae5e8
+    kind: diff
+    base: 2ef3ecbb5cf579a5763f344057285e76a29d839d
+    commit: 9bae5e81a03c7d28ee760b03d988651ace6539e9
+    checks:
+      - id: claimable-bond-reserves-accounting-error
+        root_cause: The new subtraction of the bond from self.totalBondEscrowed in Auctions._removeAuction (src/libraries/Auctions.sol:329) runs after the bond is credited to kicker.claimable (src/libraries/Auctions.sol:326) while the tokens stay in the pool, so PoolUtils.claimableReserves (src/libraries/PoolUtils.sol:29, src/libraries/PoolUtils.sol:30) as called from startClaimableReserveAuction (src/base/Pool.sol:440) counts kickers' claimable bonds as reserves that anyone can auction off for AJNA at the expense of lenders
+        locations:
+          - {file: src/base/Pool.sol, line: 440}
+          - {file: src/libraries/Auctions.sol, line: 326}
+          - {file: src/libraries/Auctions.sol, line: 329}
+          - {file: src/libraries/PoolUtils.sol, line: 30}
+        change_anchors:
+          - {file: src/libraries/Auctions.sol, line: 329, side: new}
+  - id: diff-37dfe37
+    kind: diff
+    base: 857428442e7b1568fb2d702a1c694ce08b6acda5
+    commit: 37dfe37b63b1b574af81ac7c192b6d44bbc3d226
+    checks:
+      - id: settle-auction-boundary-accounting-error
+        root_cause: The new Auctions.settle allows settlement once block.timestamp - kickTime reaches exactly 72 hours (src/libraries/Auctions.sol:99) while revertIfAuctionClearable still allows deposit removal at that instant (src/libraries/Auctions.sol:512), so a depositor removes deposit and settles in one block and leaves the bad debt to others
+        locations:
+          - {file: src/libraries/Auctions.sol, line: 99}
+          - {file: src/libraries/Auctions.sol, line: 512}
+        change_anchors:
+          - {file: src/libraries/Auctions.sol, line: 99, side: new}
   - id: diff-4c270d1
     kind: diff
     base: 4d5142c884e9e5f9be9a7ccb0616b1502b216c96
@@ -229,18 +354,6 @@ cases:
           - {file: src/AjnaRewards.sol, line: 367, side: new}
           - {file: src/AjnaRewards.sol, line: 411, side: new}
           - {file: src/AjnaRewards.sol, line: 426, side: new}
-  - id: diff-37dfe37
-    kind: diff
-    base: 857428442e7b1568fb2d702a1c694ce08b6acda5
-    commit: 37dfe37b63b1b574af81ac7c192b6d44bbc3d226
-    checks:
-      - id: settle-auction-boundary-accounting-error
-        root_cause: The new Auctions.settle allows settlement once block.timestamp - kickTime reaches exactly 72 hours (src/libraries/Auctions.sol:99) while revertIfAuctionClearable still allows deposit removal at that instant (src/libraries/Auctions.sol:512), so a depositor removes deposit and settles in one block and leaves the bad debt to others
-        locations:
-          - {file: src/libraries/Auctions.sol, line: 99}
-          - {file: src/libraries/Auctions.sol, line: 512}
-        change_anchors:
-          - {file: src/libraries/Auctions.sol, line: 99, side: new}
   - id: diff-fed66b3
     kind: diff
     base: fd33630cfd0072b15ac85de6616b52312a402ecd
@@ -267,116 +380,3 @@ cases:
         change_anchors:
           - {file: src/PositionManager.sol, line: 305, side: new}
           - {file: src/PositionManager.sol, line: 307, side: new}
-  - id: diff-d60225c
-    kind: diff
-    base: 29bfd5829ff85ade3cc859412b44c48f7b062fc5
-    commit: d60225cf8343490ffb6244239098f81f221401e7
-    checks:
-      - id: auction-clearable-guard-accounting-error
-        root_cause: The commit adds the Auctions.revertIfAuctionClearable check to removeAllQuoteToken, removeQuoteToken, and _removeCollateral (src/base/Pool.sol:148, src/base/Pool.sol:178, src/base/Pool.sol:555) but not to Pool.moveQuoteToken (src/base/Pool.sol:96), ERC20Pool.moveCollateral (src/erc20/ERC20Pool.sol:81), or ERC20Pool.removeAllCollateral (src/erc20/ERC20Pool.sol:112), so deposit and collateral leave the buckets that heal forgives before a clearable auction settles its bad debt against them
-        locations:
-          - {file: src/base/Pool.sol, line: 96}
-          - {file: src/erc20/ERC20Pool.sol, line: 81}
-          - {file: src/erc20/ERC20Pool.sol, line: 112}
-        change_anchors:
-          - {file: src/base/Pool.sol, line: 148, side: new}
-          - {file: src/base/Pool.sol, line: 178, side: new}
-          - {file: src/base/Pool.sol, line: 555, side: new}
-      - id: auction-clearable-head-accounting-error
-        root_cause: The new Auctions.revertIfAuctionClearable inspects only self.head (src/libraries/Auctions.sol:377, src/libraries/Auctions.sol:385) while the new Auctions.heal lets any queued auction with debt and no remaining collateral heal immediately (src/libraries/Auctions.sol:89), so while the older head auction is not yet clearable removeAllQuoteToken, removeQuoteToken, and _removeCollateral (src/base/Pool.sol:148, src/base/Pool.sol:178, src/base/Pool.sol:555) let depositors leave the buckets that heal forgives and shift the bad debt to the remaining lenders
-        locations:
-          - {file: src/libraries/Auctions.sol, line: 377}
-          - {file: src/libraries/Auctions.sol, line: 385}
-          - {file: src/libraries/Auctions.sol, line: 89}
-        change_anchors:
-          - {file: src/libraries/Auctions.sol, line: 377, side: new}
-          - {file: src/libraries/Auctions.sol, line: 378, side: new}
-          - {file: src/libraries/Auctions.sol, line: 385, side: new}
-          - {file: src/libraries/Auctions.sol, line: 89, side: new}
-      - id: position-bankrupt-lps-accounting-error
-        root_cause: PositionManager records each token's LPs in lps (src/base/PositionManager.sol:84) and moveLiquidity moves quote tokens against that record (src/base/PositionManager.sol:113, src/base/PositionManager.sol:124) without checking whether the bucket went bankrupt after memorialization, which the new Auctions.heal can now cause (src/libraries/Auctions.sol:128), so a position whose LPs a bankruptcy wiped moves the LPs that later memorializations placed in PositionManager's shared balance
-        locations:
-          - {file: src/base/PositionManager.sol, line: 84}
-          - {file: src/base/PositionManager.sol, line: 113}
-          - {file: src/base/PositionManager.sol, line: 124}
-        change_anchors:
-          - {file: src/libraries/Auctions.sol, line: 128, side: new}
-          - {file: src/libraries/Buckets.sol, line: 250, side: new}
-      - id: settle-dust-deposit-denial-of-service
-        root_cause: The new Auctions.heal consumes one bucket per bucketDepth_ step (src/libraries/Auctions.sol:93, src/libraries/Auctions.sol:140) while Pool.addQuoteToken accepts a deposit of any size in any bucket (src/base/Pool.sol:67), so dust buckets added above the highest priced bucket delay heal from writing off bad debt
-        locations:
-          - {file: src/libraries/Auctions.sol, line: 93}
-          - {file: src/libraries/Auctions.sol, line: 140}
-          - {file: src/base/Pool.sol, line: 67}
-        change_anchors:
-          - {file: src/libraries/Auctions.sol, line: 93, side: new}
-          - {file: src/libraries/Auctions.sol, line: 140, side: new}
-      - id: settle-reserves-accounting-error
-        root_cause: Pool.heal adds the raw quote token balanceOf (src/base/Pool.sol:375) to WAD-scaled pool debt before subtracting WAD-scaled deposits, bonds, and unclaimed reserves (src/base/Pool.sol:376) without applying the quote token scale, so for quote tokens with fewer than 18 decimals the reserves computation underflows and heal reverts, which leaves clearable auctions unsettled and lender removals blocked
-        locations:
-          - {file: src/base/Pool.sol, line: 375}
-          - {file: src/base/Pool.sol, line: 376}
-        change_anchors:
-          - {file: src/base/Pool.sol, line: 375, side: new}
-          - {file: src/base/Pool.sol, line: 376, side: new}
-      - id: transfer-lps-bankrupt-balance-accounting-error
-        root_cause: Buckets.transferLPs adds the transferred LPs to the receiver's balance and raises the receiver's depositTime (src/libraries/Buckets.sol:187, src/libraries/Buckets.sol:188) without first clearing a balance recorded before the bucket's bankruptcy, as Buckets.addQuoteToken does (src/libraries/Buckets.sol:60), so LPs wiped when Auctions.heal bankrupts the bucket (src/libraries/Auctions.sol:128) become redeemable against later depositors' funds
-        locations:
-          - {file: src/libraries/Buckets.sol, line: 187}
-          - {file: src/libraries/Buckets.sol, line: 188}
-        change_anchors:
-          - {file: src/libraries/Buckets.sol, line: 187, side: new}
-          - {file: src/libraries/Buckets.sol, line: 188, side: new}
-          - {file: src/libraries/Auctions.sol, line: 128, side: new}
-  - id: diff-9f84664
-    kind: diff
-    base: 7a95c2fec5e75449b4744421a7e37ff851b925dc
-    commit: 9f84664c2b4ebf0adab7ebbda9300faa3c2d52d3
-    checks:
-      - id: lp-transfer-denial-of-service
-        root_cause: ScaledPool.transferLPTokens now reverts unless the approved amount equals the owner's entire LP balance (src/base/ScaledPool.sol:204) while PositionManager.memorializePositions pools every position's LPs in one PositionManager balance (src/base/PositionManager.sol:93) and reedemPositions approves only one token's LPs before transferring (src/base/PositionManager.sol:140, src/base/PositionManager.sol:150), so another memorialization in the same bucket blocks redemption
-        locations:
-          - {file: src/base/ScaledPool.sol, line: 204}
-          - {file: src/base/PositionManager.sol, line: 93}
-          - {file: src/base/PositionManager.sol, line: 140}
-          - {file: src/base/PositionManager.sol, line: 150}
-        change_anchors:
-          - {file: src/base/ScaledPool.sol, line: 204, side: new}
-          - {file: src/base/PositionManager.sol, line: 93, side: new}
-          - {file: src/base/PositionManager.sol, line: 140, side: new}
-          - {file: src/base/PositionManager.sol, line: 150, side: new}
-  - id: diff-36dcaa4
-    kind: diff
-    base: ae2d12f8833edf76b1a41f95d38b1db804185fa1
-    commit: 36dcaa471cf7b02e14e0d8706e65a7fd0a140db0
-    checks:
-      - id: interest-rate-collateral-accounting-error
-        root_cause: The new ERC20Pool.updateInterestRate scales the rate by actual minus target utilization (src/ERC20Pool.sol:298) where target utilization is the inverse of total collateral over encumbered collateral, so collateral added far beyond any debt lowers target utilization and raises the rate every borrower pays
-        locations:
-          - {file: src/ERC20Pool.sol, line: 298}
-        change_anchors:
-          - {file: src/ERC20Pool.sol, line: 298, side: new}
-      - id: interest-rate-update-accounting-error
-        root_cause: The new ERC20Pool.updateInterestRate lets any caller multiply the rate by one plus the utilization gap once per block (src/ERC20Pool.sol:291, src/ERC20Pool.sol:293, src/ERC20Pool.sol:296), so repeated calls compound the borrowing rate independent of elapsed time
-        locations:
-          - {file: src/ERC20Pool.sol, line: 291}
-          - {file: src/ERC20Pool.sol, line: 293}
-          - {file: src/ERC20Pool.sol, line: 296}
-        change_anchors:
-          - {file: src/ERC20Pool.sol, line: 291, side: new}
-          - {file: src/ERC20Pool.sol, line: 293, side: new}
-          - {file: src/ERC20Pool.sol, line: 296, side: new}
-  - id: diff-9bae5e8
-    kind: diff
-    base: 2ef3ecbb5cf579a5763f344057285e76a29d839d
-    commit: 9bae5e81a03c7d28ee760b03d988651ace6539e9
-    checks:
-      - id: claimable-bond-reserves-accounting-error
-        root_cause: The new subtraction of the bond from self.totalBondEscrowed in Auctions._removeAuction (src/libraries/Auctions.sol:329) runs after the bond is credited to kicker.claimable (src/libraries/Auctions.sol:326) while the tokens stay in the pool, so PoolUtils.claimableReserves (src/libraries/PoolUtils.sol:29, src/libraries/PoolUtils.sol:30) as called from startClaimableReserveAuction (src/base/Pool.sol:440) counts kickers' claimable bonds as reserves that anyone can auction off for AJNA at the expense of lenders
-        locations:
-          - {file: src/libraries/Auctions.sol, line: 329}
-          - {file: src/libraries/Auctions.sol, line: 326}
-          - {file: src/libraries/PoolUtils.sol, line: 30}
-          - {file: src/base/Pool.sol, line: 440}
-        change_anchors:
-          - {file: src/libraries/Auctions.sol, line: 329, side: new}

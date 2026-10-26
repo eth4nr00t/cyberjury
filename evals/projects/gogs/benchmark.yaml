@@ -28,6 +28,11 @@ cases:
           - {file: internal/cmd/web.go, line: 335}
           - {file: internal/context/context.go, line: 266}
           - {file: internal/database/attachment.go, line: 73}
+      - id: avatar-upload-memory-denial-of-service
+        root_cause: The avatar form binding sets no size limit (internal/cmd/web.go:211) and UpdateAvatarSetting reads the whole uploaded file into memory with io.ReadAll before any type or size check (internal/route/user/setting.go:150), so any signed-in user exhausts server memory with a huge upload
+        locations:
+          - {file: internal/cmd/web.go, line: 211}
+          - {file: internal/route/user/setting.go, line: 150}
       - id: backup-restore-denial-of-service
         root_cause: The database restore reads each table with a default bufio.Scanner (internal/database/backup.go:270) and never checks scanner.Err() before reporting success (internal/database/backup.go:314), so one user-created record whose JSON line exceeds 64 KiB silently drops it and every later row of its table on restore
         locations:
@@ -44,6 +49,11 @@ cases:
         locations:
           - {file: internal/database/repo_collaboration.go, symbol: Repository.ChangeCollaborationAccessMode}
           - {file: internal/route/repo/setting.go, symbol: ChangeCollaborationAccessMode}
+      - id: collaboration-team-mode-privilege-escalation
+        root_cause: ChangeCollaborationAccessMode raises the collaborator mode to the highest Authorize of every organization team the user belongs to (internal/database/repo_collaboration.go:151, internal/database/repo_collaboration.go:156) without checking that the team has this repository, so a read collaborator who is admin in an unrelated team receives admin on the repository
+        locations:
+          - {file: internal/database/repo_collaboration.go, line: 151}
+          - {file: internal/database/repo_collaboration.go, line: 156}
       - id: comment-attachment-idor
         root_cause: createComment loads each submitted attachment by UUID alone (internal/database/comment.go:226) and overwrites its issue and comment ids (internal/database/comment.go:238) without checking that it is unattached or owned by the actor, so a commenter detaches attachments of other issues and deletes them with the comment
         locations:
@@ -73,9 +83,9 @@ cases:
       - id: draft-release-information-disclosure
         root_cause: Releases and the v1 Releases API load draft releases with GetDraftReleasesByRepoID and return them to every reader without a writer-access check (internal/route/repo/release.go:116, internal/route/api/v1/repo/repo.go:454), so unpublished draft notes and attachments reach readers including anonymous users on public repositories
         locations:
+          - {file: internal/route/api/v1/repo/repo.go, line: 454}
           - {file: internal/route/repo/release.go, line: 116}
           - {file: internal/route/repo/release.go, line: 137}
-          - {file: internal/route/api/v1/repo/repo.go, line: 454}
       - id: email-lookup-information-disclosure
         root_cause: Email2User is registered without the sign-in Toggle (internal/cmd/web.go:250) and resolves any submitted email to its account via GetByEmail (internal/route/user/home.go:443), so an unauthenticated client confirms which email addresses own accounts even when sign-in is required to view
         locations:
@@ -86,6 +96,11 @@ cases:
         locations:
           - {file: internal/database/users.go, line: 122}
           - {file: internal/database/users.go, line: 128}
+      - id: forgot-password-information-disclosure
+        root_cause: ForgotPasswdPost answers unknown emails with the reset-sent page but answers registered non-local accounts with a 403 (internal/route/user/auth.go:570) and repeat requests for local accounts with the resend-limited page (internal/route/user/auth.go:576), so an unauthenticated client learns which emails own accounts
+        locations:
+          - {file: internal/route/user/auth.go, line: 570}
+          - {file: internal/route/user/auth.go, line: 576}
       - id: fork-list-information-disclosure
         root_cause: The v1 ListForks returns every fork from GetForks (internal/database/repo.go:2617, internal/route/api/v1/repo/repo.go:371) without filtering by the caller's access, so readers of the base repository see metadata of private forks
         locations:
@@ -116,11 +131,6 @@ cases:
         root_cause: The notebook preview script renders markdown cells with marked and inserts the result with jQuery html (templates/repo/view_file.tmpl:68) without sanitizing it or filtering link URL schemes, so markup in a committed .ipynb file runs in the viewer's session
         locations:
           - {file: templates/repo/view_file.tmpl, line: 68}
-      - id: ipynb-sanitizer-stored-xss
-        root_cause: ipynbSanitizer allows the data URL scheme without restricting it to safe image MIME types (internal/app/api.go:14), so the /-/api/sanitize_ipynb output keeps data:text/html links from committed notebooks
-        locations:
-          - {file: internal/app/api.go, symbol: ipynbSanitizer}
-          - {file: internal/cmd/web.go, line: 682}
       - id: issue-attachment-idor
         root_cause: newIssue selects attachments by UUID only (internal/database/attachment.go:121) and reassigns them to the new issue (internal/database/issue.go:745) without checking ownership or an existing association, so creating an issue anywhere moves attachments off issues of other repositories
         locations:
@@ -150,9 +160,9 @@ cases:
       - id: local-network-blocklist-ssrf
         root_cause: netutil.IsBlockedLocalHostname matches resolved IPs against localCIDRs (internal/netutil/netutil.go:61) whose list omits the IPv6 unspecified address ::/128 (internal/netutil/netutil.go:33), so a webhook or migration URL whose host is the IPv6 unspecified address passes the check and connects to local services
         locations:
+          - {file: internal/database/webhook.go, line: 701}
           - {file: internal/netutil/netutil.go, line: 33}
           - {file: internal/netutil/netutil.go, line: 61}
-          - {file: internal/database/webhook.go, line: 701}
       - id: login-csrf
         root_cause: The CSRF toggle skips token validation on every sign-out-required route (internal/context/auth.go:56), including POST /user/login (internal/cmd/web.go:196), so a cross-site request logs the victim's browser into another account
         locations:
@@ -186,6 +196,11 @@ cases:
           - {file: internal/database/mirror.go, line: 350}
           - {file: internal/process/manager.go, line: 101}
           - {file: internal/process/manager.go, line: 124}
+      - id: notebook-raw-link-stored-xss
+        root_cause: The notebook preview passes the unencoded tree path in RawFileLink (internal/route/repo/view.go:132) to jQuery getJSON (templates/repo/view_file.tmpl:44), so a committed notebook named with ?callback=? turns the request into same-origin JSONP and jQuery evaluates another committed file as script in the viewer's session
+        locations:
+          - {file: internal/route/repo/view.go, line: 132}
+          - {file: templates/repo/view_file.tmpl, line: 44}
       - id: notebook-render-stored-xss
         root_cause: The notebook preview renders the notebook with notebook.js 0.4.2 (templates/base/head.tmpl:47), which assigns raw HTML and markdown cell source to innerHTML of live elements (templates/repo/view_file.tmpl:46), before the result is sent to the sanitizer (templates/repo/view_file.tmpl:48), so markup in a committed .ipynb file runs in the viewer's session
         locations:
@@ -236,15 +251,15 @@ cases:
       - id: passwordless-account-authentication-bypass
         root_cause: UsersStore.Create stores EncodePassword of the given password for reverse-proxy auto-registered accounts that have no password (internal/database/users.go:343) and Authenticate validates local accounts with ValidatePassword without rejecting an empty password (internal/database/users.go:94), so HTTP Basic credentials with an empty password sign in as such an account
         locations:
+          - {file: internal/context/auth.go, line: 213}
           - {file: internal/database/users.go, line: 94}
           - {file: internal/database/users.go, line: 343}
-          - {file: internal/context/auth.go, line: 213}
       - id: prohibit-login-authentication-bypass
         root_cause: ProhibitLogin is enforced only in the web Toggle middleware (internal/context/auth.go:38) while the Git smart HTTP and SSH paths authorize by password, token, or key without checking it (internal/route/repo/http.go:123, internal/cmd/serv.go:204), so an administratively disabled account keeps Git access
         locations:
+          - {file: internal/cmd/serv.go, line: 204}
           - {file: internal/context/auth.go, line: 38}
           - {file: internal/route/repo/http.go, line: 123}
-          - {file: internal/cmd/serv.go, line: 204}
       - id: protected-branch-whitelist-privilege-escalation
         root_cause: Protected branch whitelist rows copy team members only when the whitelisted team ids change (internal/database/repo_branch.go:219) and IsUserInProtectBranchWhitelist trusts the stored rows (internal/database/repo_branch.go:96), so users removed from a whitelisted team keep pushing directly to the protected branch
         locations:
@@ -257,15 +272,6 @@ cases:
           - {file: internal/database/pull.go, line: 264}
           - {file: internal/database/pull.go, line: 282}
           - {file: internal/database/pull.go, symbol: PullRequest.Merge}
-      - id: redirect-validation-open-redirect
-        root_cause: urlutil.IsSameSite checks only that the redirect target begins with a slash and that its second byte is not a slash or backslash (internal/urlutil/urlutil.go:4), so a value such as a slash, a tab, and another slash passes the same-site test and browsers reparse it as a scheme-relative external URL
-        locations:
-          - {file: internal/urlutil/urlutil.go, line: 4}
-          - {file: internal/route/user/auth.go, line: 96}
-          - {file: internal/route/user/auth.go, line: 142}
-          - {file: internal/route/repo/repo.go, line: 264}
-          - {file: internal/route/repo/branch.go, line: 112}
-          - {file: internal/route/user/profile.go, line: 125}
       - id: release-attachment-idor
         root_cause: NewRelease and UpdateRelease set the release id on attachments selected only by caller-supplied UUIDs (internal/database/release.go:184, internal/database/release.go:327) without checking their current release or repository, so a writer of one repository moves another repository's release attachments
         locations:
@@ -293,6 +299,15 @@ cases:
         root_cause: authenticatedUser trusts the configured reverse proxy authentication header whenever reverse proxy authentication is enabled (internal/context/auth.go:201) without checking that the request comes from a trusted proxy address, so a client reaching Gogs directly signs in as any user name
         locations:
           - {file: internal/context/auth.go, line: 201}
+      - id: same-site-check-open-redirect
+        root_cause: urlutil.IsSameSite checks only that the redirect target begins with a slash and that its second byte is not a slash or backslash (internal/urlutil/urlutil.go:4), so a value such as a slash, a tab, and another slash passes the same-site test and browsers reparse it as a scheme-relative external URL
+        locations:
+          - {file: internal/route/repo/branch.go, line: 112}
+          - {file: internal/route/repo/repo.go, line: 264}
+          - {file: internal/route/user/auth.go, line: 96}
+          - {file: internal/route/user/auth.go, line: 142}
+          - {file: internal/route/user/profile.go, line: 125}
+          - {file: internal/urlutil/urlutil.go, line: 4}
       - id: slack-webhook-injection
         root_cause: SlackLinkFormatter interpolates the URL unescaped into Slack link markup (internal/database/webhook_slack.go:66) and the pushed ref name enters that URL and the delete message unescaped (internal/database/webhook_slack.go:74, internal/database/webhook_slack.go:85), so ref names inject Slack markup into the configured channel
         locations:
@@ -317,8 +332,8 @@ cases:
       - id: unlisted-action-information-disclosure
         root_cause: NewIssue and createComment set the action IsPrivate from repo.IsPrivate alone (internal/database/issue.go:784, internal/database/comment.go:211) rather than repo.IsPrivate or repo.IsUnlisted as other actions do, so issue and comment activity of unlisted repositories appears in the public profile feed
         locations:
-          - {file: internal/database/issue.go, line: 784}
           - {file: internal/database/comment.go, line: 211}
+          - {file: internal/database/issue.go, line: 784}
       - id: upload-symlink-following
         root_cause: Repository.UploadRepoFiles rejects only a target whose final path component is a symlink (internal/database/repo_editor.go:605) and does not check its parent directories, so an upload under a committed symlinked directory writes outside the repository working tree
         locations:
@@ -351,108 +366,6 @@ cases:
         locations:
           - {file: internal/database/webhook.go, line: 321}
           - {file: internal/database/webhook.go, line: 323}
-  - id: diff-b9a3626
-    kind: diff
-    base: b3eb33be0fa343522e1f3ea6397534b40e8dde37
-    commit: b9a3626cad505b1dccd66a0b023263ef59134430
-    checks:
-      - id: commits-api-denial-of-service
-        root_cause: The new v1 commits API takes pageSize from the query with no upper bound (internal/route/api/v1/repo/commits.go:24) and uses it as a slice capacity (internal/route/api/v1/repo/commits.go:36), so one request with read access to any repository allocates unbounded memory
-        locations:
-          - {file: internal/route/api/v1/repo/commits.go, line: 24}
-          - {file: internal/route/api/v1/repo/commits.go, line: 36}
-        change_anchors:
-          - {file: internal/route/api/v1/repo/commits.go, line: 24, side: new}
-          - {file: internal/route/api/v1/repo/commits.go, line: 36, side: new}
-  - id: diff-23da90e
-    kind: diff
-    base: 60ee79363dd813898c0511531aabca892bd3cf5e
-    commit: 23da90e25d610e94a50dd27223baaa8834f61607
-    checks:
-      - id: issue-mail-information-disclosure
-        root_cause: mailIssueCommentToParticipants now mails every historical comment poster returned by GetParticipantsByIssueID (models/issue_mail.go:136, models/issue.go:986) without checking current read access, so private issue comments reach collaborators whose access was revoked
-        locations:
-          - {file: models/issue.go, line: 986}
-          - {file: models/issue_mail.go, line: 136}
-        change_anchors:
-          - {file: models/issue.go, line: 986, side: new}
-          - {file: models/issue_mail.go, line: 136, side: new}
-  - id: diff-6072e9a
-    kind: diff
-    base: b78e03934d057bdb4c628fefb364dda6eb1f260a
-    commit: 6072e9a52cf01723aea2b9a5ca7dfe22b101fbfc
-    checks:
-      - id: protected-branch-uncommitted-privilege-escalation
-        root_cause: The new UpdateOrgProtectBranch, like UpdateProtectBranch, returns after inserting a new ProtectBranch row without committing the transaction (models/repo_branch.go:128, models/repo_branch.go:228), so the protection is rolled back while the settings page reports success and the pre-receive hook enforces nothing for that branch
-        locations:
-          - {file: models/repo_branch.go, line: 128}
-          - {file: models/repo_branch.go, line: 228}
-        change_anchors:
-          - {file: models/repo_branch.go, line: 128, side: new}
-      - id: protected-branch-whitelist-privilege-escalation
-        root_cause: The new protected branch whitelist copies team members into whitelist rows only when the whitelisted user or team ids change (models/repo_branch.go:190) and IsUserInProtectBranchWhitelist trusts the stored rows (models/repo_branch.go:75), so users removed from a whitelisted team keep pushing directly to the protected branch
-        locations:
-          - {file: models/repo_branch.go, line: 75}
-          - {file: models/repo_branch.go, line: 190}
-        change_anchors:
-          - {file: models/repo_branch.go, line: 75, side: new}
-          - {file: models/repo_branch.go, line: 190, side: new}
-  - id: diff-1df54ea
-    kind: diff
-    base: e6df2259abdeb75545f53a5ca4c247491b5c3d7f
-    commit: 1df54ea0cde038e2057d083078f952c072d0dc67
-    checks:
-      - id: release-attachment-idor
-        root_cause: NewRelease and UpdateRelease set the release id on attachments selected only by caller-supplied UUIDs (models/release.go:187, models/release.go:305) without checking their current release or repository, so a writer of one repository moves another repository's release attachments
-        locations:
-          - {file: models/release.go, line: 187}
-          - {file: models/release.go, line: 305}
-        change_anchors:
-          - {file: models/release.go, line: 187, side: new}
-          - {file: models/release.go, line: 305, side: new}
-      - id: release-upload-stored-xss
-        root_cause: The new release attachment upload route accepts any content type under the */* default (conf/app.ini:124, cmd/web.go:350), and /attachments/:uuid serves the stored file inline without forcing a safe type when render=true, so an uploaded HTML file runs on the Gogs origin for a user who opens its link
-        locations:
-          - {file: cmd/web.go, line: 350}
-          - {file: conf/app.ini, line: 124}
-        change_anchors:
-          - {file: cmd/web.go, line: 350, side: new}
-          - {file: conf/app.ini, line: 124, side: new}
-  - id: diff-303fa37
-    kind: diff
-    base: ef02414d7e1d8cc33ece4dc3d6084ba2cd5014cc
-    commit: 303fa37b608a4925f5a0137c89e20a906b3d9fdb
-    checks:
-      - id: repo-avatar-denial-of-service
-        root_cause: The new repository avatar upload fully decodes the submitted image with image.Decode (models/repo.go:321) without a DecodeConfig dimension limit, so a small image with huge dimensions exhausts server memory
-        locations:
-          - {file: models/repo.go, line: 321}
-        change_anchors:
-          - {file: models/repo.go, line: 321, side: new}
-  - id: diff-a43fc9a
-    kind: diff
-    base: c69a38652da09cb10bfe31714b6b39fec3f8ede8
-    commit: a43fc9ad17d4337dd26b9b8d867470ca8c548b41
-    checks:
-      - id: ipynb-markdown-stored-xss
-        root_cause: The notebook preview script renders markdown cells with marked and inserts the result with jQuery html (templates/repo/view_file.tmpl:68) after the server-side sanitization step, so markup in a committed .ipynb file runs in the viewer's session
-        locations:
-          - {file: templates/repo/view_file.tmpl, line: 68}
-        change_anchors:
-          - {file: templates/repo/view_file.tmpl, line: 68, side: new}
-      - id: ipynb-sanitizer-stored-xss
-        root_cause: The new ipynbSanitizer allows the data URL scheme without restricting it to safe image MIME types (internal/app/api.go:20), so the sanitize_ipynb output keeps data:text/html links from committed notebooks
-        locations:
-          - {file: internal/app/api.go, line: 20}
-        change_anchors:
-          - {file: internal/app/api.go, line: 20, side: new}
-      - id: notebook-render-stored-xss
-        root_cause: The notebook preview renders the notebook with notebook.js, which assigns raw HTML and markdown cell source to innerHTML of live elements (templates/repo/view_file.tmpl:46), before the result is sent to the sanitizer (templates/repo/view_file.tmpl:50), so markup in a committed .ipynb file runs in the viewer's session
-        locations:
-          - {file: templates/repo/view_file.tmpl, line: 46}
-          - {file: templates/repo/view_file.tmpl, line: 50}
-        change_anchors:
-          - {file: templates/repo/view_file.tmpl, line: 50, side: new}
   - id: diff-d720c92
     kind: diff
     base: a35911486ffe0cd373662219a8f231b9cf38d84c
@@ -464,36 +377,6 @@ cases:
           - {file: modules/mailer/mailer.go, line: 30}
         change_anchors:
           - {file: modules/mailer/mailer.go, line: 30, side: new}
-  - id: diff-591810e
-    kind: diff
-    base: 3c2112215f868a6cabc0428fdf329c01155115fb
-    commit: 591810e405ddc02fe38023cea1fd28b29ed5b4e6
-    checks:
-      - id: diff-preview-symlink-following
-        root_cause: GetDiffPreview relies on osutil.IsSymlink (internal/database/repo_editor.go:253), which calls os.Stat before Lstat and so returns false for a dangling symlink, and then writes the previewed content through the link (internal/database/repo_editor.go:258), so a committed dangling symlink creates a file outside the repository working tree
-        locations:
-          - {file: internal/database/repo_editor.go, line: 253}
-          - {file: internal/database/repo_editor.go, line: 258}
-          - {file: internal/osutil/osutil.go, line: 39}
-        change_anchors:
-          - {file: internal/database/repo_editor.go, line: 253, side: new}
-      - id: upload-symlink-following
-        root_cause: The new symlink guard in Repository.UploadRepoFiles rejects only a target whose final path component is a symlink (internal/database/repo_editor.go:591) and does not check its parent directories, so an upload under a committed symlinked directory writes outside the repository working tree
-        locations:
-          - {file: internal/database/repo_editor.go, line: 591}
-        change_anchors:
-          - {file: internal/database/repo_editor.go, line: 591, side: new}
-  - id: diff-fe25eff
-    kind: diff
-    base: d05395fe906dad7741201faa69a54fef538deda9
-    commit: fe25effe7c3d3a2b27d450747ae321b9795ebdc6
-    checks:
-      - id: git-http-credential-information-disclosure
-        root_cause: The Git HTTP handler prints the decoded Basic authentication username and password with fmt.Println (routers/repo/http.go:114) before signing the user in, so every Git HTTP login writes plaintext passwords or access tokens to the process output
-        locations:
-          - {file: routers/repo/http.go, line: 114}
-        change_anchors:
-          - {file: routers/repo/http.go, line: 114, side: new}
   - id: diff-60110ad
     kind: diff
     base: 5ff2dfb23eb4f5c436d69cc86945192eb4b3d279
@@ -522,6 +405,113 @@ cases:
           - {file: routers/user/home.go, line: 249, side: new}
           - {file: routers/user/home.go, line: 260, side: new}
           - {file: routers/user/home.go, line: 276, side: new}
+  - id: diff-6072e9a
+    kind: diff
+    base: b78e03934d057bdb4c628fefb364dda6eb1f260a
+    commit: 6072e9a52cf01723aea2b9a5ca7dfe22b101fbfc
+    checks:
+      - id: protected-branch-uncommitted-privilege-escalation
+        root_cause: The new UpdateOrgProtectBranch, like UpdateProtectBranch, returns after inserting a new ProtectBranch row without committing the transaction (models/repo_branch.go:128, models/repo_branch.go:228), so the protection is rolled back while the settings page reports success and the pre-receive hook enforces nothing for that branch
+        locations:
+          - {file: models/repo_branch.go, line: 128}
+          - {file: models/repo_branch.go, line: 228}
+        change_anchors:
+          - {file: models/repo_branch.go, line: 128, side: new}
+      - id: protected-branch-whitelist-privilege-escalation
+        root_cause: The new protected branch whitelist copies team members into whitelist rows only when the whitelisted user or team ids change (models/repo_branch.go:190) and IsUserInProtectBranchWhitelist trusts the stored rows (models/repo_branch.go:75), so users removed from a whitelisted team keep pushing directly to the protected branch
+        locations:
+          - {file: models/repo_branch.go, line: 75}
+          - {file: models/repo_branch.go, line: 190}
+        change_anchors:
+          - {file: models/repo_branch.go, line: 75, side: new}
+          - {file: models/repo_branch.go, line: 190, side: new}
+  - id: diff-23da90e
+    kind: diff
+    base: 60ee79363dd813898c0511531aabca892bd3cf5e
+    commit: 23da90e25d610e94a50dd27223baaa8834f61607
+    checks:
+      - id: issue-mail-information-disclosure
+        root_cause: mailIssueCommentToParticipants now mails every historical comment poster returned by GetParticipantsByIssueID (models/issue_mail.go:136, models/issue.go:986) without checking current read access, so private issue comments reach collaborators whose access was revoked
+        locations:
+          - {file: models/issue.go, line: 986}
+          - {file: models/issue_mail.go, line: 136}
+        change_anchors:
+          - {file: models/issue.go, line: 986, side: new}
+          - {file: models/issue_mail.go, line: 136, side: new}
+  - id: diff-1df54ea
+    kind: diff
+    base: e6df2259abdeb75545f53a5ca4c247491b5c3d7f
+    commit: 1df54ea0cde038e2057d083078f952c072d0dc67
+    checks:
+      - id: release-attachment-idor
+        root_cause: NewRelease and UpdateRelease set the release id on attachments selected only by caller-supplied UUIDs (models/release.go:187, models/release.go:305) without checking their current release or repository, so a writer of one repository moves another repository's release attachments
+        locations:
+          - {file: models/release.go, line: 187}
+          - {file: models/release.go, line: 305}
+        change_anchors:
+          - {file: models/release.go, line: 187, side: new}
+          - {file: models/release.go, line: 305, side: new}
+      - id: release-upload-stored-xss
+        root_cause: The new release attachment upload route accepts any content type under the */* default (conf/app.ini:124, cmd/web.go:350), and /attachments/:uuid serves the stored file inline without forcing a safe type when render=true, so an uploaded HTML file runs on the Gogs origin for a user who opens its link
+        locations:
+          - {file: cmd/web.go, line: 350}
+          - {file: conf/app.ini, line: 124}
+        change_anchors:
+          - {file: cmd/web.go, line: 350, side: new}
+          - {file: conf/app.ini, line: 124, side: new}
+  - id: diff-fe25eff
+    kind: diff
+    base: d05395fe906dad7741201faa69a54fef538deda9
+    commit: fe25effe7c3d3a2b27d450747ae321b9795ebdc6
+    checks:
+      - id: git-http-credential-information-disclosure
+        root_cause: The Git HTTP handler prints the decoded Basic authentication username and password with fmt.Println (routers/repo/http.go:114) before signing the user in, so every Git HTTP login writes plaintext passwords or access tokens to the process output
+        locations:
+          - {file: routers/repo/http.go, line: 114}
+        change_anchors:
+          - {file: routers/repo/http.go, line: 114, side: new}
+  - id: diff-303fa37
+    kind: diff
+    base: ef02414d7e1d8cc33ece4dc3d6084ba2cd5014cc
+    commit: 303fa37b608a4925f5a0137c89e20a906b3d9fdb
+    checks:
+      - id: repo-avatar-denial-of-service
+        root_cause: The new repository avatar upload fully decodes the submitted image with image.Decode (models/repo.go:321) without a DecodeConfig dimension limit, so a small image with huge dimensions exhausts server memory
+        locations:
+          - {file: models/repo.go, line: 321}
+        change_anchors:
+          - {file: models/repo.go, line: 321, side: new}
+  - id: diff-a43fc9a
+    kind: diff
+    base: c69a38652da09cb10bfe31714b6b39fec3f8ede8
+    commit: a43fc9ad17d4337dd26b9b8d867470ca8c548b41
+    checks:
+      - id: ipynb-markdown-stored-xss
+        root_cause: The notebook preview script renders markdown cells with marked and inserts the result with jQuery html (templates/repo/view_file.tmpl:68) after the server-side sanitization step, so markup in a committed .ipynb file runs in the viewer's session
+        locations:
+          - {file: templates/repo/view_file.tmpl, line: 68}
+        change_anchors:
+          - {file: templates/repo/view_file.tmpl, line: 68, side: new}
+      - id: notebook-render-stored-xss
+        root_cause: The notebook preview renders the notebook with notebook.js, which assigns raw HTML and markdown cell source to innerHTML of live elements (templates/repo/view_file.tmpl:46), before the result is sent to the sanitizer (templates/repo/view_file.tmpl:50), so markup in a committed .ipynb file runs in the viewer's session
+        locations:
+          - {file: templates/repo/view_file.tmpl, line: 46}
+          - {file: templates/repo/view_file.tmpl, line: 50}
+        change_anchors:
+          - {file: templates/repo/view_file.tmpl, line: 50, side: new}
+  - id: diff-b9a3626
+    kind: diff
+    base: b3eb33be0fa343522e1f3ea6397534b40e8dde37
+    commit: b9a3626cad505b1dccd66a0b023263ef59134430
+    checks:
+      - id: commits-api-denial-of-service
+        root_cause: The new v1 commits API takes pageSize from the query with no upper bound (internal/route/api/v1/repo/commits.go:24) and uses it as a slice capacity (internal/route/api/v1/repo/commits.go:36), so one request with read access to any repository allocates unbounded memory
+        locations:
+          - {file: internal/route/api/v1/repo/commits.go, line: 24}
+          - {file: internal/route/api/v1/repo/commits.go, line: 36}
+        change_anchors:
+          - {file: internal/route/api/v1/repo/commits.go, line: 24, side: new}
+          - {file: internal/route/api/v1/repo/commits.go, line: 36, side: new}
   - id: diff-de31611
     kind: diff
     base: 8938855b40777f04ec1c637ad38ee9d12001d042
@@ -533,3 +523,22 @@ cases:
           - {file: internal/route/api/v1/api.go, line: 358}
         change_anchors:
           - {file: internal/route/api/v1/api.go, line: 358, side: new}
+  - id: diff-591810e
+    kind: diff
+    base: 3c2112215f868a6cabc0428fdf329c01155115fb
+    commit: 591810e405ddc02fe38023cea1fd28b29ed5b4e6
+    checks:
+      - id: diff-preview-symlink-following
+        root_cause: GetDiffPreview relies on osutil.IsSymlink (internal/database/repo_editor.go:253), which calls os.Stat before Lstat and so returns false for a dangling symlink, and then writes the previewed content through the link (internal/database/repo_editor.go:258), so a committed dangling symlink creates a file outside the repository working tree
+        locations:
+          - {file: internal/database/repo_editor.go, line: 253}
+          - {file: internal/database/repo_editor.go, line: 258}
+          - {file: internal/osutil/osutil.go, line: 39}
+        change_anchors:
+          - {file: internal/database/repo_editor.go, line: 253, side: new}
+      - id: upload-symlink-following
+        root_cause: The new symlink guard in Repository.UploadRepoFiles rejects only a target whose final path component is a symlink (internal/database/repo_editor.go:591) and does not check its parent directories, so an upload under a committed symlinked directory writes outside the repository working tree
+        locations:
+          - {file: internal/database/repo_editor.go, line: 591}
+        change_anchors:
+          - {file: internal/database/repo_editor.go, line: 591, side: new}
