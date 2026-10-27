@@ -4,11 +4,10 @@ Codex reads `AGENTS.md` directly. Claude Code reads it through the `@AGENTS.md` 
 
 ## Development
 
-- Write no comments, and keep each docstring that ruff pydocstyle requires to a single line.
+- Write no comments, and keep each docstring that Ruff requires to a single line.
 - Keep persisted schema versions at v1 and change v1 in place.
-- Test only supported behavior, one concern per test, in the test module named after the source module it covers.
+- Test one supported behavior per test, and delete tests of removed or legacy behavior.
 - Write Markdown with one line per paragraph.
-- Run `cyberjury review` or `python -m evals diff` only when asked, because they call paid model APIs.
 - Run `ruff check .`, `ruff format --check .`, and `pytest -q` before finishing a change.
 
 ## Commits

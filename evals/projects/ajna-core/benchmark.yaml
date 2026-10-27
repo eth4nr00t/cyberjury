@@ -66,6 +66,12 @@ cases:
         root_cause: ERC721Pool.mergeOrRemoveCollateral (src/ERC721Pool.sol:280) omits the _revertIfAuctionClearable check that removeCollateral applies (src/ERC721Pool.sol:322), so collateral leaves buckets before a clearable auction settles its bad debt against them
         locations:
           - {file: src/ERC721Pool.sol, line: 280}
+      - id: move-quote-deposit-time-accounting-error
+        root_cause: LenderActions.moveQuoteToken sets the destination lender's depositTime to the later of the source depositTime and the destination bankruptcy time (src/libraries/external/LenderActions.sol:278) without considering the destination's existing depositTime, while LenderActions.removeQuoteToken charges the early withdrawal fee from that depositTime alone (src/libraries/external/LenderActions.sol:341), so a move from an aged deposit, including a zero amount move (src/libraries/external/LenderActions.sol:204), lets a fresh deposit be withdrawn without the fee that would remain in pool reserves
+        locations:
+          - {file: src/libraries/external/LenderActions.sol, line: 204}
+          - {file: src/libraries/external/LenderActions.sol, line: 278}
+          - {file: src/libraries/external/LenderActions.sol, line: 341}
       - id: nft-take-remaining-collateral-accounting-error
         root_cause: Auctions.take and Auctions.bucketTake never set result_.remainingCollateral (src/libraries/external/Auctions.sol:583, src/libraries/external/Auctions.sol:517) while Auctions._takeLoan writes the collateral left after settlement only to the borrower record (src/libraries/external/Auctions.sol:1034), so ERC721Pool.take and bucketTake call _rebalanceTokens with zero (src/ERC721Pool.sol:460, src/ERC721Pool.sol:517) and move all of the borrower's NFTs out of the borrower's token list
         locations:

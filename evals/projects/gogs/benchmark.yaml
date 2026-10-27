@@ -289,6 +289,12 @@ cases:
           - {file: internal/route/api/v1/api.go, line: 372}
           - {file: internal/route/api/v1/api.go, line: 373}
           - {file: internal/route/api/v1/api.go, line: 374}
+      - id: repo-transfer-missing-permission
+        root_cause: The repository transfer action checks the new owner name only for existence (internal/route/repo/setting.go:225), and TransferOwnership moves the repository into that namespace (internal/database/repo.go:1433) without the destination ownership check that repository creation enforces (internal/route/repo/repo.go:58), so any repository owner places a repository under another organization or user's namespace
+        locations:
+          - {file: internal/database/repo.go, line: 1363}
+          - {file: internal/database/repo.go, line: 1433}
+          - {file: internal/route/repo/setting.go, line: 225}
       - id: repository-migration-ssrf
         root_cause: MigrateRepository clones and Mirror.runSync updates remotes with git following HTTP redirects (internal/database/repo.go:824, internal/database/mirror.go:227), and runSync never rechecks the stored address against the local network blocklist, so a validated public mirror URL leads git to an internal host
         locations:

@@ -169,6 +169,12 @@ cases:
         locations:
           - {file: src/paperless/checks.py, line: 33}
           - {file: src/paperless/checks.py, symbol: path_check}
+      - id: processed-mail-bulk-delete-missing-permission
+        root_cause: ProcessedMailViewSet.bulk_delete is a POST action whose model-level gate requires only add_processedmail (src/paperless_mail/views.py:150), not delete_processedmail, and its has_perms_owner_aware check passes owned and ownerless records (src/paperless_mail/views.py:159), so users without processed mail delete permission delete those records
+        locations:
+          - {file: src/paperless_mail/views.py, line: 138}
+          - {file: src/paperless_mail/views.py, line: 150}
+          - {file: src/paperless_mail/views.py, line: 159}
       - id: processed-mail-missing-owner
         root_cause: ProcessedMail records created in error_callback and the no-attachment path (src/paperless_mail/mail.py:889) omit owner=rule.owner, so the ownerless records are visible to every user
         locations:
@@ -384,6 +390,15 @@ cases:
           - {file: src/paperless_mail/views.py, symbol: MailAccountTestView}
         change_anchors:
           - {file: src/paperless_mail/views.py, line: 29, side: new}
+      - id: owned-object-update-missing-permission
+        root_cause: MailAccountSerializer and MailRuleSerializer now expose owner and set_permissions (src/paperless_mail/serialisers.py:38, src/paperless_mail/serialisers.py:94), and OwnedObjectSerializer.update applies them without requiring the requester to own the object (src/documents/serialisers.py:227), so any mail account or mail rule change holder reassigns or regrants it
+        locations:
+          - {file: src/documents/serialisers.py, line: 227}
+          - {file: src/paperless_mail/serialisers.py, line: 38}
+          - {file: src/paperless_mail/serialisers.py, line: 94}
+        change_anchors:
+          - {file: src/paperless_mail/serialisers.py, line: 38, side: new}
+          - {file: src/paperless_mail/serialisers.py, line: 94, side: new}
   - id: diff-7c9ab8c
     kind: diff
     base: 3a36d9b1aebb5d2ad5296db5db970d209c4f9495
