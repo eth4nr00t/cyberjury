@@ -13,6 +13,7 @@ from typing import TextIO
 
 from cyberjury import __version__
 from cyberjury.envfile import load_env_file
+from cyberjury.providers.base import ProviderAccessError
 from cyberjury.providers.configuration import (
     ProviderConfiguration,
     ProviderCredentialsError,
@@ -23,7 +24,7 @@ from cyberjury.record import STAGES, Record, RecordError, error_message, render,
 from cyberjury.review.contract import ContractReceipt
 from cyberjury.review.diff.finder import DIFF_TARGET
 from cyberjury.review.diff.prepare import prepare_diff_review
-from cyberjury.review.recorder import INTERRUPTED, Recorder, internal_error, usage_metrics
+from cyberjury.review.recorder import Recorder, Terminated, internal_error, interruption_reason, usage_metrics
 from cyberjury.review.repository.finder import REPOSITORY_TARGET
 from cyberjury.review.repository.prepare import prepare_repository_review
 from cyberjury.review.request import (
@@ -47,7 +48,7 @@ from cyberjury.review.target import (
 from cyberjury.sources.git import GitSourceError
 from cyberjury.sources.paths import SourceSnapshotError
 from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
-from cyberjury.workspace import SessionConflictError, WorkspaceCorruptionError, new_attempt_id
+from cyberjury.workspace import SessionBusyError, SessionConflictError, WorkspaceCorruptionError, new_attempt_id
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -70,13 +71,15 @@ class _AttemptState:
 
 
 def classify_error(exc: BaseException) -> RecordError:
-    """Classify an exception that ended a stage as an input, config, or internal error."""
+    """Classify an exception that ended a stage as an input, config, busy, or internal error."""
     if isinstance(exc, (TargetResolutionError, GitSourceError, SourceSnapshotError, NoReviewableSourceError)):
         return RecordError(code="input", message=error_message(str(exc)))
     if isinstance(exc, (PermissionError, FileExistsError, NotADirectoryError, IsADirectoryError)):
         return RecordError(code="config", message=error_message(f"{type(exc).__name__}: {exc}"))
-    if isinstance(exc, (ProviderCredentialsError, WorkspaceCorruptionError, SessionConflictError)):
+    if isinstance(exc, (ProviderCredentialsError, ProviderAccessError, WorkspaceCorruptionError, SessionConflictError)):
         return RecordError(code="config", message=error_message(str(exc)))
+    if isinstance(exc, SessionBusyError):
+        return RecordError(code="busy", message=error_message(str(exc)))
     return internal_error(exc)
 
 
@@ -252,7 +255,7 @@ def _attempt_record(
     ended = next((record for record in stages if record.status in {"failed", "interrupted"}), None)
     if isinstance(failure, KeyboardInterrupt) or (ended is not None and ended.status == "interrupted"):
         status, error = "interrupted", None
-        attributes["reason"] = INTERRUPTED
+        attributes["reason"] = interruption_reason(failure)
     elif ended is not None:
         status, error = "failed", ended.error
     elif failure is not None:
@@ -277,7 +280,7 @@ def _attempt_record(
 
 
 def _interrupt_on_terminate(_signum: int, _frame: object) -> None:
-    raise KeyboardInterrupt
+    raise Terminated
 
 
 @contextlib.contextmanager

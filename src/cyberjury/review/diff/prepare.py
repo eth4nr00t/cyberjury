@@ -34,7 +34,7 @@ def plan_diff_units(diff: str, shared: SharedGrounding, skipped: tuple[SkippedFi
 def prepare_diff_review(diff: str, snapshot: SourceSnapshot, *, recorder: Recorder) -> PreparedReview[DiffUnit]:
     """Plan and ground the reviewable part of one diff against the snapshot of its head source."""
     detection = detection_for(snapshot.root, snapshot.files)
-    review_diff, skipped = strip_unreviewable_files(diff, detection)
+    review_diff, skipped = strip_unreviewable_files(diff, detection, root=snapshot.root)
     return prepare_review(
         snapshot,
         detection=detection,

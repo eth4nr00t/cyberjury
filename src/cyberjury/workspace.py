@@ -28,7 +28,11 @@ class WorkspaceCorruptionError(RuntimeError):
 
 
 class SessionConflictError(RuntimeError):
-    """The session cannot take this attempt: another one runs, or its bound configuration differs."""
+    """The session cannot take this attempt until a --fresh start: its configuration differs or it no longer exists."""
+
+
+class SessionBusyError(RuntimeError):
+    """Another attempt is running in the session, so this one can start once it ends."""
 
 
 def _new_id(kind: str) -> str:
@@ -256,7 +260,7 @@ class SessionWorkspace(_JsonDirectory):
             fcntl.flock(session_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             session_lock.close()
-            raise SessionConflictError("another attempt is already running for this session") from exc
+            raise SessionBusyError("another attempt is already running for this session") from exc
         attempts = self.path / "attempts"
         try:
             for path in attempts.glob(".attempt-*.*"):

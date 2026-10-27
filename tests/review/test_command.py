@@ -17,10 +17,13 @@ import pytest
 import cyberjury.review.command as commandmod
 from cyberjury.envfile import load_env_file
 from cyberjury.providers import configuration as provider_configuration_module
+from cyberjury.providers.base import ProviderAccessError
 from cyberjury.record import STAGES, Record
-from cyberjury.review.command import ReviewCommand, attempt_output, run_review_command
+from cyberjury.review.command import ReviewCommand, attempt_output, classify_error, run_review_command
+from cyberjury.review.recorder import TERMINATED
 from cyberjury.review.request import TargetInput
 from cyberjury.review.result import findings_artifact
+from cyberjury.workspace import SessionBusyError
 from tests.support import MockProvider, git
 
 _EMPTY_REPLY = '{"findings": [], "evidence_requests": [], "source_queries": []}'
@@ -441,6 +444,26 @@ def test_repository_review_with_model_errors_marks_units_failed(tmp_path, monkey
     assert {json.loads(path.read_text())["status"] for path in items} == {"failed"}
 
 
+def test_a_provider_that_rejects_access_fails_the_review_with_a_config_error(tmp_path, monkeypatch):
+    """A provider raising ProviderAccessError fails the review stage and the attempt with a config error."""
+
+    def reject(_system, _messages):
+        raise ProviderAccessError("provider rejected the request: invalid x-api-key")
+
+    monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(responder=reject))
+
+    run = _review(_repository(_flask_repository(tmp_path / "svc")), tmp_path / "state")
+
+    review = _stage(_records(run.out), "review")
+    assert (review["status"], review["error"]["code"]) == ("failed", "config")
+    assert (run.record.status, run.record.error.code) == ("failed", "config")
+
+
+def test_a_session_busy_with_another_attempt_is_a_busy_error():
+    """SessionBusyError classifies as busy, not as a config error that needs --fresh."""
+    assert classify_error(SessionBusyError("another attempt is already running")).code == "busy"
+
+
 def test_partially_parsed_sources_are_counted_as_fact_limitations(tmp_path):
     """A repository with a syntax error in app.py reports one limitation on the facts record and stays ok."""
     repository = tmp_path / "svc"
@@ -764,7 +787,7 @@ def _terminate(*_args, **_kwargs):
 
 
 def test_a_terminated_review_keeps_its_model_calls_and_ends_interrupted(monkeypatch, diff_target, tmp_path):
-    """A SIGTERM during the review keeps model-calls.json and records the attempt interrupted."""
+    """A SIGTERM during the review keeps model-calls.json and records the attempt interrupted by SIGTERM."""
     monkeypatch.setattr(commandmod, "run_review", _terminate)
     state = tmp_path / "state"
 
@@ -773,7 +796,7 @@ def test_a_terminated_review_keeps_its_model_calls_and_ends_interrupted(monkeypa
     attempt = _attempt_dir(state)
     record = _attempt_record(attempt)
     assert run.record.status == record["status"] == "interrupted"
-    assert record["attributes"]["reason"] == "operator interrupted the command"
+    assert record["attributes"]["reason"] == TERMINATED
     assert (attempt / "model-calls.json").is_file()
 
 

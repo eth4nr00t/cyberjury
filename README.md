@@ -41,8 +41,9 @@ Each review runs the stages `config`, `target`, `session`, `source`, `facts`, `p
 attempt itself is one `cyberjury.record/v1` record with the fields `schema`, `id`, `status`,
 `started_at`, `duration_seconds`, `metrics`, `attributes`, `artifacts`, and `error`. The status is
 `ok`, `incomplete`, `failed`, `interrupted`, or `running`. A `failed` or `incomplete` record has an
-`error` with a `code` (`config`, `input`, `model`, or `internal`) and a `message`. An `interrupted`
-record names why in its `reason` attribute.
+`error` with a `code` (`config`, `input`, `busy`, `model`, or `internal`) and a `message`. `busy`
+means another attempt of the same review is running. An `interrupted` record names why in its `reason`
+attribute: the operator's interrupt or SIGTERM.
 
 Records are written under the review directory: the stages of an attempt in
 `attempts/<attempt>/stages/<stage>.json`, the attempt in `attempts/<attempt>/record.json`, and the
@@ -58,9 +59,10 @@ A review that fails before its review directory exists prints the same records w
 | Exit code | Meaning |
 | :--- | :--- |
 | `0` | The review finished `ok`. |
-| `1` | The review is `incomplete`, or it failed with a `model` or `internal` error. |
-| `2` | Invalid arguments, or the review failed with a `config` or `input` error. |
-| `130` | The review was interrupted. |
+| `1` | The review is `incomplete`, or it failed with a `busy` or `internal` error. |
+| `2` | Invalid arguments, or the review failed with a `config` or `input` error, including a provider that rejects the key, permission, or model. |
+| `130` | The operator interrupted the review. |
+| `143` | SIGTERM stopped the review. |
 
 Every finding the finder reports is kept, and the review does not run a second model to delete
 findings.

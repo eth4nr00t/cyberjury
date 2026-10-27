@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 
+from cyberjury.providers.base import ProviderAccessError
 from cyberjury.providers.metering import (
     model_call_context,
     record_model_exchange,
@@ -222,6 +223,8 @@ class _EvidenceExchange:
                 failure_reason=exception_reason(exc),
                 unresolved=("source query batch exceeds the published limit",),
             ) from exc
+        except ProviderAccessError:
+            raise
         except Exception as exc:
             record_model_parse(exception_reason(exc))
             if call_index == 0:

@@ -10,6 +10,7 @@ import cyberjury.cli as climod
 from cyberjury.cli import _default_workspace, main
 from cyberjury.record import Record, RecordError
 from cyberjury.review.command import ReviewCommand
+from cyberjury.review.recorder import INTERRUPTED, TERMINATED
 from cyberjury.review.request import TargetInput
 from cyberjury.workspace import new_attempt_id
 
@@ -76,24 +77,26 @@ def test_review_arguments_become_one_review_command(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("status", "code", "expected"),
+    ("status", "code", "reason", "expected"),
     [
-        ("ok", None, 0),
-        ("incomplete", "model", 1),
-        ("failed", "internal", 1),
-        ("failed", "config", 2),
-        ("failed", "input", 2),
-        ("interrupted", None, 130),
+        ("ok", None, None, 0),
+        ("incomplete", "model", None, 1),
+        ("failed", "internal", None, 1),
+        ("failed", "busy", None, 1),
+        ("failed", "config", None, 2),
+        ("failed", "input", None, 2),
+        ("interrupted", None, INTERRUPTED, 130),
+        ("interrupted", None, TERMINATED, 143),
     ],
 )
-def test_each_review_outcome_exits_with_its_code(monkeypatch, tmp_path, status, code, expected):
-    """Ok exits 0, incomplete or internal failure 1, config or input failure 2, and an interrupt 130."""
+def test_each_review_outcome_exits_with_its_code(monkeypatch, tmp_path, status, code, reason, expected):
+    """Ok exits 0, incomplete, internal, or busy failure 1, config or input failure 2, an interrupt 130, SIGTERM 143."""
     attempt = Record(
         id=new_attempt_id(),
         status=status,
         started_at="2026-01-01T00:00:00Z",
         duration_seconds=0.0,
-        attributes={"reason": "operator interrupted the command"} if status == "interrupted" else {},
+        attributes={"reason": reason} if reason is not None else {},
         error=RecordError(code=code, message="reason") if code is not None else None,
     )
     monkeypatch.setattr(climod, "run_review_command", lambda _command, **_streams: attempt)

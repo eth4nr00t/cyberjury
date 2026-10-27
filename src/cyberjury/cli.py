@@ -9,11 +9,13 @@ from pathlib import Path
 from cyberjury import __version__
 from cyberjury.record import Record
 from cyberjury.review.command import ReviewCommand, run_review_command
+from cyberjury.review.recorder import TERMINATED
 from cyberjury.review.request import TargetInput
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 USAGE_EXIT = 2
 INTERRUPTED_EXIT = 130
+TERMINATED_EXIT = 143
 
 
 def positive_int(value: str) -> int:
@@ -114,7 +116,7 @@ def _exit_code(record: Record) -> int:
     if record.status == "ok":
         return 0
     if record.status == "interrupted":
-        return INTERRUPTED_EXIT
+        return TERMINATED_EXIT if record.attributes.get("reason") == TERMINATED else INTERRUPTED_EXIT
     if record.status == "failed" and record.error is not None and record.error.code in {"config", "input"}:
         return USAGE_EXIT
     return 1

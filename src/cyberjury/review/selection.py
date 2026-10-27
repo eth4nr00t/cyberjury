@@ -21,6 +21,15 @@ class FileSelection:
     dependency_files: tuple[str, ...] = ()
 
 
+def decodes_as_utf8(data: bytes) -> bool:
+    """Report whether file content is UTF-8 text."""
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def select_files(root: str | Path, files: Sequence[str], detection: Detection) -> FileSelection:
     """Keep every readable non-noise text file for review and record the ones that cannot be read."""
     base = Path(root)
@@ -42,12 +51,7 @@ def select_files(root: str | Path, files: Sequence[str], detection: Detection) -
                 skipped.append(SkippedFile(path=relative, reason="too_large"))
             continue
         data = (base / relative).read_bytes()
-        try:
-            data.decode("utf-8")
-        except UnicodeDecodeError:
-            decodable = False
-        else:
-            decodable = True
+        decodable = decodes_as_utf8(data)
         if noise:
             if decodable and b"\0" not in data:
                 (dependencies if dependency else documentation).append(relative)

@@ -93,12 +93,12 @@ def test_diff_unit_plan_record_exposes_patch_ownership():
     assert record.patch_sha256 is not None
 
 
-def test_diff_model_excludes_test_files_before_review():
+def test_diff_model_excludes_test_files_before_review(tmp_path):
     """A tests/test_views.py change is skipped as noise while the app/views.py change is kept."""
     production = "diff --git a/app/views.py b/app/views.py\n+++ b/app/views.py\n@@ -0,0 +1 @@\n+x = 1\n"
     test = "diff --git a/tests/test_views.py b/tests/test_views.py\n+++ b/tests/test_views.py\n@@ -0,0 +1 @@\n+x = 1\n"
 
-    kept, skipped = strip_unreviewable_files(production + test, _DETECTION)
+    kept, skipped = strip_unreviewable_files(production + test, _DETECTION, root=tmp_path)
 
     assert kept == production
     assert [(item.path, item.reason) for item in skipped] == [("tests/test_views.py", "noise")]
@@ -111,38 +111,38 @@ _DOC = "diff --git a/README.md b/README.md\n@@ -0,0 +1 @@\n+# Title\n"
 _LOCK = "diff --git a/package-lock.json b/package-lock.json\n@@ -0,0 +1 @@\n+{}\n"
 
 
-def test_strip_unreviewable_files_drops_docs_and_lockfiles_keeps_source():
+def test_strip_unreviewable_files_drops_docs_and_lockfiles_keeps_source(tmp_path):
     """README.md and package-lock.json are skipped while the app.py source chunk is kept."""
-    kept, skipped = strip_unreviewable_files(_SRC + _DOC + _LOCK, _DETECTION)
+    kept, skipped = strip_unreviewable_files(_SRC + _DOC + _LOCK, _DETECTION, root=tmp_path)
     assert kept == _SRC
     assert {item.path for item in skipped} == {"README.md", "package-lock.json"}
 
 
-def test_strip_unreviewable_files_skips_asset_changes_but_keeps_templates_and_queries():
+def test_strip_unreviewable_files_skips_asset_changes_but_keeps_templates_and_queries(tmp_path):
     """The noise boundary skips .xlf and .scss changes but keeps .html templates and .sql files."""
     translation = "diff --git a/messages.xlf b/messages.xlf\n@@ -0,0 +1 @@\n+<trans-unit/>\n"
     style = "diff --git a/theme.scss b/theme.scss\n@@ -0,0 +1 @@\n+.secret { color: red; }\n"
     template = "diff --git a/view.html b/view.html\n@@ -0,0 +1 @@\n+{{ unsafe }}\n"
     query = "diff --git a/data.sql b/data.sql\n@@ -0,0 +1 @@\n+SELECT 1;\n"
 
-    kept, skipped = strip_unreviewable_files(translation + style + template + query, _DETECTION)
+    kept, skipped = strip_unreviewable_files(translation + style + template + query, _DETECTION, root=tmp_path)
 
     assert {item.path for item in skipped} == {"messages.xlf", "theme.scss"}
     assert "view.html" in kept
     assert "data.sql" in kept
 
 
-def test_strip_unreviewable_files_skips_binary_changes():
+def test_strip_unreviewable_files_skips_binary_changes(tmp_path):
     """A binary logo.png change is skipped as binary while the app.py source chunk is kept."""
     binary = "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n"
 
-    kept, skipped = strip_unreviewable_files(binary + _SRC, _DETECTION)
+    kept, skipped = strip_unreviewable_files(binary + _SRC, _DETECTION, root=tmp_path)
 
     assert [(item.path, item.reason) for item in skipped] == [("logo.png", "binary")]
     assert kept == _SRC
 
 
-def test_strip_unreviewable_files_skips_submodule_pointer_changes():
+def test_strip_unreviewable_files_skips_submodule_pointer_changes(tmp_path):
     """A lib/forge-std submodule pointer change is skipped as submodule while the app.py source chunk is kept."""
     submodule = (
         "diff --git a/lib/forge-std b/lib/forge-std\nindex 1111111..2222222 160000\n"
@@ -151,16 +151,16 @@ def test_strip_unreviewable_files_skips_submodule_pointer_changes():
         "+Subproject commit 2222222222222222222222222222222222222222\n"
     )
 
-    kept, skipped = strip_unreviewable_files(submodule + _SRC, _DETECTION)
+    kept, skipped = strip_unreviewable_files(submodule + _SRC, _DETECTION, root=tmp_path)
 
     assert [(item.path, item.reason) for item in skipped] == [("lib/forge-std", "submodule")]
     assert kept == _SRC
 
 
-def test_strip_unreviewable_files_keeps_a_chunk_whose_path_cannot_be_read():
+def test_strip_unreviewable_files_keeps_a_chunk_whose_path_cannot_be_read(tmp_path):
     """A hunk with no file header is kept and nothing is reported as skipped."""
     headerless = "@@ -0,0 +1 @@\n+x = 1\n"
-    kept, skipped = strip_unreviewable_files(headerless, _DETECTION)
+    kept, skipped = strip_unreviewable_files(headerless, _DETECTION, root=tmp_path)
     assert kept == headerless
     assert skipped == ()
 
@@ -271,7 +271,7 @@ def test_strip_unreviewable_files_skips_changes_to_vendored_files_as_noise(tmp_p
         "+++ b/public/plugins/lib.js\n@@ -1 +1 @@\n-var a = 1\n+var a = 2\n"
     )
 
-    kept, skipped = strip_unreviewable_files(diff, detection_for(tmp_path, [".gitattributes"]))
+    kept, skipped = strip_unreviewable_files(diff, detection_for(tmp_path, [".gitattributes"]), root=tmp_path)
 
     assert "app.py" in kept
     assert "lib.js" not in kept
@@ -283,7 +283,18 @@ def test_strip_unreviewable_files_skips_oversized_files_as_too_large(tmp_path):
     (tmp_path / "bindata.go").write_text("package bindata\n\nvar data = `" + "a" * MAX_SOURCE_BYTES + "`\n")
     diff = "diff --git a/bindata.go b/bindata.go\n--- a/bindata.go\n+++ b/bindata.go\n@@ -1 +1 @@\n-x\n+y\n"
 
-    kept, skipped = strip_unreviewable_files(diff, detection_for(tmp_path, ["bindata.go"]))
+    kept, skipped = strip_unreviewable_files(diff, detection_for(tmp_path, ["bindata.go"]), root=tmp_path)
 
     assert kept == ""
     assert skipped == (SkippedFile(path="bindata.go", reason="too_large"),)
+
+
+def test_strip_unreviewable_files_skips_a_changed_file_that_is_not_utf8(tmp_path):
+    """A change to a Latin-1 encoded app.py is skipped as not_utf8 instead of failing the review."""
+    (tmp_path / "app.py").write_bytes("name = 'caf\xe9'\n".encode("latin-1"))
+    diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-name = 1\n+name = 'cafe'\n"
+
+    kept, skipped = strip_unreviewable_files(diff, _DETECTION, root=tmp_path)
+
+    assert kept == ""
+    assert skipped == (SkippedFile(path="app.py", reason="not_utf8"),)

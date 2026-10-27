@@ -9,7 +9,7 @@ import pytest
 from cyberjury.record import Record, utc_timestamp
 from cyberjury.workspace import (
     AttemptWorkspace,
-    SessionConflictError,
+    SessionBusyError,
     SessionLocator,
     SessionWorkspace,
     WorkspaceCorruptionError,
@@ -59,7 +59,7 @@ def test_a_second_attempt_cannot_start_while_one_is_running(tmp_path):
     session = _session(tmp_path, "b")
     attempt = _start(session)
 
-    with pytest.raises(SessionConflictError, match="already running"):
+    with pytest.raises(SessionBusyError, match="already running"):
         _start(session)
 
     attempt.finish(_terminal(attempt))

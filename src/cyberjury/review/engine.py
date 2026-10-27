@@ -9,6 +9,7 @@ from threading import Lock
 from time import perf_counter
 from typing import Protocol
 
+from cyberjury.providers.base import ProviderAccessError
 from cyberjury.providers.metering import model_call_scope
 from cyberjury.review.context import (
     GroundingContext,
@@ -80,6 +81,8 @@ def run_grounded_judgment(
     navigation = context.navigator.session() if context.navigator is not None else None
     try:
         judgment = run_judgment(navigation)
+    except ProviderAccessError:
+        raise
     except Exception as exc:
         judgment = EvidenceJudgment(findings=[], failure_reason=exception_reason(exc))
     final = with_source_evidence(context, judgment.source_evidence)
@@ -108,6 +111,8 @@ def run_review_units[U: ReviewUnit](
         try:
             with model_call_scope(unit_id=unit.id):
                 cycle = execute(unit)
+        except ProviderAccessError:
+            raise
         except Exception as exc:
             cycle = ReviewCycle(findings=[], failure_reason=exception_reason(exc))
         if unit.id in earlier:

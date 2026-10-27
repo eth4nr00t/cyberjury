@@ -5,7 +5,7 @@ from typing import ClassVar
 
 import pytest
 
-from cyberjury.providers.base import CompletionResult, Message, Provider, ResponseSchema, Usage
+from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderAccessError, ResponseSchema, Usage
 from cyberjury.providers.retry import EmptyResponseError, RetryProvider
 
 _OK = '{"value":"ok"}'
@@ -299,3 +299,16 @@ def test_hard_timeout_retries_then_recovers():
     assert result.text == "call 2"
     assert result.attempts == 2
     assert inner.calls == 2
+
+
+def test_a_rejected_key_is_not_retried():
+    """A 401 response raises ProviderAccessError after one call and never sleeps."""
+    exc = RuntimeError("invalid x-api-key")
+    exc.status_code = 401
+    slept = []
+    inner = _RateLimited(fail_times=5, exc=exc)
+
+    with pytest.raises(ProviderAccessError, match="invalid x-api-key"):
+        _call(_retry(inner, max_attempts=3, sleep=slept.append))
+
+    assert (inner.calls, slept) == (1, [])

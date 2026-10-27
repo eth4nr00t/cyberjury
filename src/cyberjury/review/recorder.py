@@ -19,7 +19,17 @@ type Progress = Callable[[int, int], None]
 
 
 INTERRUPTED = "operator interrupted the command"
+TERMINATED = "the command received SIGTERM"
 _PROGRESS_INTERVAL_SECONDS = 10.0
+
+
+class Terminated(KeyboardInterrupt):
+    """SIGTERM stopped the command, as opposed to the operator's interrupt."""
+
+
+def interruption_reason(exc: BaseException | None) -> str:
+    """Name what stopped the command: SIGTERM or the operator."""
+    return TERMINATED if isinstance(exc, Terminated) else INTERRUPTED
 
 
 def internal_error(exc: BaseException) -> RecordError:
@@ -161,8 +171,8 @@ class Recorder:
 
         try:
             yield measure
-        except KeyboardInterrupt:
-            measure.attributes["reason"] = INTERRUPTED
+        except KeyboardInterrupt as exc:
+            measure.attributes["reason"] = interruption_reason(exc)
             finish("interrupted", None)
             raise
         except BaseException as exc:

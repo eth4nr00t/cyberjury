@@ -8,6 +8,7 @@ import shlex
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cache, cached_property
+from pathlib import Path
 from typing import Literal
 
 from cyberjury.numbering import HUNK_HEADER, split_lines
@@ -15,6 +16,7 @@ from cyberjury.review.context import GroundingContext
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.detection import Detection, load_detection
 from cyberjury.review.result import SkippedFile
+from cyberjury.review.selection import decodes_as_utf8
 from cyberjury.review.unit_plans import UnitPlanRecord, UnitSourceSlice
 
 _QUOTED_GIT_HEADER_RE = re.compile(r'^diff --git "(?:\\.|[^"])*" ("(?:\\.|[^"])*")$')
@@ -215,8 +217,12 @@ def _hunkless_reason(chunk: str) -> str:
     return "no_hunk"
 
 
-def strip_unreviewable_files(diff: str, detection: Detection) -> tuple[str, tuple[SkippedFile, ...]]:
-    """Remove submodule, noise, oversized, and hunkless file sections before they consume review work."""
+def _not_utf8(path: Path) -> bool:
+    return path.is_file() and not decodes_as_utf8(path.read_bytes())
+
+
+def strip_unreviewable_files(diff: str, detection: Detection, *, root: Path) -> tuple[str, tuple[SkippedFile, ...]]:
+    """Remove submodule, noise, oversized, non UTF-8, and hunkless file sections before they consume review work."""
     kept: list[str] = []
     skipped: list[SkippedFile] = []
     for chunk in split_diff_by_file(diff):
@@ -227,6 +233,8 @@ def strip_unreviewable_files(diff: str, detection: Detection) -> tuple[str, tupl
             skipped.append(SkippedFile(path=path, reason="noise"))
         elif path in detection.oversized_files:
             skipped.append(SkippedFile(path=path, reason="too_large"))
+        elif path and _not_utf8(root / path):
+            skipped.append(SkippedFile(path=path, reason="not_utf8"))
         elif path and not _parsed_hunks(chunk):
             skipped.append(SkippedFile(path=path, reason=_hunkless_reason(chunk)))
         else:

@@ -11,10 +11,18 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from cyberjury.json_parse import parse_json_object
-from cyberjury.providers.base import CompletionResult, Message, Provider, ResponseSchema, Usage
+from cyberjury.providers.base import (
+    CompletionResult,
+    Message,
+    Provider,
+    ProviderAccessError,
+    ResponseSchema,
+    Usage,
+)
 
 _BASE_DELAY_SECONDS = 1.0
 _MAX_DELAY_SECONDS = 60.0
+_ACCESS_STATUS_CODES = frozenset({401, 403, 404})
 
 
 class EmptyResponseError(RuntimeError):
@@ -135,6 +143,8 @@ class RetryProvider(Provider):
                     self._hard_timeout,
                 )
             except Exception as exc:
+                if getattr(exc, "status_code", None) in _ACCESS_STATUS_CODES:
+                    raise ProviderAccessError(f"provider rejected the request: {exc}") from exc
                 if attempt == self._max_attempts:
                     with contextlib.suppress(Exception):
                         exc.cyberjury_attempts = attempt

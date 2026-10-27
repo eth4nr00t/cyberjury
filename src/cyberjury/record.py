@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 RECORD_SCHEMA = "cyberjury.record/v1"
 STATUSES = ("running", "ok", "incomplete", "failed", "interrupted")
-ERROR_CODES = ("config", "input", "model", "internal")
+ERROR_CODES = ("config", "input", "busy", "model", "internal")
 STAGES = ("config", "target", "session", "source", "facts", "plan", "grounding", "review", "link", "result")
 METRICS = (
     "files",
