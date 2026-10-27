@@ -63,7 +63,7 @@ class Recorder:
     def __init__(
         self,
         *,
-        meter: UsageMeter | None = None,
+        meter: UsageMeter,
         stream: TextIO | None = None,
         classify: Classify = internal_error,
     ) -> None:
@@ -105,31 +105,22 @@ class Recorder:
 
     def unit_usage(self, unit_id: str) -> dict[str, int]:
         """Return the model usage metrics of the calls made for one review or link item."""
-        calls = self.meter.call_snapshot() if self.meter is not None else []
+        calls = self.meter.call_snapshot()
         return usage_metrics([call for call in calls if call.get("unit_id") == unit_id])
 
     def item(self, record: Record) -> None:
         """Print one item record line; the item store has written it."""
         self.emit(record, write=False)
 
-    def skip(self, name: str, reason: str) -> Record:
-        """Record a stage that does not apply."""
-        record = Record(
-            id=name, status="skipped", started_at=utc_timestamp(), duration_seconds=0.0, attributes={"reason": reason}
-        )
-        self.stages.append(record)
-        self.emit(record)
-        return record
-
     @contextmanager
     def stage(self, name: str, *, usage: bool = False) -> Iterator[Measure]:
         """Time one stage, add its model usage when it calls models, and record how it ended."""
         started_at, started = utc_timestamp(), time.monotonic()
-        calls_before = len(self.meter.call_snapshot()) if self.meter is not None else 0
+        calls_before = len(self.meter.call_snapshot())
         measure = Measure(_bind=lambda value: self._bind_value(name, value))
 
         def finish(status: str, error: RecordError | None) -> None:
-            calls = self.meter.call_snapshot()[calls_before:] if self.meter is not None else []
+            calls = self.meter.call_snapshot()[calls_before:]
             record = Record(
                 id=name,
                 status=status,

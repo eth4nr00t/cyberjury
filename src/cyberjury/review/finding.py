@@ -39,7 +39,6 @@ class Finding:
     source_operation_id: str = field(default="", repr=False, compare=False)
     cited_spans: tuple[SourceSpan, ...] = field(default=(), repr=False, compare=False)
     evidence_refs: tuple[str, ...] = field(default=(), repr=False, compare=False)
-    found_by: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     @property
     def candidate_id(self) -> str:
@@ -56,11 +55,29 @@ class Finding:
             source_operation_id=self.source_operation_id,
         )
 
+    def reply_record(self) -> dict[str, object]:
+        """Return the finding in the exact reply shape the model can return again."""
+        record: dict[str, object] = {
+            "title": self.title,
+            "category": self.category,
+            "severity": self.severity,
+            "entrypoint": self.entrypoint,
+            "file": self.file,
+            "line": self.line,
+        }
+        if self.change_anchor is not None:
+            record["change_anchor"] = self.change_anchor.to_dict()
+        return {
+            **record,
+            "evidence": self.evidence,
+            "attack_path": self.attack_path,
+            "evidence_refs": list(self.evidence_refs),
+        }
+
     def to_dict(self) -> dict[str, Any]:
         """Return the complete form a unit findings record stores."""
         data = asdict(self)
         data["evidence_refs"] = list(self.evidence_refs)
-        data["found_by"] = list(self.found_by)
         data["cited_spans"] = [
             {"file": span.file, "start_line": span.start_line, "end_line": span.end_line} for span in self.cited_spans
         ]
@@ -72,15 +89,15 @@ class Finding:
         names = {item.name for item in fields(cls)}
         if not isinstance(value, dict) or set(value) != names:
             raise ValueError("finding fields are invalid")
-        text = names - {"line", "change_anchor", "evidence_refs", "found_by", "cited_spans"}
+        text = names - {"line", "change_anchor", "evidence_refs", "cited_spans"}
         if not all(isinstance(value[name], str) for name in text) or value["severity"] not in SEVERITIES:
             raise ValueError("finding text fields are invalid")
         line = value["line"]
         if isinstance(line, bool) or not isinstance(line, int) or line < 1:
             raise ValueError("finding line must be a positive integer")
-        for name in ("evidence_refs", "found_by"):
-            if not isinstance(value[name], list) or not all(isinstance(item, str) for item in value[name]):
-                raise ValueError(f"finding {name} must be a list of strings")
+        refs = value["evidence_refs"]
+        if not isinstance(refs, list) or not all(isinstance(item, str) for item in refs):
+            raise ValueError("finding evidence_refs must be a list of strings")
         spans = value["cited_spans"]
         if not isinstance(spans, list) or not all(
             isinstance(span, dict) and set(span) == {"file", "start_line", "end_line"} for span in spans
@@ -95,7 +112,6 @@ class Finding:
             **{name: value[name] for name in text},
             line=line,
             change_anchor=anchor,
-            evidence_refs=tuple(value["evidence_refs"]),
-            found_by=tuple(value["found_by"]),
+            evidence_refs=tuple(refs),
             cited_spans=tuple(SourceSpan(**span) for span in spans),
         )

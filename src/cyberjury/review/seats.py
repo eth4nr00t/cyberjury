@@ -6,11 +6,9 @@ from dataclasses import dataclass
 
 from cyberjury.providers.base import Provider
 from cyberjury.providers.configuration import ProviderConfiguration, ProviderSeat, provider_for_seat
-from cyberjury.providers.metering import MeteringProvider, UsageMeter
+from cyberjury.providers.metering import UsageMeter
 from cyberjury.review.issues import IssueJudge, ModelIssueJudge
 from cyberjury.review.request import ProviderSeatRecord, endpoint_identity, seat_identity
-
-DRY_RUN_SEAT = ProviderSeat(provider="mock", model="mock")
 
 
 def provider_seat_record(seat: ProviderSeat) -> ProviderSeatRecord:
@@ -24,40 +22,21 @@ def provider_seat_record(seat: ProviderSeat) -> ProviderSeatRecord:
     )
 
 
-def provider_seat_id(seat: ProviderSeat) -> str:
-    """Identify one effective provider transport without credentials."""
-    return provider_seat_record(seat).seat_id
-
-
 @dataclass(frozen=True, kw_only=True)
 class ReviewSeats:
-    """The finder and the issue link judge of one review, identified as they are recorded."""
+    """The finder and the issue link judge of one review."""
 
     finder: Provider
     finder_model: str
-    finder_label: str
-    issue_judge: IssueJudge | None = None
+    issue_judge: IssueJudge
 
 
-def review_seats(
-    configuration: ProviderConfiguration,
-    *,
-    meter: UsageMeter,
-    dry_run_provider: Provider | None = None,
-) -> ReviewSeats:
-    """Resolve the seats one review calls. A dry run provider replaces the finder and disables model judgments."""
-    if dry_run_provider is not None:
-        return ReviewSeats(
-            finder=MeteringProvider(dry_run_provider, meter),
-            finder_model=DRY_RUN_SEAT.model,
-            finder_label=provider_seat_id(DRY_RUN_SEAT),
-        )
-    finder = configuration.seat
+def review_seats(configuration: ProviderConfiguration, *, meter: UsageMeter) -> ReviewSeats:
+    """Resolve the seats one review calls."""
+    seat = configuration.seat
     provider = provider_for_seat(configuration, meter=meter)
-    seat_id = provider_seat_id(finder)
     return ReviewSeats(
         finder=provider,
-        finder_model=finder.model,
-        finder_label=seat_id,
-        issue_judge=ModelIssueJudge(provider=provider, model=finder.model, seat_id=seat_id),
+        finder_model=seat.model,
+        issue_judge=ModelIssueJudge(provider=provider, model=seat.model, seat_id=provider_seat_record(seat).seat_id),
     )

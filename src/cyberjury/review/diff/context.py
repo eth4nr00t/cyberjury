@@ -25,32 +25,24 @@ from cyberjury.review.diff.model import (
     reviewable_changed_paths,
 )
 from cyberjury.review.diff.prompts import diff_seed
-from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.paths import read_repository_source
 from cyberjury.review.prepare import SharedGrounding
 from cyberjury.review.prompts import one_line_source
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.seed_sources import CandidateCallContext, candidate_call_context, definition_evidence
-from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS, ReviewExecutionSettings
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
 _EXECUTION = DEFAULT_REVIEW_SETTINGS.execution
 
 
-def ground_diff_unit(
-    unit: DiffUnit,
-    shared: SharedGrounding,
-    *,
-    execution: ReviewExecutionSettings = _EXECUTION,
-) -> GroundingContext:
+def ground_diff_unit(unit: DiffUnit, shared: SharedGrounding) -> GroundingContext:
     """Bind one planned diff unit to its exact initial evidence envelope."""
     diff, definition_plan = unit.diff, unit.definition_plan
     root = shared.root
     relationships = shared.facts.relationships
     paths = reviewable_changed_paths(diff, shared.detection)
     seed = diff_seed(diff)
-    if not paths:
-        return GroundingContext(text="", seed=seed, files=())
     ranges = changed_line_ranges(diff, shared.detection)
     evidence = definition_evidence(root, definition_plan)
     candidate = (
@@ -64,7 +56,7 @@ def ground_diff_unit(
             ),
             callsite_ids=_callsite_ids_in_ranges(root, relationships, ranges),
             catalog=evidence,
-            deliver_chars=execution.max_initial_candidate_source_chars,
+            deliver_chars=_EXECUTION.max_initial_candidate_source_chars,
         )
         if definition_plan.seeds
         else CandidateCallContext()
@@ -88,7 +80,7 @@ def ground_diff_unit(
             definition_plan,
             paths,
             shared.facts.by_file,
-            max_chars_per_file=execution.max_syntax_hint_chars_per_file,
+            max_chars_per_file=_EXECUTION.max_syntax_hint_chars_per_file,
         ),
         navigator=shared.navigator,
         source_snapshot=shared.snapshot,
@@ -107,7 +99,7 @@ def changed_file_sources(
     paths: tuple[str, ...],
     ranges: ChangedLineRanges,
     *,
-    budget: int = _SETTINGS.target_repository_context_chars_per_unit,
+    budget: int,
 ) -> tuple[str, tuple[SourceEvidence, ...]]:
     """Deliver bounded current source of changed files without seed definitions, centered on their changed lines."""
     sources = [
@@ -217,17 +209,10 @@ def _callsite_ids_in_ranges(
             continue
         source = sources.get(callsite.source.path)
         if source is None:
-            source = _read_source(root, callsite.source.path)
+            source = read_repository_source(root, callsite.source.path, label="diff grounding") or ""
             sources[callsite.source.path] = source
         start_line = source.count("\n", 0, callsite.source.start) + 1
         end_line = source.count("\n", 0, max(callsite.source.start, callsite.source.end - 1)) + 1
         if any(start_line <= end and start <= end_line for start, end in file_ranges):
             selected.add(callsite.id)
     return frozenset(selected)
-
-
-def _read_source(root: Path, rel: str) -> str:
-    source = read_repository_source(root, rel, label="relationship")
-    if source is None:
-        raise BackendUnavailable(f"relationship source {rel} is missing")
-    return source

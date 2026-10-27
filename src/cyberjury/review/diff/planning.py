@@ -17,7 +17,7 @@ from cyberjury.review.diff.model import (
 )
 from cyberjury.review.paths import read_repository_source
 from cyberjury.review.relationships import DefinitionEvidence
-from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS, DiffReviewSettings
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
 
@@ -28,24 +28,15 @@ def build_diff_units(
     root: Path,
     detection: Detection,
     definitions: tuple[DefinitionEvidence, ...],
-    settings: DiffReviewSettings = _SETTINGS,
 ) -> list[DiffUnit]:
     """Plan diff units without reading or rendering their initial grounding."""
     if not diff.strip():
         return []
-    chunks = split_diff_by_file(diff)
     paths = diff_paths(diff)
-    chunks_by_path: dict[str, str] = {}
-    for chunk in chunks:
-        path = chunk_path(chunk)
-        if not path:
-            raise ValueError("diff review contains a file section without a source path")
-        if path in chunks_by_path:
-            raise ValueError(f"diff review contains repeated file sections for {path}")
-        chunks_by_path[path] = chunk
+    chunks_by_path = {chunk_path(chunk): chunk for chunk in split_diff_by_file(diff)}
     ranges = changed_line_ranges(diff, detection)
     seeds = changed_definitions(root, paths, ranges, definitions)
-    plans = _pack_surface_plans(list(plan_definition_units(seeds, seed_files=paths)), chunks_by_path, settings)
+    plans = _pack_surface_plans(list(plan_definition_units(seeds, seed_files=paths)), chunks_by_path)
     covered = {
         file
         for plan in plans
@@ -55,7 +46,7 @@ def build_diff_units(
         )
     }
     fallback_diff = "".join(chunks_by_path[path] for path in paths if path not in covered)
-    fallback_batches = pack_diff_chunks(fallback_diff, settings.target_patch_chars_per_unit)
+    fallback_batches = pack_diff_chunks(fallback_diff, _SETTINGS.target_patch_chars_per_unit)
     provisional: list[tuple[str, tuple[str, ...], DefinitionUnitPlan]] = []
     for plan in plans:
         unit_paths = tuple(
@@ -71,7 +62,7 @@ def build_diff_units(
         unit_diff = "".join(chunks_by_path[path] for path in unit_paths)
         if unit_diff:
             batches = (
-                pack_diff_chunks(unit_diff, settings.target_patch_chars_per_unit)
+                pack_diff_chunks(unit_diff, _SETTINGS.target_patch_chars_per_unit)
                 if len(unit_paths) == 1
                 else [unit_diff]
             )
@@ -95,7 +86,7 @@ def build_diff_units(
 def plan_definition_units(
     seeds: tuple[DefinitionEvidence, ...],
     *,
-    seed_files: tuple[str, ...] = (),
+    seed_files: tuple[str, ...],
 ) -> tuple[DefinitionUnitPlan, ...]:
     """Build one plan per seed file, in seed order, holding that file's seed definitions."""
     plans = []
@@ -124,7 +115,6 @@ def merge_definition_unit_plans(
 def _pack_surface_plans(
     plans: list[DefinitionUnitPlan],
     chunks_by_path: dict[str, str],
-    settings: DiffReviewSettings,
 ) -> list[DefinitionUnitPlan]:
     packed: list[DefinitionUnitPlan] = []
     current: DefinitionUnitPlan | None = None
@@ -136,8 +126,8 @@ def _pack_surface_plans(
         candidate_paths = tuple(dict.fromkeys((*(seed.source.path for seed in candidate.seeds), *candidate.seed_files)))
         patch_chars = sum(len(chunks_by_path.get(path, "")) for path in candidate_paths)
         if (
-            patch_chars > settings.target_patch_chars_per_unit
-            or len(candidate.seeds) > settings.max_definition_evidence_items_per_unit
+            patch_chars > _SETTINGS.target_patch_chars_per_unit
+            or len(candidate.seeds) > _SETTINGS.max_definition_evidence_items_per_unit
         ):
             packed.append(current)
             current = plan

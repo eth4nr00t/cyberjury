@@ -9,7 +9,6 @@ from pathlib import Path
 from cyberjury.numbering import split_lines
 from cyberjury.review.context import GroundingContext
 from cyberjury.review.definitions import DefinitionUnitPlan
-from cyberjury.review.paths import safe_repository_path
 from cyberjury.review.relationships import DefinitionEvidence
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.unit_plans import UnitPlanRecord, UnitSourceSlice
@@ -24,8 +23,8 @@ class RepositoryUnit:
     name: str
     root: str
     file: str
+    span: tuple[int, int]
     id: str = ""
-    span: tuple[int, int] | None = None
     definition_plan: DefinitionUnitPlan | None = None
     grounding: GroundingContext | None = None
 
@@ -33,10 +32,6 @@ class RepositoryUnit:
     def paths(self) -> tuple[str, ...]:
         """Return the one source path this unit reviews."""
         return (self.file,)
-
-
-class RepositorySourceError(RuntimeError):
-    """A source required for deterministic worklist discovery is unavailable."""
 
 
 def construct_boundaries(text: str) -> list[int]:
@@ -62,7 +57,7 @@ def construct_boundaries(text: str) -> list[int]:
 
 
 def char_spans(text: str) -> list[tuple[int, int]]:
-    """The char windows that cover `text`."""
+    """Split text into bounded windows at top-level boundaries, overlapping hard splits."""
     size = len(text)
     if size <= _SETTINGS.max_source_chars_per_unit:
         return [(0, size)]
@@ -85,18 +80,6 @@ def char_spans(text: str) -> list[tuple[int, int]]:
         start = next_start
 
 
-def _unit_source_text(root: str | Path, rel: str) -> str:
-    path = safe_repository_path(root, rel)
-    if path is None:
-        raise RepositorySourceError(f"unit planning references unsafe source path {rel!r}")
-    try:
-        if not path.is_file():
-            raise OSError("not a regular file")
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise RepositorySourceError(f"unit planning could not read source {rel}: {exc}") from exc
-
-
 def build_units(
     root: str | Path,
     candidate_files: Sequence[str],
@@ -106,7 +89,7 @@ def build_units(
     root = str(root)
     units: list[RepositoryUnit] = []
     for source_file in dict.fromkeys(candidate_files):
-        spans = char_spans(_unit_source_text(root, source_file))
+        spans = char_spans((Path(root) / source_file).read_text(encoding="utf-8"))
         units.extend(
             RepositoryUnit(
                 name=source_file if len(spans) == 1 else f"{source_file}#{index}",

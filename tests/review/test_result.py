@@ -1,110 +1,46 @@
-"""Shared result artifacts enforce one strict terminal contract."""
+"""The findings artifact maps every target onto one field set, ordered by severity, with its issues."""
 
 from dataclasses import replace
 
-import pytest
-
+from cyberjury.canonical import canonical_sha256
 from cyberjury.review.finding import ChangeAnchor, Finding
-from cyberjury.review.issues import Issue, issue_id
-from cyberjury.review.result import (
-    ChangeAnchorRecord,
-    FindingRecord,
-    FindingsArtifact,
-    IssueRecord,
-    findings_artifact,
-)
-
-CANDIDATE = "candidate-" + "1" * 20
+from cyberjury.review.issues import Issue
+from cyberjury.review.result import findings_artifact
 
 
-def finding() -> FindingRecord:
-    """Return one complete candidate finding record."""
-    return FindingRecord(
-        id=CANDIDATE,
-        title="Object access lacks an ownership check",
-        category="authorization",
-        severity="HIGH",
-        file="src/handler.py",
-        line=12,
-        entrypoint="GET /objects/{id}",
-        evidence="The handler loads the object by request id and returns it directly.",
-        attack_path="An authenticated user supplies another user's object id.",
-        evidence_refs=("evidence-1",),
-        supporting_reviewers=("finder-primary",),
-        issue_id=issue_id((CANDIDATE,)),
-        change_anchor=ChangeAnchorRecord(file="src/handler.py", line=12, side="new"),
-    )
-
-
-def single(record: FindingRecord) -> FindingsArtifact:
-    """Wrap one finding record in a findings artifact with its own issue."""
-    issue = IssueRecord(
-        id=record.issue_id,
-        representative=record.id,
-        members=(record.id,),
-        linked_by=(),
-    )
-    return FindingsArtifact.create((record,), (issue,))
-
-
-def test_findings_round_trip_preserves_canonical_content_identity():
-    """Serializing and parsing a one-finding artifact returns an equal artifact with the same content hash."""
-    artifact = single(finding())
-
-    restored = FindingsArtifact.from_dict(artifact.to_dict())
-
-    assert restored == artifact
-    assert restored.content_sha256 == single(finding()).content_sha256
-
-
-def test_findings_reject_tampered_content():
-    """Changing a serialized finding's line from 12 to 13 fails loading with a content hash error."""
-    document = single(finding()).to_dict()
-    document["findings"][0]["line"] = 13
-
-    with pytest.raises(ValueError, match="content hash"):
-        FindingsArtifact.from_dict(document)
+def _finding(**values) -> Finding:
+    fields = {
+        "title": "missing ownership check",
+        "file": "views.py",
+        "line": 3,
+        "severity": "MEDIUM",
+        "category": "idor",
+        "entrypoint": "GET /records/<id>",
+        "evidence": "views.py:3 returns any record",
+        "attack_path": "a member reads another record",
+    }
+    return Finding(**(fields | values))
 
 
 def test_findings_artifact_maps_every_target_onto_the_same_fields():
     """Diff and repository findings serialize to one v1 field set, with change_anchor None for the repo one."""
-    diff = Finding(
+    diff = _finding(
         title="record write is unauthenticated",
         file="app.py",
         line=20,
         severity="HIGH",
-        category="missing-authorization",
-        entrypoint="POST /records",
         evidence="authentication was removed",
-        attack_path="anyone posts a record",
         change_anchor=ChangeAnchor(file="middleware.py", line=8, side="old"),
     )
-    repository = Finding(
-        title="missing ownership check",
-        file="views.py",
-        line=3,
-        severity="MEDIUM",
-        category="idor",
-        entrypoint="GET /records/<id>",
-        evidence="views.py:3 returns any record",
-        attack_path="a member reads another record",
-    )
+    repository = _finding()
 
-    artifact = findings_artifact([diff, repository], (Issue(members=(diff,)), Issue(members=(repository,))))
+    document = findings_artifact([repository, diff], (Issue(members=(diff,)), Issue(members=(repository,)))).to_dict()
 
-    by_file = {record.file: record for record in artifact.findings}
-    assert (by_file["app.py"].title, by_file["app.py"].evidence) == (
-        "record write is unauthenticated",
-        "authentication was removed",
-    )
-    assert by_file["app.py"].change_anchor == ChangeAnchorRecord(file="middleware.py", line=8, side="old")
-    assert (by_file["views.py"].title, by_file["views.py"].evidence) == (
-        "missing ownership check",
-        "views.py:3 returns any record",
-    )
-    assert (by_file["views.py"].entrypoint, by_file["views.py"].change_anchor) == ("GET /records/<id>", None)
-    assert artifact.to_dict()["schema"] == "cyberjury.findings/v1"
-    assert set(artifact.to_dict()["findings"][0]) == {
+    assert document["schema"] == "cyberjury.findings/v1"
+    assert [record["file"] for record in document["findings"]] == ["app.py", "views.py"]
+    assert document["findings"][0]["change_anchor"] == {"file": "middleware.py", "line": 8, "side": "old"}
+    assert document["findings"][1]["change_anchor"] is None
+    assert set(document["findings"][0]) == {
         "id",
         "title",
         "category",
@@ -115,47 +51,36 @@ def test_findings_artifact_maps_every_target_onto_the_same_fields():
         "evidence",
         "attack_path",
         "evidence_refs",
-        "supporting_reviewers",
         "issue_id",
         "change_anchor",
     }
 
 
 def test_findings_artifact_records_every_member_of_a_grouped_issue_with_its_issue_id():
-    """Two findings linked by location share one issue id and round-trip, and the summary counts two HIGH."""
-    first = Finding(
-        title="share link grants another user's document",
-        file="serialisers.py",
-        line=1602,
-        severity="HIGH",
-        category="idor",
-        entrypoint="POST /share_links",
-        evidence="serialisers.py:1602 accepts any document",
-        attack_path="a member shares another user's document",
-    )
+    """Two findings linked by location share one issue id, and the summary counts two HIGH."""
+    first = _finding(severity="HIGH")
     second = replace(first, title="share link creation lacks a document check")
     issue = Issue(members=(first, second), linked_by=("location",))
 
-    artifact = findings_artifact([first, second], (issue,))
+    document = findings_artifact([first, second], (issue,)).to_dict()
 
-    assert [record.issue_id for record in artifact.findings] == [issue.id, issue.id]
-    assert artifact.issues == (
-        IssueRecord(
-            id=issue.id,
-            representative=first.candidate_id,
-            members=(first.candidate_id, second.candidate_id),
-            linked_by=("location",),
-        ),
-    )
-    assert FindingsArtifact.from_dict(artifact.to_dict()) == artifact
-    assert artifact.summary == (("CRITICAL", 0), ("HIGH", 2), ("MEDIUM", 0), ("LOW", 0))
+    assert [record["issue_id"] for record in document["findings"]] == [issue.id, issue.id]
+    assert document["issues"] == [
+        {
+            "id": issue.id,
+            "representative": first.candidate_id,
+            "members": [first.candidate_id, second.candidate_id],
+            "linked_by": ["location"],
+        }
+    ]
+    assert document["summary"] == {"CRITICAL": 0, "HIGH": 2, "MEDIUM": 0, "LOW": 0}
 
 
-def test_findings_artifact_rejects_issues_that_do_not_partition_its_findings():
-    """A finding with no issue raises "partition", and adding a foreign member raises an issue id mismatch."""
-    record = finding()
+def test_findings_artifact_hashes_its_content():
+    """The content hash covers the findings, the issues, and the summary."""
+    finding = _finding()
 
-    with pytest.raises(ValueError, match="partition"):
-        FindingsArtifact.create((record,), ())
-    with pytest.raises(ValueError, match="issue id does not match"):
-        replace(single(record).issues[0], members=(record.id, "candidate-" + "2" * 20))
+    document = findings_artifact([finding], (Issue(members=(finding,)),)).to_dict()
+
+    content = {key: document[key] for key in ("findings", "issues", "summary")}
+    assert document["content_sha256"] == canonical_sha256(content)

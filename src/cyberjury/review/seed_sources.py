@@ -6,7 +6,6 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury.canonical import text_sha256
 from cyberjury.numbering import split_lines
 from cyberjury.review.context import (
     EvidenceItem,
@@ -17,7 +16,6 @@ from cyberjury.review.context import (
 )
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.failures import BackendUnavailable
-from cyberjury.review.paths import contained_repository_path
 from cyberjury.review.prompts import inline_source, one_line_source
 from cyberjury.review.relationships import (
     CallsiteEvidence,
@@ -68,15 +66,13 @@ class _CandidateSources:
     def text(self, path: str, subject: str) -> str:
         if path not in self._texts:
             try:
-                self._texts[path] = contained_repository_path(self._base, path).read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError, ValueError) as exc:
+                self._texts[path] = (self._base / path).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
                 raise BackendUnavailable(f"could not materialize candidate call source {subject}: {exc}") from exc
         return self._texts[path]
 
     def lines(self, reference: SourceReference, subject: str) -> tuple[int, int]:
         text = self.text(reference.path, subject)
-        if reference.end > len(text):
-            raise BackendUnavailable(f"candidate call source range exceeds {subject}")
         first = text.count("\n", 0, reference.start) + 1
         return first, text.count("\n", 0, max(reference.start, reference.end - 1)) + 1
 
@@ -183,11 +179,7 @@ def _callee_sources(
         if callee.id in seed_ids:
             continue
         source = sources.text(callee.source.path, callee.id)
-        if callee.source.end > len(source):
-            raise BackendUnavailable(f"candidate call source range exceeds {callee.id}")
         selected = source[callee.source.start : callee.source.end]
-        if text_sha256(selected) != callee.source.content_sha256:
-            raise BackendUnavailable(f"candidate call source content changed for {callee.id}")
         text, span = numbered_source_range(callee.source.path, source, callee.source.start, callee.source.end)
         evidence = SourceEvidence(id=source_id(callee.identity), identity=callee.identity, text=text, source_span=span)
         if used + len(evidence.text) > budget:
@@ -234,14 +226,14 @@ def candidate_call_context(
     max_chars: int,
     callsite_ids: frozenset[str] | None = None,
     catalog: tuple[EvidenceItem, ...] = (),
-    deliver_chars: int = 0,
+    deliver_chars: int,
 ) -> CandidateCallContext:
     """Expose bounded call candidates from unit seeds, in source order, without promoting bindings."""
     if plan is None or not plan.seeds:
         return CandidateCallContext()
     seed_ids = {seed.id for seed in plan.seeds if seed.kind != "file"}
     calls = _single_candidate_calls(relationships, seed_ids, callsite_ids)
-    if not calls or len(_CALL_CANDIDATE_HEADER) > max_chars:
+    if not calls:
         return CandidateCallContext()
     listing = _CallListing(_CandidateSources(root), _calls_by_definition(relationships))
     included, omitted = _budgeted_calls(listing, calls, max_chars)
@@ -281,12 +273,10 @@ def definition_evidence(root: str | Path, plan: DefinitionUnitPlan) -> tuple[Evi
         file, start, end = seed.source.path, seed.source.start, seed.source.end
         try:
             if file not in sources:
-                sources[file] = contained_repository_path(base, file).read_text(encoding="utf-8")
+                sources[file] = (base / file).read_text(encoding="utf-8")
             source = sources[file]
-        except (OSError, UnicodeDecodeError, ValueError) as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             raise BackendUnavailable(f"could not materialize definition evidence {seed.identity}: {exc}") from exc
-        if end > len(source):
-            raise BackendUnavailable(f"definition evidence range exceeds source {seed.identity}")
         text, span = numbered_source_range(file, source, start, end)
         items.append(
             EvidenceItem.create(
@@ -300,7 +290,7 @@ def definition_evidence(root: str | Path, plan: DefinitionUnitPlan) -> tuple[Evi
     return tuple(items)
 
 
-def _definition_preview(source: str, max_chars: int = 240) -> str:
+def _definition_preview(source: str) -> str:
     parts: list[str] = []
     for raw in split_lines(source):
         line = raw.strip()
@@ -310,8 +300,8 @@ def _definition_preview(source: str, max_chars: int = 240) -> str:
             line = line.partition("{")[0].rstrip() + " {"
         parts.append(line)
         preview = " ".join(parts)
-        if len(preview) >= max_chars or line.endswith(":") or "{" in line or line.endswith(";"):
+        if len(preview) >= 240 or line.endswith(":") or "{" in line or line.endswith(";"):
             break
         if len(parts) == 3:
             break
-    return " ".join(parts)[:max_chars]
+    return " ".join(parts)[:240]

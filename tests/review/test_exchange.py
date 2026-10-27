@@ -5,7 +5,6 @@ from contextlib import nullcontext
 
 from cyberjury.providers.base import Message
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
-from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import (
     EvidenceItem,
     GroundingContext,
@@ -13,14 +12,10 @@ from cyberjury.review.context import (
 )
 from cyberjury.review.exchange import run_evidence_judgment
 from cyberjury.review.navigation import SourceBudgetError, SourceNavigator
-from cyberjury.review.union import FindingAccumulator
-from tests.review.support import StubFinding, finding_key, fold_findings, navigator_from_callgraph
-
-_MERGE_RULE = "A returned finding with the same `title` as an accepted finding is merged into it."
-
-
-def _prompt_record(finding: StubFinding) -> dict[str, str]:
-    return {"title": finding.title, "location": finding.location}
+from cyberjury.review.relationships import RelationshipEvidenceBundle
+from cyberjury.review.union import MERGE_RULE
+from tests.review.support import navigator_from_callgraph, stub_finding
+from tests.support import EMPTY_SCHEMA, MockProvider
 
 
 def _variant(published_id: str) -> str:
@@ -28,20 +23,18 @@ def _variant(published_id: str) -> str:
 
 
 def _judge(context: GroundingContext, **options):
+    ask = options.pop("ask")
+    options["ask"] = lambda prompt: {"evidence_requests": [], "source_queries": [], **ask(prompt)}
     options.setdefault("findings_from_reply", lambda reply: list(reply["findings"]))
-    options.setdefault("accumulator", FindingAccumulator(key=finding_key, fold=fold_findings))
     options.setdefault("max_followups", 1)
-    options.setdefault("evidence_refs", lambda finding: finding.evidence_refs)
     options.setdefault("navigation", context.navigator.session() if context.navigator is not None else None)
-    options.setdefault("finding_prompt_record", _prompt_record)
-    options.setdefault("merge_rule", _MERGE_RULE)
     return run_evidence_judgment(context, **options)
 
 
 def test_unknown_evidence_request_preserves_findings_and_fails_the_judgment():
     """Requesting ev-invented keeps the reply's finding but fails with an unknown-ids reason."""
     evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
-    finding = StubFinding("one", "a:1")
+    finding = stub_finding("one", "a:1")
 
     result = _judge(
         GroundingContext(text="source", evidence=(evidence,)),
@@ -168,7 +161,7 @@ def test_unknown_evidence_correction_preserves_valid_batch_ids_without_guessing(
 def test_already_delivered_source_receipt_is_cited_without_another_exchange():
     """Requesting a source id already in context costs no extra model call and becomes a reference."""
     source = SourceEvidence(id="src-already", identity="a.py:helper:0:10", text="1 | def helper")
-    finding = StubFinding("one", "a:1", evidence_refs=(source.id,))
+    finding = stub_finding("one", "a:1", evidence_refs=(source.id,))
     calls = 0
 
     def ask(_context):
@@ -211,16 +204,16 @@ def test_repeating_only_an_already_delivered_receipt_twice_fails_loud():
 
 
 def test_evidence_follow_up_preserves_the_initial_finding():
-    """A finding repeated after an evidence read merges found_by from both replies and records the source."""
+    """A finding repeated after an evidence read merges with the first report and records the source."""
     evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
     replies = iter(
         (
             {
-                "findings": [StubFinding("one", "a:1", found_by=("initial",))],
+                "findings": [stub_finding("one", "a:1", evidence_refs=("seed",))],
                 "evidence_requests": [evidence.id],
             },
             {
-                "findings": [StubFinding("one", "a:1", found_by=("follow-up",))],
+                "findings": [stub_finding("one", "a:1", evidence_refs=(evidence.id,))],
                 "evidence_requests": [],
             },
         )
@@ -233,7 +226,7 @@ def test_evidence_follow_up_preserves_the_initial_finding():
     )
 
     assert len(result.findings) == 1
-    assert result.findings[0].found_by == ("follow-up", "initial")
+    assert result.findings[0].evidence_refs == ("seed", evidence.id)
     assert result.source_evidence == (SourceEvidence(id=evidence.id, identity=evidence.identity, text=evidence.text),)
 
 
@@ -317,7 +310,7 @@ def test_evidence_followups_replace_provisional_memory_without_losing_candidates
     """Accepted findings appear once per follow-up prompt, and the last prompt lists both read sources."""
     first = EvidenceItem.create(identity="a.py:first:0:10", label="a.py:first", text="first source")
     second = EvidenceItem.create(identity="a.py:second:11:20", label="a.py:second", text="second source")
-    finding = StubFinding("candidate", "a.py:1", evidence_refs=("seed",))
+    finding = stub_finding("candidate", "a.py:1", evidence_refs=("seed",))
     prompts = []
     replies = iter(
         (
@@ -366,7 +359,7 @@ def test_unavailable_source_navigation_fails_instead_of_reporting_clean():
 def test_finding_that_cites_evidence_requested_in_the_same_reply_is_deferred():
     """A finding citing an id requested in the same reply is held until read, then shown as frozen."""
     evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
-    finding = StubFinding("one", "a:1", evidence_refs=(evidence.id,))
+    finding = stub_finding("one", "a:1", evidence_refs=(evidence.id,))
     replies = iter(
         (
             {"findings": [finding], "evidence_requests": [evidence.id]},
@@ -388,13 +381,13 @@ def test_finding_that_cites_evidence_requested_in_the_same_reply_is_deferred():
     assert result.findings == [finding]
     assert result.grounding.references == (evidence.id,)
     assert "Findings already accepted for this unit" in prompts[-1].controls
-    assert f"cannot be edited or withdrawn. {_MERGE_RULE} Return only new findings." in prompts[-1].controls
+    assert f"cannot be edited or withdrawn. {MERGE_RULE} Return only new findings." in prompts[-1].controls
 
 
 def test_deferred_finding_is_accepted_after_requested_evidence_is_read():
     """A finding repeated after its cited evidence is delivered is kept with that id as a reference."""
     evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
-    finding = StubFinding("one", "a:1", evidence_refs=(evidence.id,))
+    finding = stub_finding("one", "a:1", evidence_refs=(evidence.id,))
     replies = iter(
         (
             {"findings": [finding], "evidence_requests": [evidence.id]},
@@ -414,8 +407,8 @@ def test_deferred_finding_is_accepted_after_requested_evidence_is_read():
 
 def test_unread_finding_reference_gets_one_bounded_correction():
     """A finding citing ev-invented triggers one correction listing delivered ids without echoing the bad id."""
-    invalid = StubFinding("one", "a:1", evidence_refs=("ev-invented",))
-    corrected = StubFinding("one", "a:1", evidence_refs=("seed",))
+    invalid = stub_finding("one", "a:1", evidence_refs=("ev-invented",))
+    corrected = stub_finding("one", "a:1", evidence_refs=("seed",))
     prompts = []
     replies = iter(
         (
@@ -440,10 +433,10 @@ def test_unread_finding_reference_gets_one_bounded_correction():
 
 def test_repeated_unread_references_keep_every_finding_as_fallback():
     """Two replies citing unpublished ids keep all four findings, flag findings[1] and [2], and fail."""
-    first = StubFinding("first", "a:1", evidence_refs=("seed",))
-    invented = StubFinding("invented", "a:2", evidence_refs=("ev-invented",))
-    altered = StubFinding("altered", "a:3", evidence_refs=("ev-altered",))
-    last = StubFinding("last", "a:4", evidence_refs=("seed",))
+    first = stub_finding("first", "a:1", evidence_refs=("seed",))
+    invented = stub_finding("invented", "a:2", evidence_refs=("ev-invented",))
+    altered = stub_finding("altered", "a:3", evidence_refs=("ev-altered",))
+    last = stub_finding("last", "a:4", evidence_refs=("seed",))
     reply = {"findings": [first, invented, altered, last], "evidence_requests": []}
     prompts = []
 
@@ -464,7 +457,7 @@ def test_repeated_unread_references_keep_every_finding_as_fallback():
 def test_malformed_evidence_request_is_corrected_without_echoing_the_invalid_id():
     """A request for "ev-bad id" gets a malformed-id correction that names only the valid published id."""
     evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
-    finding = StubFinding("one", "a:1", evidence_refs=("seed",))
+    finding = stub_finding("one", "a:1", evidence_refs=("seed",))
     replies = iter(
         (
             {"findings": [finding], "evidence_requests": [evidence.id, "ev-bad id"]},
@@ -488,7 +481,7 @@ def test_malformed_evidence_request_is_corrected_without_echoing_the_invalid_id(
 
 def test_repeated_malformed_evidence_requests_end_incomplete_with_their_findings():
     """A 200-character evidence id on every reply fails as oversized while keeping the finding."""
-    finding = StubFinding("one", "a:1", evidence_refs=("seed",))
+    finding = stub_finding("one", "a:1", evidence_refs=("seed",))
 
     result = _judge(
         GroundingContext(text="source"),
@@ -524,7 +517,7 @@ def test_initial_source_coverage_deduplicates_one_range_with_multiple_receipts()
 def test_published_evidence_reference_is_an_implicit_read_request():
     """A finding citing an unread published id delivers that evidence and keeps the finding once confirmed."""
     evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
-    finding = StubFinding("one", "a:1", evidence_refs=(evidence.id,))
+    finding = stub_finding("one", "a:1", evidence_refs=(evidence.id,))
     replies = iter(
         (
             {"findings": [finding], "evidence_requests": []},
@@ -572,7 +565,7 @@ def test_source_navigation_searches_then_reads_before_forming_a_finding(tmp_path
                 "source_queries": [],
             }
         return {
-            "findings": [StubFinding("one", "models.py:1", evidence_refs=(read_target[0],))],
+            "findings": [stub_finding("one", "models.py:1", evidence_refs=(read_target[0],))],
             "source_queries": [],
         }
 
@@ -583,7 +576,7 @@ def test_source_navigation_searches_then_reads_before_forming_a_finding(tmp_path
         max_followups=2,
     )
 
-    assert result.findings == [StubFinding("one", "models.py:1", evidence_refs=(read_target[0],))]
+    assert result.findings == [stub_finding("one", "models.py:1", evidence_refs=(read_target[0],))]
     assert result.grounding.included == (f"models.py:Record:0:{len(source)}",)
     assert result.source_evidence[0].id == read_target[0]
     assert "owner = 'user'" in result.source_evidence[0].text
@@ -643,7 +636,7 @@ def test_oversized_source_query_correction_preserves_findings(tmp_path):
         {"callgraph": {"models.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
     )
     assert navigator is not None
-    finding = StubFinding("missing owner scope", "models.py:1", evidence_refs=("seed",))
+    finding = stub_finding("missing owner scope", "models.py:1", evidence_refs=("seed",))
     replies = iter(
         (
             {
@@ -704,7 +697,9 @@ def test_unknown_definition_correction_does_not_echo_model_text(tmp_path):
     """An unknown definition_id carrying injected text is corrected without repeating that text."""
     source = "class Record:\n    owner = 'user'\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
-    navigator = SourceNavigator.from_facts(tmp_path, source_files=("models.py",))
+    navigator = SourceNavigator.from_facts(
+        tmp_path, source_files=("models.py",), relationship_evidence=RelationshipEvidenceBundle()
+    )
     assert navigator is not None
     replies = iter(
         (
@@ -764,7 +759,7 @@ def test_source_search_reference_is_read_before_the_finding_is_accepted(tmp_path
         assert target is not None
         read_target.append(target.group(1))
         return {
-            "findings": [StubFinding("one", "models.py:1", evidence_refs=(target.group(1),))],
+            "findings": [stub_finding("one", "models.py:1", evidence_refs=(target.group(1),))],
             "source_queries": [],
         }
 
@@ -775,7 +770,7 @@ def test_source_search_reference_is_read_before_the_finding_is_accepted(tmp_path
         max_followups=2,
     )
 
-    assert result.findings == [StubFinding("one", "models.py:1", evidence_refs=(read_target[0],))]
+    assert result.findings == [stub_finding("one", "models.py:1", evidence_refs=(read_target[0],))]
     assert result.grounding.references == (read_target[0],)
     assert result.grounding.complete is True
 
@@ -906,7 +901,7 @@ def test_a_held_citation_is_requested_again_even_when_the_model_stops_asking():
     """A finding citing two 300-character items over a 500 target gets the held second item read before finishing."""
     first = EvidenceItem.create(identity="a.py:first:0:300", label="first", text="a" * 300)
     second = EvidenceItem.create(identity="b.py:second:0:300", label="second", text="b" * 300)
-    finding = StubFinding("guard missing", "a.py:1", evidence_refs=(first.id, second.id))
+    finding = stub_finding("guard missing", "a.py:1", evidence_refs=(first.id, second.id))
     prompts = []
     replies = iter(
         (
@@ -937,7 +932,7 @@ def test_cited_evidence_is_delivered_before_other_requested_evidence():
     """With room for one 300-character item, the item a finding cites is delivered and the other request is held."""
     cited = EvidenceItem.create(identity="a.py:cited:0:300", label="cited", text="a" * 300)
     other = EvidenceItem.create(identity="b.py:other:0:300", label="other", text="b" * 300)
-    finding = StubFinding("guard missing", "a.py:1", evidence_refs=(cited.id,))
+    finding = stub_finding("guard missing", "a.py:1", evidence_refs=(cited.id,))
     prompts = []
     replies = iter(
         (
@@ -960,7 +955,7 @@ def test_cited_evidence_that_cannot_be_delivered_on_the_last_round_is_reported_a
     """A held citation with no follow up left ends with that id unresolved and a budget reason, not a request limit."""
     first = EvidenceItem.create(identity="a.py:first:0:300", label="first", text="a" * 300)
     second = EvidenceItem.create(identity="b.py:second:0:300", label="second", text="b" * 300)
-    finding = StubFinding("guard missing", "a.py:1", evidence_refs=(first.id, second.id))
+    finding = stub_finding("guard missing", "a.py:1", evidence_refs=(first.id, second.id))
     replies = iter(
         (
             {"findings": [finding], "evidence_requests": [], "source_queries": []},
@@ -984,7 +979,7 @@ def test_a_held_citation_plus_a_full_request_batch_stays_within_the_batch_cap():
     first = EvidenceItem.create(identity="a.py:first:0:300", label="first", text="a" * 300)
     second = EvidenceItem.create(identity="b.py:second:0:300", label="second", text="b" * 300)
     extra = tuple(EvidenceItem.create(identity=f"c.py:item{index}:0:10", label="item", text="c") for index in range(64))
-    finding = StubFinding("guard missing", "a.py:1", evidence_refs=(first.id, second.id))
+    finding = stub_finding("guard missing", "a.py:1", evidence_refs=(first.id, second.id))
     prompts = []
     replies = iter(
         (
@@ -1042,7 +1037,13 @@ def test_each_finder_call_records_what_the_engine_did_with_its_reply():
     )
 
     def ask(_prompt):
-        provider.complete(system="system", messages=[Message(role="user", content="prompt")], model="m", max_tokens=8)
+        provider.complete(
+            system="system",
+            messages=[Message(role="user", content="prompt")],
+            model="m",
+            max_tokens=8,
+            response_schema=EMPTY_SCHEMA,
+        )
         return next(replies)
 
     _judge(GroundingContext(text="seed", evidence=(first, second)), ask=ask, target_chars=500, max_followups=2)

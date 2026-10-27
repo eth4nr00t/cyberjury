@@ -8,9 +8,10 @@ The tool has two review paths:
 - **Repository Review** fans out across a repository, reviews focused units, and groups the
   findings into issues.
 
-Diff Review is fast and reports findings at post change lines shown in the patch. Every finding keeps
-an exact old or new change anchor, so added behavior and removed controls use one scope contract. Each
-diff unit is grounded with repository source context while its reportable boundary remains the patch.
+Diff Review is fast and reports findings at post change lines shown in the patch or at repository
+source the finding cites. Every finding keeps an exact old or new change anchor, so added behavior and
+removed controls use one scope contract. Each diff unit is grounded with repository source context
+while every finding stays anchored to a changed line.
 Repository Review covers the complete repository as focused units, so a clean Diff Review does not
 by itself clear the repository.
 
@@ -22,7 +23,7 @@ in `source/contract.json`.
 
 A Repository Review of a Git work tree covers the tracked files and the untracked files Git does not
 ignore, but not the contents of Git submodules. A plain directory is covered completely. Files that
-are not UTF-8 text, binary, or empty are listed as skipped in `plan/skipped-files.json`.
+are not UTF-8 text, binary, empty, or too large are listed as skipped in `plan/skipped-files.json`.
 
 ## Quick Review
 
@@ -39,9 +40,9 @@ Each review runs the stages `config`, `target`, `session`, `source`, `facts`, `p
 `review`, `link`, and `result`. Every stage, every review unit and issue link judgment, and the
 attempt itself is one `cyberjury.record/v1` record with the fields `schema`, `id`, `status`,
 `started_at`, `duration_seconds`, `metrics`, `attributes`, `artifacts`, and `error`. The status is
-`ok`, `incomplete`, `failed`, `skipped`, `interrupted`, or `running`. A `failed` or `incomplete`
-record has an `error` with a `code` (`config`, `input`, `model`, or `internal`) and a `message`. A
-`skipped` or `interrupted` record names why in its `reason` attribute.
+`ok`, `incomplete`, `failed`, `interrupted`, or `running`. A `failed` or `incomplete` record has an
+`error` with a `code` (`config`, `input`, `model`, or `internal`) and a `message`. An `interrupted`
+record names why in its `reason` attribute.
 
 Records are written under the review directory: the stages of an attempt in
 `attempts/<attempt>/stages/<stage>.json`, the attempt in `attempts/<attempt>/record.json`, and the
@@ -72,10 +73,7 @@ Requires Python 3.12 or newer. The base install includes tree-sitter and the gra
 
 ```bash
 pip install cyberjury
-cyberjury install-slash-command
 ```
-
-The `cyberjury install-slash-command` command installs `/cyberjury-review` for Claude Code and Codex.
 
 ## Configure
 

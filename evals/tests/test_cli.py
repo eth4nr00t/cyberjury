@@ -149,3 +149,12 @@ def test_repository_rejects_a_diff_case(tmp_path, benchmark_project):
                 str(benchmark_project.benchmark),
             ]
         )
+
+
+def test_validate_checks_repository_case_locations_under_the_source_root(tmp_path, benchmark_project):
+    """An empty --source-root reports the repository case location views.py missing."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    with pytest.raises(ValueError, match=r"location does not exist: views\.py"):
+        main(["validate", str(benchmark_project.benchmark), "--source-root", str(empty)])

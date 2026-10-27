@@ -29,7 +29,6 @@ def test_build_units_binds_candidate_definitions_to_their_source_window(tmp_path
     receipt = UnitPlanReceipt.create(
         facts=_FACTS,
         units=tuple(repository_unit_plan_record(unit) for unit in units),
-        expected_owned_paths=("route.py",),
     )
     assert [(unit.kind, unit.owned_paths) for unit in receipt.units] == [("source", ("route.py",))]
     assert units[0].definition_plan == DefinitionUnitPlan(seeds=(route,), seed_files=("route.py",))
@@ -58,7 +57,6 @@ def test_repository_unit_plan_records_intentional_hard_split_overlap(tmp_path):
     receipt = UnitPlanReceipt.create(
         facts=_FACTS,
         units=tuple(repository_unit_plan_record(unit) for unit in units),
-        expected_owned_paths=("large.py",),
     )
 
     slices = [unit.source_slices[0] for unit in receipt.units]

@@ -5,10 +5,10 @@ from dataclasses import replace
 import pytest
 
 from cyberjury.review.detection import load_detection
+from cyberjury.review.diff import planning
 from cyberjury.review.diff.model import changed_line_ranges
 from cyberjury.review.diff.planning import build_diff_units, changed_definitions, plan_definition_units
 from cyberjury.review.failures import BackendUnavailable
-from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from tests.review.support import definition
 
 _DETECTION = load_detection()
@@ -17,40 +17,6 @@ _DETECTION = load_detection()
 def test_diff_unit_planners_return_an_empty_worklist_for_empty_input(tmp_path):
     """An empty diff string with no definitions plans no units."""
     assert build_diff_units("", root=tmp_path, detection=_DETECTION, definitions=()) == []
-
-
-def test_diff_unit_planning_rejects_repeated_file_sections_before_losing_a_hunk(tmp_path):
-    """Two diff sections for a.py raise "repeated file sections for a.py" instead of dropping one."""
-    (tmp_path / "a.py").write_text("x = 2\n", encoding="utf-8")
-    first = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -1 +1 @@\n+x = 1\n"
-    second = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -2 +2 @@\n+y = 2\n"
-
-    with pytest.raises(ValueError, match=r"repeated file sections for a\.py"):
-        build_diff_units(first + second, root=tmp_path, detection=_DETECTION, definitions=())
-
-
-def test_diff_unit_planning_rejects_an_unidentified_file_section(tmp_path):
-    """A bare hunk with no diff --git header raises "without a source path"."""
-    with pytest.raises(ValueError, match="without a source path"):
-        build_diff_units("@@ -1 +1 @@\n+unbound source\n", root=tmp_path, detection=_DETECTION, definitions=())
-
-
-def test_diff_unit_planning_rejects_a_malformed_hunk_after_a_valid_one(tmp_path):
-    """A "@@ corrupted @@" header after a valid hunk raises "malformed unified diff hunk header"."""
-    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
-    diff = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -0,0 +1 @@\n+x = 1\n@@ corrupted @@\n+hidden = 2\n"
-
-    with pytest.raises(ValueError, match="malformed unified diff hunk header"):
-        build_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=())
-
-
-def test_diff_unit_planning_rejects_an_unprefixed_line_inside_a_hunk(tmp_path):
-    """A hunk line without a +, -, or space prefix raises "malformed unified diff hunk body"."""
-    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
-    diff = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -0,0 +1,2 @@\n+x = 1\nnot a diff line\n+hidden = 2\n"
-
-    with pytest.raises(ValueError, match="malformed unified diff hunk body"):
-        build_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=())
 
 
 def test_changed_definition_mapping_keeps_deletion_and_enclosing_definitions(tmp_path):
@@ -114,22 +80,22 @@ def _two_changed_files(tmp_path, body_chars):
     return diff, tuple(definitions)
 
 
-def test_diff_surface_packing_does_not_charge_lazy_seed_definitions_to_context_budget(tmp_path):
+def test_diff_surface_packing_does_not_charge_lazy_seed_definitions_to_context_budget(tmp_path, monkeypatch):
     """Two 100k-char definitions stay in one unit under a 1k-char patch target."""
     diff, definitions = _two_changed_files(tmp_path, 100_000)
-    settings = replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1_000)
+    monkeypatch.setattr(planning, "_SETTINGS", replace(planning._SETTINGS, target_patch_chars_per_unit=1_000))
 
-    units = build_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=definitions, settings=settings)
+    units = build_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=definitions)
 
     assert [unit.definition_plan.seeds for unit in units] == [definitions]
 
 
-def test_diff_surface_packing_bounds_the_lazy_definition_catalog(tmp_path):
+def test_diff_surface_packing_bounds_the_lazy_definition_catalog(tmp_path, monkeypatch):
     """With max_definition_evidence_items_per_unit=1, two changed definitions split into two units."""
     diff, definitions = _two_changed_files(tmp_path, 100)
-    settings = replace(DEFAULT_REVIEW_SETTINGS.diff, max_definition_evidence_items_per_unit=1)
+    monkeypatch.setattr(planning, "_SETTINGS", replace(planning._SETTINGS, max_definition_evidence_items_per_unit=1))
 
-    units = build_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=definitions, settings=settings)
+    units = build_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=definitions)
 
     assert [unit.definition_plan.seeds for unit in units] == [(definitions[0],), (definitions[1],)]
 

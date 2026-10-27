@@ -54,7 +54,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 cyberjury = [
-    "commands/*.md",
     "review/contract/*.md",
     "review/contract/detection.yaml",
     "review/contract/languages/*.yaml",

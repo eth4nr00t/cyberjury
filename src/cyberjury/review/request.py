@@ -51,9 +51,9 @@ class ReviewIntent:
 class ConcurrencyRecord:
     """Explicit concurrency for unit judgment and issue link calls."""
 
-    review: int | None
+    review: int
 
-    def to_dict(self) -> dict[str, int | None]:
+    def to_dict(self) -> dict[str, int]:
         """Return the strict concurrency wire form."""
         return {"review": self.review}
 
@@ -62,8 +62,6 @@ def endpoint_identity(api_base: str | None) -> str:
     """Identify the exact configured endpoint without persisting its value."""
     if not api_base:
         return "default"
-    if not isinstance(api_base, str):
-        raise ValueError("api base must be a string or null")
     return f"sha256:{hashlib.sha256(api_base.encode()).hexdigest()}"
 
 
@@ -96,8 +94,8 @@ class ProviderSeatRecord:
 class ProviderPlanRecord:
     """Observable effective model seat and client policy."""
 
-    retries: int | None
-    timeout_seconds: float | None
+    retries: int
+    timeout_seconds: float
     seat: ProviderSeatRecord
 
     def to_dict(self) -> dict[str, object]:
@@ -115,7 +113,6 @@ class ReviewAttemptRequest:
 
     engine_version: str
     concurrency: ConcurrencyRecord
-    dry_run: bool
     fresh: bool | None
     providers: ProviderPlanRecord
 
@@ -130,7 +127,6 @@ class ReviewAttemptRequest:
         providers = self.providers.to_dict()
         semantic = {
             "provider_seat": providers["seat"],
-            "dry_run": self.dry_run,
             "engine_version": self.engine_version,
         }
         return canonical_sha256(semantic)
@@ -140,7 +136,6 @@ class ReviewAttemptRequest:
         semantic = {
             "engine_version": self.engine_version,
             "concurrency": self.concurrency.to_dict(),
-            "dry_run": self.dry_run,
             "fresh": self.fresh,
             "providers": self.providers.to_dict(),
         }

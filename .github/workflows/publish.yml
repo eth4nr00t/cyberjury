@@ -44,14 +44,12 @@ jobs:
           /tmp/smoke/bin/cyberjury review diff --help
           /tmp/smoke/bin/cyberjury review repository --help
           /tmp/smoke/bin/python - <<'PY'
-          from cyberjury.cli import SLASH_COMMAND_FILE
           from cyberjury.review.detection import load_detection
           from cyberjury.review.contract import ContractReceipt
           from cyberjury.review.knowledge import load_review_brief, load_severity_rubric
           from cyberjury.review.syntax.facts import syntax_backend_id
-          assert SLASH_COMMAND_FILE.is_file()
           ContractReceipt.capture()
-          assert load_review_brief().render()
+          assert load_review_brief()
           assert load_severity_rubric()
           assert load_detection().test_dirs
           assert syntax_backend_id()

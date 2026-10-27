@@ -6,9 +6,12 @@ from cyberjury.review import prepare
 from cyberjury.review.detection import load_detection
 from cyberjury.review.facts import Facts
 from cyberjury.review.failures import BackendUnavailable
+from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.repository.prepare import prepare_repository_review
 from cyberjury.review.selection import FileSelection
+from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.sources.snapshot import capture_source_snapshot
+from tests.review.support import bound_artifacts, recorder
 
 
 def test_extract_facts_fails_loud_when_extraction_fails(tmp_path, monkeypatch):
@@ -35,11 +38,15 @@ def test_prepare_grounds_units_with_the_extracted_facts(tmp_path, monkeypatch):
     monkeypatch.setattr(prepare, "extract_syntax_facts", extract)
     (tmp_path / "app.py").write_text("def f():\n    return 1\n")
 
-    res = prepare_repository_review(capture_source_snapshot(tmp_path))
+    stages = recorder()
+    artifacts = bound_artifacts(stages)
+
+    res = prepare_repository_review(capture_source_snapshot(tmp_path), recorder=stages)
 
     assert len(calls) == 1
     assert [unit.grounding.syntax_hints for unit in res.units] == [
         "app.py: syntax hints (unverified, cite only delivered source):\n```\ndef f():\n    return 1\n```"
     ]
-    assert [record.unit_id for record in res.grounding.contexts] == [unit.id for unit in res.units]
-    assert res.grounding.unit_plan_receipt_sha256 == res.unit_plan.receipt_sha256
+    grounding, unit_plan = artifacts[GroundingReceipt], artifacts[UnitPlanReceipt]
+    assert [record["unit_id"] for record in grounding.contexts] == [unit.id for unit in res.units]
+    assert grounding.unit_plan_receipt_sha256 == unit_plan.receipt_sha256

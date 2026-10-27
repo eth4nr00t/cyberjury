@@ -1,4 +1,4 @@
-"""Durable JSON session storage shared by product domains."""
+"""Durable JSON storage of review sessions and their command attempts."""
 
 from __future__ import annotations
 
@@ -19,10 +19,8 @@ from cyberjury.record import Record, is_attempt_id, parse_timestamp, render, utc
 
 SESSION_SCHEMA = "cyberjury.session/v1"
 LOCATOR_SCHEMA = "cyberjury.locator/v1"
-_NAME = re.compile(r"[a-z][a-z0-9-]*")
-_SESSION_ID = re.compile(r"^[a-z][a-z0-9-]*-\d{8}-\d{6}-[0-9a-f]{8}$")
-_LOCATOR_KEY = re.compile(r"^[0-9a-f]{64}$")
-_LOCAL_JSON = re.compile(r"^(?:[a-z][a-z0-9-]*/)*[A-Za-z0-9._-]+\.json$")
+_SESSION_KIND = "review"
+_SESSION_ID = re.compile(r"^review-\d{8}-\d{6}-[0-9a-f]{8}$")
 
 
 class WorkspaceCorruptionError(RuntimeError):
@@ -42,11 +40,9 @@ def new_attempt_id() -> str:
     return _new_id("attempt")
 
 
-def new_session_id(kind: str) -> str:
-    """Return one time ordered, collision resistant logical workflow identity."""
-    if not _NAME.fullmatch(kind):
-        raise ValueError("session kind is invalid")
-    return _new_id(kind)
+def new_session_id() -> str:
+    """Return one time ordered, collision resistant review session identity."""
+    return _new_id(_SESSION_KIND)
 
 
 def _reject_json_constant(value: str) -> None:
@@ -69,7 +65,8 @@ def _loads(value: str) -> object:
     )
 
 
-def _read_json(path: Path) -> dict[str, object]:
+def read_json_object(path: Path) -> dict[str, object]:
+    """Read one strict JSON object without following a symlink."""
     if path.is_symlink():
         raise WorkspaceCorruptionError(f"{path.name} cannot be a symlink")
     try:
@@ -81,7 +78,8 @@ def _read_json(path: Path) -> dict[str, object]:
     return value
 
 
-def _atomic_json(path: Path, value: dict[str, object]) -> None:
+def write_json_atomic(path: Path, value: dict[str, object]) -> None:
+    """Durably replace one JSON object with private file permissions."""
     _atomic_text(path, json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
 
 
@@ -105,31 +103,15 @@ def _atomic_text(path: Path, text: str) -> None:
         raise
 
 
-def write_json_atomic(path: str | Path, value: dict[str, object]) -> None:
-    """Durably replace one JSON object with private file permissions."""
-    target = Path(path)
-    if not target.parent.is_dir() or target.parent.is_symlink() or target.is_symlink():
-        raise ValueError("JSON artifact path is not a safe existing directory")
-    _atomic_json(target, value)
-
-
-def read_json_object(path: str | Path) -> dict[str, object]:
-    """Read one strict JSON object without following an artifact symlink."""
-    return _read_json(Path(path))
-
-
-def write_record(path: str | Path, record: Record) -> None:
+def write_record(path: Path, record: Record) -> None:
     """Durably replace one record file with the text the CLI prints for it."""
-    target = Path(path)
-    if target.is_symlink():
-        raise ValueError("record path cannot be a symlink")
-    _atomic_text(target, render(record))
+    _atomic_text(path, render(record))
 
 
 def read_record(path: str | Path) -> Record:
     """Read one record file without following a symlink."""
     try:
-        return Record.from_dict(_read_json(Path(path)))
+        return Record.from_dict(read_json_object(Path(path)))
     except ValueError as exc:
         raise WorkspaceCorruptionError(f"{Path(path).name} is not a valid record: {exc}") from exc
 
@@ -159,8 +141,6 @@ def _state_directory(root: str | Path, *parts: str) -> Path:
         os.chmod(raw_root, 0o700)
     current = raw_root.resolve()
     for part in parts:
-        if not _NAME.fullmatch(part):
-            raise ValueError("state directory component is invalid")
         current /= part
         _safe_directory(current)
     return current
@@ -168,44 +148,32 @@ def _state_directory(root: str | Path, *parts: str) -> Path:
 
 @dataclass(frozen=True, kw_only=True)
 class SessionLocator:
-    """Map one stable workflow key to its current unique session."""
+    """Map one stable review intent key to its current unique session."""
 
     path: Path
 
     @classmethod
-    def open(cls, root: str | Path, *, namespace: str) -> SessionLocator:
-        """Open one namespace of atomic session locators."""
-        return cls(path=_state_directory(root, "locators", namespace))
+    def open(cls, root: str | Path) -> SessionLocator:
+        """Open the atomic session locators of one state root."""
+        return cls(path=_state_directory(root, "locators", "reviews"))
 
-    def select_with_state(
-        self,
-        key: str,
-        *,
-        kind: str,
-        reuse: bool,
-    ) -> tuple[str, bool]:
+    def select_with_state(self, key: str, *, reuse: bool) -> tuple[str, bool]:
         """Return the selected session and whether this call published it."""
-        if not _LOCATOR_KEY.fullmatch(key):
-            raise ValueError("session locator key is invalid")
         locator = self.path / f"{key}.json"
         directory = os.open(self.path, os.O_RDONLY)
         try:
             fcntl.flock(directory, fcntl.LOCK_EX)
             if reuse and locator.exists():
-                value = _read_json(locator)
+                value = read_json_object(locator)
                 expected = {"schema", "locator_key", "session_id"}
                 if set(value) != expected or value["schema"] != LOCATOR_SCHEMA:
                     raise WorkspaceCorruptionError("session locator has an invalid schema")
                 session_id = str(value["session_id"])
-                if (
-                    value["locator_key"] != key
-                    or not session_id.startswith(f"{kind}-")
-                    or not _SESSION_ID.fullmatch(session_id)
-                ):
+                if value["locator_key"] != key or not _SESSION_ID.fullmatch(session_id):
                     raise WorkspaceCorruptionError("session locator identity is invalid")
                 return session_id, False
-            session_id = new_session_id(kind)
-            _atomic_json(
+            session_id = new_session_id()
+            write_json_atomic(
                 locator,
                 {
                     "schema": LOCATOR_SCHEMA,
@@ -223,91 +191,64 @@ class _JsonDirectory:
     path: Path
 
     def write_json_once(self, name: str, value: dict[str, object]) -> None:
-        path = self._local(name)
+        path = self.path / name
         if path.exists():
-            if _read_json(path) != value:
+            if read_json_object(path) != value:
                 raise SessionConflictError(
                     f"{name} does not match the existing {self.path.name}, start again with --fresh"
                 )
             return
-        _atomic_json(path, value)
+        write_json_atomic(path, value)
 
     def read_json(self, name: str) -> dict[str, object]:
-        return _read_json(self._local(name))
-
-    def _local(self, name: str) -> Path:
-        if not _LOCAL_JSON.fullmatch(name):
-            raise ValueError("workspace JSON name must be a .json file inside the workspace")
-        path = self.path / name
-        if any(parent.is_symlink() for parent in path.parents if parent.is_relative_to(self.path)):
-            raise ValueError(f"workspace path cannot pass through a symlink: {name}")
-        return path
+        return read_json_object(self.path / name)
 
 
 @dataclass(frozen=True, kw_only=True)
 class SessionWorkspace(_JsonDirectory):
-    """One logical workflow that may contain multiple command attempts."""
+    """One review session that may contain multiple command attempts."""
 
-    root: Path
-    namespace: str
     session_id: str
     path: Path
 
     @classmethod
-    def open_or_create(
-        cls,
-        root: str | Path,
-        *,
-        namespace: str,
-        session_id: str,
-        kind: str,
-    ) -> SessionWorkspace:
+    def open_or_create(cls, root: str | Path, *, session_id: str) -> SessionWorkspace:
         """Open one matching session or create its immutable identity file."""
-        if not _NAME.fullmatch(namespace):
-            raise ValueError("workspace namespace is invalid")
-        if not _NAME.fullmatch(kind):
-            raise ValueError("session kind is invalid")
-        if not _SESSION_ID.fullmatch(session_id):
-            raise ValueError("session id is invalid")
-        if not session_id.startswith(f"{kind}-"):
-            raise ValueError("session id does not match its kind")
-        state_root = _state_directory(root)
-        namespace_path = _state_directory(state_root, namespace)
-        path = namespace_path / session_id
+        path = _state_directory(root, "reviews") / session_id
         _safe_directory(path)
         attempts = path / "attempts"
         _safe_directory(attempts)
         identity = path / "session.json"
         if identity.exists():
-            data = _read_json(identity)
+            data = read_json_object(identity)
             expected = {"schema", "session_id", "kind", "created_at"}
             if set(data) != expected or data["schema"] != SESSION_SCHEMA:
                 raise WorkspaceCorruptionError("session identity has an invalid schema")
-            if data["session_id"] != session_id or data["kind"] != kind:
+            if data["session_id"] != session_id or data["kind"] != _SESSION_KIND:
                 raise WorkspaceCorruptionError("session identity does not match the requested workflow")
             try:
                 parse_timestamp(data["created_at"])
             except (TypeError, ValueError) as exc:
                 raise WorkspaceCorruptionError("session identity has an invalid timestamp") from exc
         else:
-            _atomic_json(
+            write_json_atomic(
                 identity,
                 {
                     "schema": SESSION_SCHEMA,
                     "session_id": session_id,
-                    "kind": kind,
+                    "kind": _SESSION_KIND,
                     "created_at": utc_timestamp(),
                 },
             )
-        return cls(root=state_root, namespace=namespace, session_id=session_id, path=path)
+        return cls(session_id=session_id, path=path)
 
     def start_attempt(
         self,
         request: dict[str, object],
         *,
-        attempt_id: str | None = None,
-        started_at: str | None = None,
-        attributes: Mapping[str, str | int | float | bool | None] | None = None,
+        attempt_id: str,
+        started_at: str,
+        attributes: Mapping[str, str | int | float | bool | None],
     ) -> AttemptWorkspace:
         """Create one command attempt with its exact normalized request under the session lock."""
         session_lock = (self.path / "session.json").open("r", encoding="utf-8")
@@ -323,7 +264,6 @@ class SessionWorkspace(_JsonDirectory):
                     shutil.rmtree(path)
             for path in sorted(attempts.glob("attempt-*")):
                 AttemptWorkspace.open(path, session_id=self.session_id).interrupt_stale()
-            attempt_id = attempt_id or new_attempt_id()
             temporary_path = Path(tempfile.mkdtemp(prefix=f".{attempt_id}.", dir=attempts))
         except BaseException:
             fcntl.flock(session_lock.fileno(), fcntl.LOCK_UN)
@@ -331,12 +271,12 @@ class SessionWorkspace(_JsonDirectory):
             raise
         try:
             os.chmod(temporary_path, 0o700)
-            _atomic_json(temporary_path / "request.json", request)
+            write_json_atomic(temporary_path / "request.json", request)
             attempt = AttemptWorkspace(
                 path=temporary_path,
                 session_id=self.session_id,
                 attempt_id=attempt_id,
-                started_at=started_at or utc_timestamp(),
+                started_at=started_at,
                 _session_lock=session_lock,
             )
             attempt._write(
@@ -345,7 +285,7 @@ class SessionWorkspace(_JsonDirectory):
                     status="running",
                     started_at=attempt.started_at,
                     duration_seconds=None,
-                    attributes=dict(attributes or {}),
+                    attributes=dict(attributes),
                 )
             )
             path = attempts / attempt_id
@@ -398,10 +338,6 @@ class AttemptWorkspace(_JsonDirectory):
     def finish(self, record: Record) -> None:
         """Record the terminal attempt record and release the session lock."""
         try:
-            if record.id != self.attempt_id or record.status == "running":
-                raise ValueError("attempt terminal record is invalid")
-            if self.read_record().status != "running":
-                raise RuntimeError("attempt already reached a terminal state")
             self._write(record)
         finally:
             if self._session_lock is not None:

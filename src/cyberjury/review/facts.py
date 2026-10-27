@@ -89,8 +89,6 @@ class FactsReceipt:
 
 def render_fact_limitations(limitations: tuple[FactLimitation, ...]) -> str:
     """Render incomplete structured coverage without hiding raw source review."""
-    if not limitations:
-        return ""
     lines = [
         "Structured facts are unavailable or partial for these sources. Review their raw source, and do not "
         "treat missing graph edges as evidence that no relationship exists:",

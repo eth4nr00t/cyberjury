@@ -10,12 +10,20 @@ from cyberjury.providers.anthropic import AnthropicProvider
 from cyberjury.providers.base import Message
 from cyberjury.providers.factory import default_model_for_provider, make_provider
 from cyberjury.providers.openai import OpenAIProvider
+from cyberjury.providers.retry import RetryProvider
+from tests.support import EMPTY_SCHEMA
 
 
-def test_selects_provider_by_name():
-    """The names openai and anthropic build OpenAIProvider and AnthropicProvider instances."""
-    assert isinstance(make_provider("openai"), OpenAIProvider)
-    assert isinstance(make_provider("anthropic"), AnthropicProvider)
+def _make(name: str, *, retries: int = 2):
+    return make_provider(name, api_base=None, retries=retries, timeout=10.0)
+
+
+def test_selects_provider_by_name_behind_a_retry_wrapper():
+    """The names openai and anthropic build OpenAIProvider and AnthropicProvider inside a RetryProvider."""
+    for name, backend in (("openai", OpenAIProvider), ("anthropic", AnthropicProvider)):
+        provider = _make(name)
+        assert isinstance(provider, RetryProvider)
+        assert isinstance(provider._inner, backend)
 
 
 def test_default_model_is_provider_specific():
@@ -27,13 +35,7 @@ def test_default_model_is_provider_specific():
 def test_unknown_name_fails_loud():
     """An unrecognized provider name such as something-else raises ValueError naming an unknown provider."""
     with pytest.raises(ValueError, match="unknown provider"):
-        make_provider("something-else")
-
-
-def test_no_retries_leaves_the_provider_unwrapped():
-    """With retries=0 the factory returns the bare OpenAIProvider without a retry wrapper."""
-    provider = make_provider("openai", retries=0)
-    assert isinstance(provider, OpenAIProvider)
+        _make("something-else")
 
 
 class _RateLimited(Exception):
@@ -51,7 +53,7 @@ class _ScriptedOpenAI:
         type(self).calls.append(request["model"])
         if len(type(self).calls) <= type(self).failures:
             raise _RateLimited("rate limited")
-        return SimpleNamespace(output_text="answered", status="completed")
+        return SimpleNamespace(output_text="{}", status="completed")
 
 
 @pytest.fixture
@@ -64,16 +66,18 @@ def scripted_openai(monkeypatch):
 
 
 def _complete(provider):
-    return provider.complete(system="s", messages=[Message(role="user", content="c")], model="m", max_tokens=8)
+    return provider.complete(
+        system="s", messages=[Message(role="user", content="c")], model="m", max_tokens=8, response_schema=EMPTY_SCHEMA
+    )
 
 
 def test_retries_allow_one_extra_attempt_per_retry(scripted_openai):
     """Two rate-limit failures with retries=2 succeed on the third call and report three attempts."""
     scripted_openai.failures = 2
 
-    result = _complete(make_provider("openai", retries=2))
+    result = _complete(_make("openai"))
 
-    assert result.text == "answered"
+    assert result.text == "{}"
     assert result.attempts == 3
     assert len(scripted_openai.calls) == 3
 
@@ -83,6 +87,6 @@ def test_retries_give_up_after_the_last_extra_attempt(scripted_openai):
     scripted_openai.failures = 3
 
     with pytest.raises(_RateLimited):
-        _complete(make_provider("openai", retries=2))
+        _complete(_make("openai"))
 
     assert len(scripted_openai.calls) == 3

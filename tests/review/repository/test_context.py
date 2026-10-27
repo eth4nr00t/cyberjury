@@ -3,9 +3,6 @@
 from dataclasses import replace
 from pathlib import Path
 
-import pytest
-
-from cyberjury.providers.mock import MockProvider
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.facts import FactLimitation, Facts
 from cyberjury.review.navigation import SourceNavigator
@@ -14,7 +11,6 @@ from cyberjury.review.relationships import (
     SourceReference,
 )
 from cyberjury.review.repository.context import (
-    UnitSourceError,
     gather_context,
     ground_repository_unit,
 )
@@ -23,6 +19,7 @@ from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
 from tests.review.repository.support import EMPTY_REPLY, finder, review, source_unit
 from tests.review.support import route_call, shared_grounding
+from tests.support import MockProvider
 
 
 def _ground(unit, *, facts_by_file, limitations, navigator, snapshot):
@@ -273,9 +270,3 @@ def test_gather_numbers_a_span_window_from_its_real_first_line(tmp_path):
     ).seed
     assert "300 | line300" in content
     assert "# file: big.py lines 300-300" in content
-
-
-def test_gather_fails_when_a_unit_source_file_is_missing(tmp_path):
-    """A unit pointing at a nonexistent missing.py raises UnitSourceError naming that file."""
-    with pytest.raises(UnitSourceError, match=r"missing\.py"):
-        gather_context(RepositoryUnit(name="u", root=str(tmp_path), file="missing.py", span=(0, 1)))

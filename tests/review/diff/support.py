@@ -10,10 +10,10 @@ from cyberjury.review.diff.finder import DIFF_TARGET
 from cyberjury.review.diff.model import DiffUnit, diff_paths, pack_diff_chunks
 from cyberjury.review.diff.prompts import diff_seed
 from cyberjury.review.finder import UnitFinder
-from cyberjury.review.run import ReviewRun, run_review
+from cyberjury.review.run import ReviewRun
 from cyberjury.review.seats import ReviewSeats
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from tests.review.support import prepared_units
+from tests.review.support import StubIssueJudge, prepared_units, run_prepared
 
 SQL_DIFF = "+++ b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
@@ -52,9 +52,9 @@ def diff_unit(diff: str, grounding: GroundingContext | str = "") -> DiffUnit:
     return unit
 
 
-def finder(provider, label: str = "finder") -> UnitFinder[DiffUnit]:
+def finder(provider) -> UnitFinder[DiffUnit]:
     """Return the Diff Finder bound to one test provider."""
-    return UnitFinder(DIFF_TARGET, provider=provider, model="m", label=label)
+    return UnitFinder(DIFF_TARGET, provider=provider, model="m")
 
 
 def reply(findings: list[dict[str, object]]) -> str:
@@ -79,22 +79,18 @@ def review(
     provider,
     context: GroundingContext | str = "repository source",
     max_chars: int = DEFAULT_REVIEW_SETTINGS.diff.target_patch_chars_per_unit,
-    finder_label: str = "m",
     issue_judge=None,
     root: Path = Path("."),
     **options,
 ) -> ReviewRun:
-    """Review a test diff, or prepared units, with one finder seat and no issue judge by default."""
+    """Review a test diff, or prepared units, with one finder seat and an issue judge that links no pair by default."""
     if isinstance(diff_or_units, str):
         grounding = context if isinstance(context, GroundingContext) else GroundingContext(text=context)
         units = diff_units(diff_or_units, grounding, max_chars=max_chars)
     else:
         units = diff_or_units
     seats = ReviewSeats(
-        finder=provider,
-        finder_model="m",
-        finder_label=finder_label,
-        issue_judge=issue_judge,
+        finder=provider, finder_model="m", issue_judge=issue_judge or StubIssueJudge(lambda _pair: False)
     )
     values = {"concurrency": 1, **options}
-    return run_review(prepared_units(units, root), target=DIFF_TARGET, seats=seats, **values)
+    return run_prepared(prepared_units(units, root), target=DIFF_TARGET, seats=seats, **values)

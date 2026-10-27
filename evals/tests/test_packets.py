@@ -55,7 +55,7 @@ def _result(packets, verdicts):
 
 
 def test_packets_hide_report_provenance_and_include_no_earlier_verdicts(tmp_path, cases, runs_dirs):
-    """Two runs give reports labelled by run A/B, without candidate ids, reviewers, or earlier verdicts."""
+    """Two runs give reports labelled by run A/B, without candidate ids or earlier verdicts."""
     out = tmp_path / "adjudication"
 
     counts = build_packets(cases, list(runs_dirs), out, groups=1)
@@ -64,7 +64,7 @@ def test_packets_hide_report_provenance_and_include_no_earlier_verdicts(tmp_path
     (entry,) = json.loads((out / "packet-1.json").read_text(encoding="utf-8"))
     assert "reference_decisions" not in entry
     assert {report["run"] for report in entry["reports"]} == {"A", "B"}
-    assert all(not {"id", "candidate_id", "supporting_reviewers"} & set(report) for report in entry["reports"])
+    assert all(not {"id", "candidate_id"} & set(report) for report in entry["reports"])
 
 
 def test_packets_carry_the_case_and_keep_the_label_mapping_outside(tmp_path, cases, runs_dirs, benchmark_project):

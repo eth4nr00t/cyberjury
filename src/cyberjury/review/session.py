@@ -1,8 +1,7 @@
-"""Review domain composition over generic session and attempt storage."""
+"""Review domain composition over session and attempt storage."""
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,25 +45,18 @@ class ReviewSession:
     @classmethod
     def open(cls, root: str | Path, intent: ReviewIntent, *, review_id: str) -> ReviewSession:
         """Open one unique review session and verify its immutable intent."""
-        workspace = SessionWorkspace.open_or_create(
-            root,
-            namespace="reviews",
-            session_id=review_id,
-            kind="review",
-        )
+        workspace = SessionWorkspace.open_or_create(root, session_id=review_id)
         workspace.write_json_once("session/intent.json", intent.to_dict())
         return cls(workspace=workspace, intent=intent)
 
     @classmethod
     def create(cls, root: str | Path, intent: ReviewIntent) -> ReviewSession:
         """Create one independent review session."""
-        return cls.open(root, intent, review_id=new_session_id("review"))
+        return cls.open(root, intent, review_id=new_session_id())
 
     @classmethod
     def open_existing(cls, root: str | Path, intent: ReviewIntent, *, review_id: str) -> ReviewSession:
-        """Open an existing review id without creating a session for a typo."""
-        if not re.fullmatch(r"review-\d{8}-\d{6}-[0-9a-f]{8}", review_id):
-            raise ValueError("review id is invalid")
+        """Open the review a locator names without recreating a session that no longer exists."""
         path = Path(root).expanduser() / "reviews" / review_id
         if not path.is_dir() or path.is_symlink():
             raise SessionConflictError(f"review session {review_id} no longer exists, start again with --fresh")
@@ -79,19 +71,12 @@ class ReviewSession:
         reuse: bool,
     ) -> ReviewSession:
         """Select the active repository review or publish a new one."""
-        locator = SessionLocator.open(root, namespace="reviews")
-        review_id, created = locator.select_with_state(
-            intent.intent_sha256,
-            kind="review",
-            reuse=reuse,
-        )
+        review_id, created = SessionLocator.open(root).select_with_state(intent.intent_sha256, reuse=reuse)
         if created:
             return cls.open(root, intent, review_id=review_id)
         return cls.open_existing(root, intent, review_id=review_id)
 
-    def start_attempt(
-        self, request: ReviewAttemptRequest, *, attempt_id: str | None = None, started_at: str | None = None
-    ) -> ReviewAttempt:
+    def start_attempt(self, request: ReviewAttemptRequest, *, attempt_id: str, started_at: str) -> ReviewAttempt:
         """Create one invocation whose wire request and runtime request are identical."""
         self._bind_repository_judgment(request)
         workspace = self.workspace.start_attempt(

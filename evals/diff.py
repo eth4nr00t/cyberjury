@@ -20,13 +20,12 @@ type Progress = Callable[[str], None]
 
 @dataclass(frozen=True, kw_only=True)
 class _CaseProgress:
-    progress: Progress | None
+    progress: Progress
     prefix: str
     started: float
 
     def say(self, text: str) -> None:
-        if self.progress is not None:
-            self.progress(f"{self.prefix} {text}")
+        self.progress(f"{self.prefix} {text}")
 
     def failed(self, error: str) -> None:
         self.say(f"failed after {self._elapsed()}s: {error}")
@@ -48,14 +47,12 @@ def run(
     cases: list[BenchmarkCase],
     *,
     workspace: Path,
-    runs: int = 1,
-    concurrency: int | None = None,
-    progress: Progress | None = None,
-    on_attempt: Callable[[dict[str, object]], None] | None = None,
+    runs: int,
+    concurrency: int,
+    progress: Progress,
+    on_attempt: Callable[[dict[str, object]], None],
 ) -> list[dict[str, object]]:
     """Review each diff case once per run and return one attempt record per case and run."""
-    if runs < 1:
-        raise ValueError("diff benchmark runs must be at least 1")
     records = []
     for number in range(1, runs + 1):
         for index, case in enumerate(cases, 1):
@@ -72,8 +69,7 @@ def run(
             else:
                 status.failed(str(record["error"]))
             records.append(record)
-            if on_attempt is not None:
-                on_attempt(record)
+            on_attempt(record)
     return records
 
 
@@ -81,10 +77,8 @@ def _review_case(
     case: BenchmarkCase,
     number: int,
     workspace: Path,
-    concurrency: int | None,
+    concurrency: int,
 ) -> dict[str, object]:
-    if workspace.exists():
-        raise ValueError(f"diff review workspace already exists: {workspace}")
     root = git_target_root(case.target)
     ensure_git_target_refs(case.target, root)
     git_range = f"{case.target['base']}..{case.target['commit']}"
@@ -92,7 +86,6 @@ def _review_case(
     command = ReviewCommand(
         target=TargetInput(kind="diff", repository=str(root.resolve()), git_range=git_range),
         workspace=str(workspace),
-        dry_run=False,
         fresh=None,
         concurrency=concurrency,
     )

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Hashable, Iterable
-from dataclasses import dataclass, field, replace
+from collections.abc import Iterable
+from dataclasses import replace
 
 from cyberjury.review.finding import Finding
-from cyberjury.review.provenance import found_by_tuple
 
 MERGE_RULE = (
     "A returned finding that repeats the `title`, `category`, `entrypoint`, `file`, `line`, and any `change_anchor` "
@@ -15,31 +14,24 @@ MERGE_RULE = (
 )
 
 
-@dataclass
-class FindingAccumulator[T]:
-    """A monotonic finding union configured by one target policy."""
+class FindingAccumulator:
+    """A monotonic finding union that merges only exact duplicate reports: findings sharing one candidate identity."""
 
-    key: Callable[[T], Hashable]
-    fold: Callable[[T, T], T]
-    pool: dict[Hashable, T] = field(default_factory=dict)
+    def __init__(self) -> None:
+        """Start an empty union."""
+        self._pool: dict[str, Finding] = {}
 
-    def add(self, findings: Iterable[T]) -> int:
-        """Fold one set into the union and return its new identity count."""
-        new = 0
+    def add(self, findings: Iterable[Finding]) -> None:
+        """Fold findings into the union, merging each duplicate into the first report of its identity."""
         for finding in findings:
-            identity = self.key(finding)
-            existing = self.pool.get(identity)
-            if existing is None:
-                self.pool[identity] = finding
-                new += 1
-            else:
-                self.pool[identity] = self.fold(existing, finding)
-        return new
+            identity = finding.candidate_id
+            existing = self._pool.get(identity)
+            self._pool[identity] = finding if existing is None else _fold(existing, finding)
 
     @property
-    def findings(self) -> list[T]:
+    def findings(self) -> list[Finding]:
         """Return the stable insertion ordered union."""
-        return list(self.pool.values())
+        return list(self._pool.values())
 
 
 def _normalized(text: str) -> str:
@@ -53,29 +45,7 @@ def _union_text(existing: str, incoming: str) -> str:
 
 
 def _fold(existing: Finding, incoming: Finding) -> Finding:
-    found_by = found_by_tuple(existing.found_by, incoming.found_by)
     attack_path = _union_text(existing.attack_path, incoming.attack_path)
     evidence_refs = tuple(dict.fromkeys((*existing.evidence_refs, *incoming.evidence_refs)))
     cited_spans = tuple(dict.fromkeys((*existing.cited_spans, *incoming.cited_spans)))
-    if (
-        found_by == existing.found_by
-        and attack_path == existing.attack_path
-        and evidence_refs == existing.evidence_refs
-        and cited_spans == existing.cited_spans
-    ):
-        return existing
-    return replace(
-        existing,
-        attack_path=attack_path,
-        evidence_refs=evidence_refs,
-        cited_spans=cited_spans,
-        found_by=found_by,
-    )
-
-
-def finding_accumulator() -> FindingAccumulator[Finding]:
-    """Merge only exact duplicate reports: findings that share one candidate identity."""
-    return FindingAccumulator(
-        key=lambda finding: finding.candidate_id,
-        fold=_fold,
-    )
+    return replace(existing, attack_path=attack_path, evidence_refs=evidence_refs, cited_spans=cited_spans)

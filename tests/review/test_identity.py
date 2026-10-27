@@ -73,7 +73,9 @@ def test_one_finding_type_keeps_each_target_identity():
         line=10,
         category="sql-injection",
         path_anchor="app.py:10",
+        anchor=None,
         root_cause="string-concatenated query",
+        source_operation_id="",
     )
 
 

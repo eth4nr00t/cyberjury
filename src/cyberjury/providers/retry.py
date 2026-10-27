@@ -13,9 +13,12 @@ from dataclasses import replace
 from cyberjury.json_parse import parse_json_object
 from cyberjury.providers.base import CompletionResult, Message, Provider, ResponseSchema, Usage
 
+_BASE_DELAY_SECONDS = 1.0
+_MAX_DELAY_SECONDS = 60.0
+
 
 class EmptyResponseError(RuntimeError):
-    """The provider returned a blank body on every attempt."""
+    """The provider's final attempt returned a blank body."""
 
 
 def _add_usage(left: Usage, right: Usage) -> Usage:
@@ -84,35 +87,25 @@ class RetryProvider(Provider):
         self,
         inner: Provider,
         *,
-        max_attempts: int = 3,
-        base_delay: float = 1.0,
-        max_delay: float = 60.0,
-        hard_timeout: float | None = None,
+        max_attempts: int,
+        hard_timeout: float,
         sleep: Callable[[float], None] = time.sleep,
         rand: Callable[[float, float], float] = random.uniform,
     ) -> None:
-        """Bind retry limits, delay policy, and timeout wrapping around one provider."""
+        """Bind the attempt limit, the per call deadline, and the delay functions around one provider."""
         self._inner = inner
         self._max_attempts = max_attempts
-        self._base_delay = base_delay
-        self._max_delay = max_delay
         self._hard_timeout = hard_timeout
         self._sleep = sleep
         self._rand = rand
 
-    def _call_inner(self, **kwargs) -> CompletionResult:
-        if self._hard_timeout is None:
-            return self._inner.complete(**kwargs)
-        return _call_with_deadline(lambda: self._inner.complete(**kwargs), self._hard_timeout)
-
     def _backoff(self, exc: BaseException, attempt: int) -> float:
         after = _retry_after(exc)
         if after is not None:
-            return min(after, self._max_delay)
+            return min(after, _MAX_DELAY_SECONDS)
         if _is_rate_limit(exc):
-            ceiling = min(self._base_delay * (2 ** (attempt - 1)), self._max_delay)
-            return self._rand(0.0, ceiling)
-        return self._base_delay * attempt
+            return self._rand(0.0, min(_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), _MAX_DELAY_SECONDS))
+        return _BASE_DELAY_SECONDS * attempt
 
     def complete(
         self,
@@ -121,24 +114,25 @@ class RetryProvider(Provider):
         messages: list[Message],
         model: str,
         max_tokens: int,
-        cache: bool = False,
+        response_schema: ResponseSchema,
         cache_prefix: str = "",
         cache_segments: tuple[str, ...] = (),
-        response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
-        """Return one provider completion with successful response usage accounting."""
+        """Retry transient failures and blank or incomplete replies, and return usage summed over every attempt."""
         usage = Usage()
         for attempt in range(1, self._max_attempts + 1):
             try:
-                result = self._call_inner(
-                    system=system,
-                    messages=messages,
-                    model=model,
-                    max_tokens=max_tokens,
-                    cache=cache,
-                    cache_prefix=cache_prefix,
-                    cache_segments=cache_segments,
-                    response_schema=response_schema,
+                result = _call_with_deadline(
+                    lambda: self._inner.complete(
+                        system=system,
+                        messages=messages,
+                        model=model,
+                        max_tokens=max_tokens,
+                        response_schema=response_schema,
+                        cache_prefix=cache_prefix,
+                        cache_segments=cache_segments,
+                    ),
+                    self._hard_timeout,
                 )
             except Exception as exc:
                 if attempt == self._max_attempts:
@@ -149,7 +143,7 @@ class RetryProvider(Provider):
                 continue
             usage = _add_usage(usage, result.usage)
             blank = not result.text.strip()
-            complete = not blank and (response_schema is None or parse_json_object(result.text) is not None)
+            complete = not blank and parse_json_object(result.text) is not None
             last = attempt == self._max_attempts
             if complete or (last and not blank):
                 return replace(result, usage=usage, attempts=attempt)
@@ -157,4 +151,4 @@ class RetryProvider(Provider):
                 error = EmptyResponseError("provider returned a blank response after all attempts")
                 error.cyberjury_attempts = attempt
                 raise error
-            self._sleep(self._base_delay * attempt)
+            self._sleep(_BASE_DELAY_SECONDS * attempt)

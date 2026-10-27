@@ -7,11 +7,10 @@ import importlib
 import sys
 from dataclasses import dataclass
 from functools import cache
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from cyberjury.review.detection import MAX_SOURCE_BYTES
 from cyberjury.review.facts import FactLimitation
 from cyberjury.review.languages import load_languages
 from cyberjury.review.relationships import StructuralRelationKind
@@ -40,10 +39,6 @@ class SourceParseError(RuntimeError):
 
 class AnalyzerConfigurationError(RuntimeError):
     """The configured grammar queries cannot produce a valid analysis."""
-
-
-class SourceReadError(RuntimeError):
-    """Source bytes required for analysis are unavailable."""
 
 
 @dataclass(frozen=True)
@@ -188,7 +183,7 @@ class AnalyzedRepository:
     structural_relationships: dict[str, list[AnalyzedStructuralRelationship]]
     sources: dict[str, str]
     limitations: tuple[FactLimitation, ...] = ()
-    producer_version: str = "unknown"
+    producer_version: str = ""
 
 
 type AnalyzableSource = tuple[Path, str, LangSpec]
@@ -731,13 +726,7 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
     """Parse every configured query family for one reviewable file."""
     from tree_sitter import Parser
 
-    try:
-        with path.open("rb") as stream:
-            source = stream.read(MAX_SOURCE_BYTES + 1)
-    except OSError as exc:
-        raise SourceReadError(f"cannot read source {rel}") from exc
-    if len(source) > MAX_SOURCE_BYTES:
-        raise SourceParseError("over the parse cap")
+    source = path.read_bytes()
     try:
         source.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -785,9 +774,6 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
     normalized_sources: dict[str, str] = {}
     limitations: list[FactLimitation] = []
     ordered_sources = sorted(sources, key=lambda item: item[1])
-    names = [rel for _path, rel, _spec in ordered_sources]
-    if len(names) != len(set(names)):
-        raise AnalyzerConfigurationError("analyzer source paths must be unique")
     for spec in {spec.name: spec for _path, _rel, spec in ordered_sources}.values():
         _check_queries(spec)
     for path, rel, spec in ordered_sources:
@@ -803,8 +789,6 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
                     column=exc.column,
                 )
             )
-        except SourceReadError:
-            raise
         except Exception as exc:
             limitations.append(
                 FactLimitation(source=rel, analyzer=spec.name, reason=f"analysis failed ({type(exc).__name__})")
@@ -829,12 +813,5 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
         structural_relationships=structural_relationships,
         sources=normalized_sources,
         limitations=tuple(limitations),
-        producer_version=_tree_sitter_version(),
+        producer_version=version("tree-sitter"),
     )
-
-
-def _tree_sitter_version() -> str:
-    try:
-        return version("tree-sitter")
-    except PackageNotFoundError:
-        return "unknown"

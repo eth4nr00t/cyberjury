@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from cyberjury.canonical import normalized_repository_path
 from cyberjury.review.relationships import DefinitionEvidence
 
 
@@ -32,14 +31,3 @@ class DefinitionUnitPlan:
 
     seeds: tuple[DefinitionEvidence, ...] = ()
     seed_files: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        """Reject duplicate or noncanonical worklist inputs."""
-        for file in self.seed_files:
-            normalized_repository_path(file, "definition source path")
-        for label, values in (
-            ("seed", self.seeds),
-            ("seed file", self.seed_files),
-        ):
-            if not isinstance(values, tuple) or len(values) != len(set(values)):
-                raise ValueError(f"definition unit plan {label} values must be a unique tuple")

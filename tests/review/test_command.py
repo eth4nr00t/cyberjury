@@ -17,17 +17,23 @@ import pytest
 import cyberjury.review.command as commandmod
 from cyberjury.envfile import load_env_file
 from cyberjury.providers import configuration as provider_configuration_module
-from cyberjury.providers.mock import MockProvider
 from cyberjury.record import STAGES, Record
 from cyberjury.review.command import ReviewCommand, attempt_output, run_review_command
 from cyberjury.review.request import TargetInput
-from cyberjury.review.result import FindingsArtifact
-from tests.support import git
+from cyberjury.review.result import findings_artifact
+from tests.support import MockProvider, git
+
+_EMPTY_REPLY = '{"findings": [], "evidence_requests": [], "source_queries": []}'
 
 
 @pytest.fixture(autouse=True)
 def _no_env_file(monkeypatch):
     monkeypatch.setattr(commandmod, "load_env_file", lambda: [])
+
+
+@pytest.fixture(autouse=True)
+def _scripted_seat(monkeypatch):
+    _live_provider(monkeypatch)
 
 
 @dataclass(frozen=True)
@@ -41,14 +47,11 @@ def _review(
     target: TargetInput,
     workspace: Path,
     *,
-    dry_run: bool = True,
     fresh: bool | None = None,
     concurrency: int | None = None,
 ) -> _Run:
     stdout, stderr = io.StringIO(), io.StringIO()
-    command = ReviewCommand(
-        target=target, workspace=str(workspace), dry_run=dry_run, fresh=fresh, concurrency=concurrency
-    )
+    command = ReviewCommand(target=target, workspace=str(workspace), fresh=fresh, concurrency=concurrency)
     record = run_review_command(command, stdout=stdout, stderr=stderr)
     return _Run(record=record, out=stdout.getvalue(), err=stderr.getvalue())
 
@@ -97,14 +100,15 @@ def _stub_review(*, incomplete: str = "", seen: dict | None = None):
             measure.metrics.update(items=len(prepared.units))
             if incomplete:
                 measure.incomplete(incomplete)
-        recorder.skip("link", "stub review")
+        with recorder.stage("link"):
+            pass
         with recorder.stage("result") as measure:
-            measure.bind(FindingsArtifact.create((), ()))
+            measure.bind(findings_artifact([], ()))
 
     return review
 
 
-def _live_provider(monkeypatch, default: str = "{}") -> None:
+def _live_provider(monkeypatch, default: str = _EMPTY_REPLY) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(default=default))
 
@@ -160,7 +164,7 @@ def _graphable(root):
     return root
 
 
-def test_a_dry_run_prints_every_stage_record_file_and_then_the_attempt_record(diff_target, tmp_path):
+def test_a_review_prints_every_stage_record_file_and_then_the_attempt_record(diff_target, tmp_path):
     """Stdout is the stage record files in stage order and then record.json, byte for byte."""
     state = tmp_path / "state"
 
@@ -170,7 +174,7 @@ def test_a_dry_run_prints_every_stage_record_file_and_then_the_attempt_record(di
     records = _records(run.out)
     assert run.out == attempt_output(attempt)
     assert [record["id"] for record in records] == [*STAGES, attempt.name]
-    assert [record["status"] for record in records] == ["ok"] * 8 + ["skipped", "ok", "ok"]
+    assert [record["status"] for record in records] == ["ok"] * 11
 
 
 def test_stderr_prints_the_line_of_every_record_it_writes(diff_target, tmp_path):
@@ -204,7 +208,7 @@ def test_every_record_kind_carries_its_fixed_metrics_and_attributes(diff_target,
         "plan": ["skipped_files", "items"],
         "grounding": ["items"],
         "review": ["items", "restored", "failed", "findings", "unlocated", *usage],
-        "link": [],
+        "link": ["items", "restored", "failed", *usage],
         "result": ["findings", "issues", "critical", "high", "medium", "low"],
     }
     assert {record["id"]: list(record["attributes"]) for record in records[:-1]} == {
@@ -216,7 +220,7 @@ def test_every_record_kind_carries_its_fixed_metrics_and_attributes(diff_target,
         "plan": [],
         "grounding": [],
         "review": [],
-        "link": ["reason"],
+        "link": [],
         "result": [],
     }
     item_record = json.loads(item.read_text())
@@ -244,7 +248,7 @@ def test_a_missing_api_key_fails_the_config_stage_before_any_workspace_exists(mo
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     state = tmp_path / "state"
 
-    run = _review(diff_target.target, state, dry_run=False)
+    run = _review(diff_target.target, state)
 
     records = _records(run.out)
     assert [record["status"] for record in records] == ["failed", "failed"]
@@ -281,7 +285,7 @@ def test_state_root_inside_the_repository_is_rejected_before_workspace_creation(
 
 
 def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, diff_target, tmp_path):
-    """A dry-run diff review checks out its revision exactly once and deletes that checkout afterwards."""
+    """A diff review checks out its revision exactly once and deletes that checkout afterwards."""
     original = commandmod.materialize_diff_target
     roots = []
 
@@ -298,8 +302,8 @@ def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, d
     assert not roots[0].exists()
 
 
-def test_review_diff_dry_run_uses_real_git_range_and_grounding(tmp_path):
-    """A three-dot range adding a SQL concat dry-runs to empty findings and issues in findings.json."""
+def test_review_diff_uses_real_git_range_and_grounding(tmp_path):
+    """A three-dot range adding a SQL concat reviews to empty findings and issues in findings.json."""
     change = _git_change(
         tmp_path / "repo",
         {"app.py": "def run(name):\n    return name\n"},
@@ -360,12 +364,11 @@ def test_hunkless_diff_sections_are_listed_as_skipped_files(tmp_path):
 
 
 def test_review_diff_grounds_units_and_judges_issue_links_on_the_finder(monkeypatch, diff_target, tmp_path):
-    """The single diff unit carries +x = 1 and a.py source, with a seat-labelled judge and concurrency 8."""
+    """The single diff unit carries +x = 1 and a.py source, with an issue judge and concurrency 8."""
     seen = {}
     monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
-    _live_provider(monkeypatch)
 
-    assert _review(diff_target.target, tmp_path / "state", dry_run=False).record.status == "ok"
+    assert _review(diff_target.target, tmp_path / "state").record.status == "ok"
 
     [unit] = seen["units"]
     assert "+x = 1" in unit.diff
@@ -373,7 +376,6 @@ def test_review_diff_grounds_units_and_judges_issue_links_on_the_finder(monkeypa
     assert Path(seen["root"]).name == diff_target.repository.name
     assert not Path(seen["root"]).exists()
     assert seen["seats"].issue_judge is not None
-    assert seen["seats"].finder_label.startswith("seat-")
     assert seen["concurrency"] == 8
 
 
@@ -386,10 +388,9 @@ def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
     )
     seen = {}
     monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
-    _live_provider(monkeypatch)
     state = tmp_path / "state"
 
-    assert _review(change.target, state, dry_run=False).record.status == "ok"
+    assert _review(change.target, state).record.status == "ok"
 
     [unit] = seen["units"]
     assert unit.paths == ("app.py",)
@@ -398,7 +399,7 @@ def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
     review = _review_dir(state)
     plan = json.loads((review / "plan" / "plan.json").read_text())
     grounding = json.loads((review / "grounding" / "grounding.json").read_text())
-    assert plan["expected_owned_paths"] == ["app.py"]
+    assert [path for unit in plan["units"] for path in unit["owned_paths"]] == ["app.py"]
     assert grounding["unit_plan_receipt_sha256"] == plan["receipt_sha256"]
     assert [context["unit_id"] for context in grounding["contexts"]] == [unit["id"] for unit in plan["units"]]
 
@@ -408,7 +409,7 @@ def test_review_diff_empty_git_range_is_ok(monkeypatch, diff_target, tmp_path):
     _live_provider(monkeypatch, '{"findings": []}')
     state = tmp_path / "state"
 
-    run = _review(_diff(diff_target.repository, "HEAD..HEAD"), state, dry_run=False)
+    run = _review(_diff(diff_target.repository, "HEAD..HEAD"), state)
 
     assert run.record.status == "ok"
     assert json.loads((_attempt_dir(state) / "findings.json").read_text())["findings"] == []
@@ -431,7 +432,7 @@ def test_repository_review_with_model_errors_marks_units_failed(tmp_path, monkey
     _live_provider(monkeypatch, "not json at all")
     state = tmp_path / "state"
 
-    run = _review(_repository(_flask_repository(tmp_path / "svc")), state, dry_run=False)
+    run = _review(_repository(_flask_repository(tmp_path / "svc")), state)
 
     review = _stage(_records(run.out), "review")
     assert run.record.status == review["status"] == "incomplete"
@@ -453,7 +454,7 @@ def test_partially_parsed_sources_are_counted_as_fact_limitations(tmp_path):
 
 
 def test_review_repository_writes_the_unit_plan(tmp_path):
-    """A dry-run over a directory with only app.py writes plan/plan.json listing a single app.py unit."""
+    """A review of a directory with only app.py writes plan/plan.json listing a single app.py unit."""
     repository = tmp_path / "svc"
     repository.mkdir()
     (repository / "app.py").write_text("x = 1\n")
@@ -483,7 +484,7 @@ def test_review_repository_skips_ignored_trees_of_a_git_work_tree(tmp_path):
     files = [entry["path"] for entry in json.loads((review / "source" / "snapshot.json").read_text())["files"]]
     assert files == [".gitignore", "app.py"]
     plan = json.loads((review / "plan" / "plan.json").read_text())
-    assert plan["expected_owned_paths"] == [".gitignore", "app.py"]
+    assert [path for unit in plan["units"] for path in unit["owned_paths"]] == [".gitignore", "app.py"]
 
 
 def test_review_repository_grounds_units_with_syntax_facts(tmp_path):
@@ -529,9 +530,8 @@ def test_repository_review_builds_one_finder_provider(monkeypatch, tmp_path):
 
     monkeypatch.setattr(provider_configuration_module, "make_provider", fake_make_provider)
     monkeypatch.setattr(commandmod, "run_review", _stub_review())
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
 
-    run = _review(_repository(_seed_source(tmp_path / "svc")), tmp_path / "state", dry_run=False)
+    run = _review(_repository(_seed_source(tmp_path / "svc")), tmp_path / "state")
 
     assert run.record.status == "ok"
     assert len(providers) == 1
@@ -542,15 +542,11 @@ def test_repository_review_concurrency_uses_the_api_default(monkeypatch, tmp_pat
     """Repository concurrency is 8 when unset and 4 when set to 4, on the finder seat."""
     seen = {}
     monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
 
-    run = _review(
-        _repository(_seed_source(tmp_path / "svc")), tmp_path / "state", dry_run=False, concurrency=concurrency
-    )
+    run = _review(_repository(_seed_source(tmp_path / "svc")), tmp_path / "state", concurrency=concurrency)
 
     assert run.record.status == "ok"
     assert seen["concurrency"] == expected
-    assert seen["seats"].finder_label.startswith("seat-")
 
 
 def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target, tmp_path):
@@ -560,7 +556,7 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
     state = tmp_path / "state"
 
-    assert _review(diff_target.target, state, dry_run=False, concurrency=5).record.status == "ok"
+    assert _review(diff_target.target, state, concurrency=5).record.status == "ok"
 
     attempt = _attempt_dir(state)
     request = json.loads((attempt / "request.json").read_text())
@@ -586,7 +582,7 @@ def test_the_review_reads_its_model_from_the_working_directory_env(monkeypatch, 
     seen = {}
     monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
 
-    run = _review(diff_target.target, tmp_path / "state", dry_run=False)
+    run = _review(diff_target.target, tmp_path / "state")
 
     config = _stage(_records(run.out), "config")
     assert seen["seats"].finder_model == "model-from-env"
@@ -594,8 +590,8 @@ def test_the_review_reads_its_model_from_the_working_directory_env(monkeypatch, 
 
 
 @pytest.mark.parametrize("scope", ["diff", "repository"])
-def test_dry_runs_persist_calls_bound_to_planned_units(tmp_path, scope):
-    """A dry run records model calls whose unit_id names a planned unit and whose trigger is a finder trigger."""
+def test_reviews_persist_calls_bound_to_planned_units(tmp_path, scope):
+    """A review records model calls whose unit_id names a planned unit and whose trigger is a finder trigger."""
     change = _git_change(tmp_path / "repo", {}, {"app.py": "def run(name):\n    return name\n"})
     state = tmp_path / "state"
 
@@ -609,7 +605,7 @@ def test_dry_runs_persist_calls_bound_to_planned_units(tmp_path, scope):
 
 
 def test_a_review_directory_holds_lowercase_kebab_case_files_named_after_their_schemas(tmp_path):
-    """A dry run leaves lowercase kebab case files, each naming the schema its file name or record kind implies."""
+    """A review leaves lowercase kebab case files, each naming the schema its file name or record kind implies."""
     state = tmp_path / "state"
 
     assert _review(_repository(_flask_repository(tmp_path / "svc")), state).record.status == "ok"
@@ -654,7 +650,7 @@ def test_a_review_directory_holds_lowercase_kebab_case_files_named_after_their_s
 
 
 def test_repository_reruns_share_review_with_distinct_attempts(tmp_path):
-    """Two dry runs of one repository reuse one review directory, and the second restores every unit."""
+    """Two runs of one repository reuse one review directory, and the second restores every unit."""
     target = _repository(_flask_repository(tmp_path / "svc"))
     state = tmp_path / "state"
 
@@ -729,7 +725,7 @@ def test_a_repository_edited_before_resuming_fails_the_source_stage_with_a_fresh
 
 
 def test_diff_runs_get_independent_review_sessions(monkeypatch, diff_target, tmp_path):
-    """Two identical diff dry runs create two review directories with the same target and snapshot hashes."""
+    """Two identical diff runs create two review directories with the same target and snapshot hashes."""
     monkeypatch.setattr(commandmod, "run_review", _stub_review())
 
     assert _review(diff_target.target, tmp_path).record.status == "ok"
@@ -746,15 +742,14 @@ def test_diff_runs_get_independent_review_sessions(monkeypatch, diff_target, tmp
 def test_repository_configuration_change_requires_fresh(monkeypatch, tmp_path):
     """Changing CYBERJURY_MODEL between runs fails the session stage citing --fresh, which then starts a new review."""
     monkeypatch.setattr(commandmod, "run_review", _stub_review())
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     target = _repository(_seed_source(tmp_path / "repo"))
     state = tmp_path / "state"
 
     monkeypatch.setenv("CYBERJURY_MODEL", "model-a")
-    assert _review(target, state, dry_run=False).record.status == "ok"
+    assert _review(target, state).record.status == "ok"
     monkeypatch.setenv("CYBERJURY_MODEL", "model-b")
-    session = _stage(_records(_review(target, state, dry_run=False).out), "session")
-    assert _review(target, state, dry_run=False, fresh=True).record.status == "ok"
+    session = _stage(_records(_review(target, state).out), "session")
+    assert _review(target, state, fresh=True).record.status == "ok"
 
     assert session["error"]["code"] == "config"
     assert "--fresh" in session["error"]["message"]

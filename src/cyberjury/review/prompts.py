@@ -18,11 +18,6 @@ class PromptPlan:
     dynamic_suffix: str
     cache_segments: tuple[str, ...] = ()
 
-    def __post_init__(self) -> None:
-        """Reject segments that are not the leading text of the dynamic suffix."""
-        if not self.dynamic_suffix.startswith("".join(self.cache_segments)):
-            raise ValueError("prompt cache segments must lead the dynamic suffix")
-
     @property
     def text(self) -> str:
         """Preserve the exact prefix while exposing the provider's string input."""

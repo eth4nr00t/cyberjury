@@ -7,6 +7,7 @@ import pytest
 
 from cyberjury.review.context import GroundingContext, delivered_source_block
 from cyberjury.review.definitions import DefinitionUnitPlan
+from cyberjury.review.diff import context as diff_context
 from cyberjury.review.diff.context import changed_file_sources, ground_diff_unit
 from cyberjury.review.diff.model import DiffUnit
 from cyberjury.review.diff.prepare import plan_diff_units, prepare_diff_review
@@ -14,7 +15,7 @@ from cyberjury.review.facts import FactLimitation, Facts
 from cyberjury.review.prepare import SharedGrounding
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.sources.snapshot import capture_source_snapshot
-from tests.review.support import definition, shared_grounding
+from tests.review.support import definition, recorder, shared_grounding
 
 
 def _prepare(shared: SharedGrounding, diff: str) -> list[DiffUnit]:
@@ -32,7 +33,7 @@ def _ground(root: Path, diff: str, facts: Facts | None = None) -> GroundingConte
 
 
 def _extracted(root: Path, diff: str):
-    return prepare_diff_review(diff, capture_source_snapshot(root))
+    return prepare_diff_review(diff, capture_source_snapshot(root), recorder=recorder())
 
 
 def test_changed_definition_is_requestable_without_an_initial_prefix(tmp_path):
@@ -144,7 +145,7 @@ def test_fallback_diff_context_renders_facts_and_current_source(tmp_path):
     assert f"Initial source `{window.id}`, delivered by the review agent:" in ctx.prompt.source
 
 
-def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_path):
+def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_path, monkeypatch):
     """A changed route() delivers service.py:load as source, or only as requestable under a 1-char cap."""
     (tmp_path / "route.py").write_text(
         "from service import load\n\ndef route(value):\n    return load(value)\n",
@@ -180,8 +181,10 @@ def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_p
     assert f"source `{candidate_source.id}` delivered below" in unit.grounding.text
     assert "service.py" in unit.grounding.snapshot_files
 
-    execution = replace(DEFAULT_REVIEW_SETTINGS.execution, max_initial_candidate_source_chars=1)
-    requestable = ground_diff_unit(replace(unit, grounding=None), prepared.shared, execution=execution)
+    monkeypatch.setattr(
+        diff_context, "_EXECUTION", replace(diff_context._EXECUTION, max_initial_candidate_source_chars=1)
+    )
+    requestable = ground_diff_unit(replace(unit, grounding=None), prepared.shared)
     assert requestable is not None
     assert requestable.source_evidence == ()
     assert any(item.source_span and item.source_span.file == "service.py" for item in requestable.evidence)
@@ -317,10 +320,10 @@ def test_changed_file_windows_stay_inside_the_context_budget_as_exact_line_range
     """A 4000-line app.py yields one window from line 1 that fits the cap and ends on a whole line."""
     (tmp_path / "app.py").write_text("".join(f"value_{index} = {index}\n" for index in range(1, 4000)))
 
-    _text, delivered = changed_file_sources(tmp_path, ("app.py",), {})
+    limit = DEFAULT_REVIEW_SETTINGS.diff.target_repository_context_chars_per_unit
+    _text, delivered = changed_file_sources(tmp_path, ("app.py",), {}, budget=limit)
 
     [window] = delivered
-    limit = DEFAULT_REVIEW_SETTINGS.diff.target_repository_context_chars_per_unit
     assert len(delivered_source_block(window)) + 2 <= limit
     assert window.source_span.start_line == 1
     assert window.text.endswith(f"value_{window.source_span.end_line} = {window.source_span.end_line}")

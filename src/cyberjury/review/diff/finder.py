@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 
-from cyberjury.review.context import SourceEvidence, SourceSpan, source_location_receipt
+from cyberjury.review.context import SourceEvidence, SourceSpan, cited_location_file
 from cyberjury.review.diff.model import DiffLineRanges, DiffUnit, canonical_diff_path
 from cyberjury.review.diff.prompts import FINDER_RESPONSE_SCHEMA, diff_finder_system
 from cyberjury.review.finder import ReviewTarget, finding_from_item, finding_violations
@@ -74,14 +74,14 @@ def locate(
     ranges = unit.line_ranges
     current_path = canonical_diff_path(finding.file, ranges.current)
     primary_in_patch = _line_in_ranges(finding.line, ranges.current.get(current_path, ()))
-    receipt = source_location_receipt(
+    cited = cited_location_file(
         file=finding.file,
         line=finding.line,
         evidence_refs=finding.evidence_refs,
         seed_spans=seed_spans,
         source_evidence=source_evidence,
     )
-    if not primary_in_patch and receipt is None:
+    if not primary_in_patch and cited is None:
         return None
     anchor = finding.change_anchor
     anchor_ranges = ranges.new if anchor.side == "new" else ranges.old
@@ -90,7 +90,7 @@ def locate(
         return None
     return dataclasses.replace(
         finding,
-        file=current_path if primary_in_patch else receipt.file,
+        file=current_path if primary_in_patch else cited,
         change_anchor=dataclasses.replace(anchor, file=anchor_file),
     )
 

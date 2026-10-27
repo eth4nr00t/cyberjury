@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import json
 import signal
 import threading
 import time
@@ -14,14 +13,12 @@ from typing import TextIO
 
 from cyberjury import __version__
 from cyberjury.envfile import load_env_file
-from cyberjury.providers.base import Message
 from cyberjury.providers.configuration import (
     ProviderConfiguration,
     ProviderCredentialsError,
     provider_configuration_from_env,
 )
 from cyberjury.providers.metering import UsageMeter
-from cyberjury.providers.mock import MockProvider
 from cyberjury.record import STAGES, Record, RecordError, error_message, render, utc_timestamp
 from cyberjury.review.contract import ContractReceipt
 from cyberjury.review.diff.finder import DIFF_TARGET
@@ -37,7 +34,7 @@ from cyberjury.review.request import (
     TargetInput,
 )
 from cyberjury.review.run import NoReviewableSourceError, run_review
-from cyberjury.review.seats import DRY_RUN_SEAT, ReviewSeats, provider_seat_record, review_seats
+from cyberjury.review.seats import ReviewSeats, provider_seat_record, review_seats
 from cyberjury.review.session import ReviewAttempt, ReviewSession
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.target import (
@@ -59,7 +56,6 @@ class ReviewCommand:
 
     target: TargetInput
     workspace: str
-    dry_run: bool
     fresh: bool | None
     concurrency: int | None
 
@@ -129,7 +125,7 @@ def _run_stages(command: ReviewCommand, state: _AttemptState, recorder: Recorder
             review=attempt.session_workspace.path,
             recorder=recorder,
         )
-        state.source_changed = _source_changed(snapshot)
+        state.source_changed = not snapshot.matches()
 
 
 def _configure(
@@ -139,39 +135,25 @@ def _configure(
         load_env_file()
         configuration = provider_configuration_from_env()
         request = _attempt_request(command, configuration)
-        seats = review_seats(
-            configuration,
-            meter=meter,
-            dry_run_provider=MockProvider(responder=_dry_run_response) if command.dry_run else None,
-        )
+        seats = review_seats(configuration, meter=meter)
         measure.attributes.update(
             provider=request.providers.seat.provider, model=request.providers.seat.model, version=__version__
         )
     return request, ReviewIntent(target=command.target), seats
 
 
-def _dry_run_response(_system: str, _messages: list[Message]) -> str:
-    return json.dumps({"findings": [], "evidence_requests": [], "source_queries": []})
-
-
 def _attempt_request(command: ReviewCommand, configuration: ProviderConfiguration) -> ReviewAttemptRequest:
-    plan = (
-        ProviderPlanRecord(retries=None, timeout_seconds=None, seat=provider_seat_record(DRY_RUN_SEAT))
-        if command.dry_run
-        else ProviderPlanRecord(
-            retries=configuration.retries,
-            timeout_seconds=configuration.timeout,
-            seat=provider_seat_record(configuration.seat),
-        )
-    )
     return ReviewAttemptRequest(
         engine_version=__version__,
         concurrency=ConcurrencyRecord(
             review=command.concurrency or DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
         ),
-        dry_run=command.dry_run,
         fresh=command.fresh,
-        providers=plan,
+        providers=ProviderPlanRecord(
+            retries=configuration.retries,
+            timeout_seconds=configuration.timeout,
+            seat=provider_seat_record(configuration.seat),
+        ),
     )
 
 
@@ -231,13 +213,6 @@ def _capture(
         measure.bind(snapshot)
         measure.bind(ContractReceipt.capture())
     return snapshot, source
-
-
-def _source_changed(snapshot: SourceSnapshot) -> bool:
-    try:
-        return not snapshot.matches()
-    except (OSError, SourceSnapshotError):
-        return True
 
 
 def _finish(

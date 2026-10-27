@@ -60,27 +60,6 @@ def test_oversized_files_are_left_out_of_facts_without_a_limitation(tmp_path):
     assert set(facts.by_file) == {"app.py"}
 
 
-def test_a_file_that_breaks_the_relationship_graph_is_excluded_as_a_limitation(tmp_path, monkeypatch):
-    """When the graph cannot be built with bad.py, bad.py becomes a limitation and ok.py keeps its facts."""
-    (tmp_path / "bad.py").write_text("def bad():\n    return 1\n")
-    (tmp_path / "ok.py").write_text("def ok():\n    return True\n")
-    build = facts_module.facts_from_repository
-
-    def failing_build(repository):
-        if any(definition.file == "bad.py" for definition in repository.definitions):
-            raise ValueError("definition evidence name must not be empty")
-        return build(repository)
-
-    monkeypatch.setattr(facts_module, "facts_from_repository", failing_build)
-
-    facts = syntax_facts(tmp_path)
-
-    assert [item["name"] for item in facts.relationships.to_dict()["definitions"]] == ["ok"]
-    assert [(item.source, item.analyzer, item.reason) for item in facts.limitations] == [
-        ("bad.py", "syntax graph", "analysis failed (ValueError)")
-    ]
-
-
 def test_a_graph_failure_no_single_file_explains_still_fails_extraction(tmp_path, monkeypatch):
     """A graph error that appears only with both files together is not hidden as a file limitation."""
     (tmp_path / "one.py").write_text("def one():\n    return 1\n")

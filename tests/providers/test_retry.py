@@ -8,6 +8,21 @@ import pytest
 from cyberjury.providers.base import CompletionResult, Message, Provider, ResponseSchema, Usage
 from cyberjury.providers.retry import EmptyResponseError, RetryProvider
 
+_OK = '{"value":"ok"}'
+_SCHEMA = ResponseSchema(
+    name="reply",
+    schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"value": {"type": "string"}},
+        "required": ["value"],
+    },
+)
+
+
+def _retry(inner, *, max_attempts=3, hard_timeout=10.0, **values):
+    return RetryProvider(inner, max_attempts=max_attempts, hard_timeout=hard_timeout, **values)
+
 
 class _Flaky(Provider):
     def __init__(self, fail_times):
@@ -18,39 +33,22 @@ class _Flaky(Provider):
         self.calls += 1
         if self.calls <= self._fail_times:
             raise RuntimeError("transient")
-        return CompletionResult(text="ok")
+        return CompletionResult(text=_OK)
 
 
 def _call(provider):
-    return provider.complete(system="s", messages=[Message(role="user", content="x")], model="m", max_tokens=8)
-
-
-def _structured_call(provider):
-    schema = ResponseSchema(
-        name="reply",
-        schema={
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {"value": {"type": "string"}},
-            "required": ["value"],
-        },
-    )
     return provider.complete(
-        system="s",
-        messages=[Message(role="user", content="x")],
-        model="m",
-        max_tokens=8,
-        response_schema=schema,
+        system="s", messages=[Message(role="user", content="x")], model="m", max_tokens=8, response_schema=_SCHEMA
     )
 
 
 def test_retries_then_succeeds():
-    """Two transient failures under max_attempts=3 return "ok" on attempt 3 after sleeping 1.0 then 2.0."""
+    """Two transient failures under max_attempts=3 return the reply on attempt 3 after sleeping 1.0 then 2.0."""
     slept = []
     inner = _Flaky(fail_times=2)
-    provider = RetryProvider(inner, max_attempts=3, sleep=slept.append)
+    provider = _retry(inner, max_attempts=3, sleep=slept.append)
     result = _call(provider)
-    assert result.text == "ok"
+    assert result.text == _OK
     assert result.attempts == 3
     assert inner.calls == 3
     assert slept == [1.0, 2.0]
@@ -59,7 +57,7 @@ def test_retries_then_succeeds():
 def test_reraises_after_exhausting_attempts():
     """Five failures with max_attempts=3 re-raise the RuntimeError tagged with cyberjury_attempts=3."""
     inner = _Flaky(fail_times=5)
-    provider = RetryProvider(inner, max_attempts=3, sleep=lambda _: None)
+    provider = _retry(inner, max_attempts=3, sleep=lambda _: None)
     with pytest.raises(RuntimeError, match="transient") as caught:
         _call(provider)
     assert caught.value.cyberjury_attempts == 3
@@ -70,9 +68,7 @@ def test_no_retry_on_first_success():
     """An immediate success makes one inner call and never sleeps."""
     inner = _Flaky(fail_times=0)
     slept = []
-    RetryProvider(inner, sleep=slept.append).complete(
-        system="s", messages=[Message(role="user", content="x")], model="m", max_tokens=8
-    )
+    _call(_retry(inner, sleep=slept.append))
     assert inner.calls == 1
     assert slept == []
 
@@ -84,21 +80,21 @@ class _Blank(Provider):
 
     def complete(self, **kwargs):
         self.calls += 1
-        return CompletionResult(text="" if self.calls <= self._blank_times else "ok")
+        return CompletionResult(text="" if self.calls <= self._blank_times else _OK)
 
 
 def test_retries_blank_body_then_succeeds():
-    """One empty-text response is retried and the second call returns "ok"."""
+    """One empty-text response is retried and the second call returns the reply."""
     inner = _Blank(blank_times=1)
-    provider = RetryProvider(inner, max_attempts=3, sleep=lambda _: None)
-    assert _call(provider).text == "ok"
+    provider = _retry(inner, max_attempts=3, sleep=lambda _: None)
+    assert _call(provider).text == _OK
     assert inner.calls == 2
 
 
 def test_raises_when_body_blank_every_attempt():
     """Empty text on all three attempts raises EmptyResponseError after exactly three calls."""
     inner = _Blank(blank_times=5)
-    provider = RetryProvider(inner, max_attempts=3, sleep=lambda _: None)
+    provider = _retry(inner, max_attempts=3, sleep=lambda _: None)
     with pytest.raises(EmptyResponseError):
         _call(provider)
     assert inner.calls == 3
@@ -123,9 +119,9 @@ def test_retries_an_incomplete_structured_response_and_accumulates_usage():
             ('{"value":"ok"}', Usage(input_tokens=11, output_tokens=3)),
         ]
     )
-    provider = RetryProvider(inner, max_attempts=2, sleep=lambda _: None)
+    provider = _retry(inner, max_attempts=2, sleep=lambda _: None)
 
-    result = _structured_call(provider)
+    result = _call(provider)
 
     assert result.text == '{"value":"ok"}'
     assert result.attempts == 2
@@ -141,23 +137,13 @@ def test_returns_the_last_incomplete_response_for_fail_loud_downstream_validatio
             ('{"value":', Usage(input_tokens=11, output_tokens=3)),
         ]
     )
-    provider = RetryProvider(inner, max_attempts=2, sleep=lambda _: None)
+    provider = _retry(inner, max_attempts=2, sleep=lambda _: None)
 
-    result = _structured_call(provider)
+    result = _call(provider)
 
     assert result.text == '{"value":'
     assert result.attempts == 2
     assert result.usage == Usage(input_tokens=21, output_tokens=5)
-
-
-def test_does_not_parse_non_structured_provider_responses():
-    """Plain text without a response schema is returned after one call, not retried as invalid JSON."""
-    inner = _Structured([("plain text", Usage(input_tokens=4, output_tokens=2))])
-
-    result = _call(RetryProvider(inner, max_attempts=2, sleep=lambda _: None))
-
-    assert result.text == "plain text"
-    assert inner.calls == 1
 
 
 class _RateLimited(Provider):
@@ -170,7 +156,7 @@ class _RateLimited(Provider):
         self.calls += 1
         if self.calls <= self._fail_times:
             raise self._exc
-        return CompletionResult(text="ok")
+        return CompletionResult(text=_OK)
 
 
 def _rate_limit_exc():
@@ -183,8 +169,8 @@ def test_rate_limit_backs_off_exponentially_with_jitter():
     """Three 429 errors with jitter at its upper bound sleep 1.0, 2.0, then 4.0 seconds."""
     slept = []
     inner = _RateLimited(fail_times=3, exc=_rate_limit_exc())
-    provider = RetryProvider(inner, max_attempts=4, base_delay=1.0, sleep=slept.append, rand=lambda _lo, hi: hi)
-    assert _call(provider).text == "ok"
+    provider = _retry(inner, max_attempts=4, sleep=slept.append, rand=lambda _lo, hi: hi)
+    assert _call(provider).text == _OK
     assert slept == [1.0, 2.0, 4.0]
 
 
@@ -198,13 +184,13 @@ def test_rate_limit_honors_retry_after_header():
     exc.response = _Resp()
     slept = []
     inner = _RateLimited(fail_times=1, exc=exc)
-    provider = RetryProvider(inner, max_attempts=3, base_delay=1.0, sleep=slept.append, rand=lambda _lo, hi: hi)
-    assert _call(provider).text == "ok"
+    provider = _retry(inner, max_attempts=3, sleep=slept.append, rand=lambda _lo, hi: hi)
+    assert _call(provider).text == _OK
     assert slept == [5.0]
 
 
 def test_rate_limit_caps_at_max_delay():
-    """A retry-after of 9000 seconds is clamped to the 30.0 second max_delay."""
+    """A retry-after of 9000 seconds is clamped to the 60.0 second maximum delay."""
 
     class _Resp:
         headers: ClassVar = {"retry-after": "9000"}
@@ -213,9 +199,9 @@ def test_rate_limit_caps_at_max_delay():
     exc.response = _Resp()
     slept = []
     inner = _RateLimited(fail_times=1, exc=exc)
-    provider = RetryProvider(inner, max_attempts=3, base_delay=1.0, max_delay=30.0, sleep=slept.append)
-    assert _call(provider).text == "ok"
-    assert slept == [30.0]
+    provider = _retry(inner, max_attempts=3, sleep=slept.append)
+    assert _call(provider).text == _OK
+    assert slept == [60.0]
 
 
 class _RateLimitError(Exception):
@@ -235,8 +221,8 @@ def test_rate_limits_are_recognized_by_class_name_and_message(exc, expected):
     """A RateLimitError class or a 429 or rate limit message takes jittered backoff, and a reset takes 1.0 second."""
     slept = []
     inner = _RateLimited(fail_times=1, exc=exc)
-    provider = RetryProvider(inner, max_attempts=2, base_delay=1.0, sleep=slept.append, rand=lambda lo, _hi: lo)
-    assert _call(provider).text == "ok"
+    provider = _retry(inner, max_attempts=2, sleep=slept.append, rand=lambda lo, _hi: lo)
+    assert _call(provider).text == _OK
     assert slept == expected
 
 
@@ -247,8 +233,8 @@ def test_retry_after_attribute_sets_the_delay_unless_it_is_not_a_number(raw, exp
     exc.retry_after = raw
     slept = []
     inner = _RateLimited(fail_times=1, exc=exc)
-    provider = RetryProvider(inner, max_attempts=2, base_delay=1.0, sleep=slept.append)
-    assert _call(provider).text == "ok"
+    provider = _retry(inner, max_attempts=2, sleep=slept.append)
+    assert _call(provider).text == _OK
     assert slept == expected
 
 
@@ -258,9 +244,9 @@ def test_a_non_rate_limit_error_honors_its_structured_retry_delay():
     exc.body = {"retryable": True, "retry_after": 60}
     slept = []
     inner = _RateLimited(fail_times=1, exc=exc)
-    provider = RetryProvider(inner, max_attempts=2, max_delay=90.0, sleep=slept.append)
+    provider = _retry(inner, max_attempts=2, sleep=slept.append)
 
-    assert _call(provider).text == "ok"
+    assert _call(provider).text == _OK
     assert slept == [60.0]
 
 
@@ -278,7 +264,7 @@ class _Hang(Provider):
 def test_hard_timeout_aborts_a_hung_call():
     """A call blocked past the 0.2 second hard_timeout raises TimeoutError after one attempt."""
     inner = _Hang()
-    provider = RetryProvider(inner, max_attempts=1, hard_timeout=0.2, sleep=lambda _: None)
+    provider = _retry(inner, max_attempts=1, hard_timeout=0.2, sleep=lambda _: None)
     try:
         with pytest.raises(TimeoutError):
             _call(provider)
@@ -304,7 +290,7 @@ class _HangOnce(Provider):
 def test_hard_timeout_retries_then_recovers():
     """A first call hung past the 0.2 second limit is abandoned and the second attempt returns "call 2"."""
     inner = _HangOnce()
-    provider = RetryProvider(inner, max_attempts=2, hard_timeout=0.2, sleep=lambda _: None)
+    provider = _retry(inner, max_attempts=2, hard_timeout=0.2, sleep=lambda _: None)
     try:
         result = _call(provider)
     finally:
@@ -313,14 +299,3 @@ def test_hard_timeout_retries_then_recovers():
     assert result.text == "call 2"
     assert result.attempts == 2
     assert inner.calls == 2
-
-
-def test_no_hard_timeout_leaves_call_unbounded():
-    """Without a hard timeout the call runs in the caller's thread and is never abandoned."""
-    inner = _HangOnce()
-    threading.Timer(0.3, inner.release.set).start()
-
-    result = _call(RetryProvider(inner, max_attempts=1))
-
-    assert result.text == "call 1"
-    assert inner.threads == [threading.current_thread()]

@@ -5,7 +5,6 @@ from dataclasses import replace
 
 import pytest
 
-from cyberjury.providers.mock import MockProvider
 from cyberjury.review import issues as issues_module
 from cyberjury.review.context import SourceSpan
 from cyberjury.review.finding import Finding
@@ -18,7 +17,13 @@ from cyberjury.review.issues import (
     link_prompt,
 )
 from cyberjury.review.items import ItemStore
-from tests.review.support import StubIssueJudge
+from tests.review.support import StubIssueJudge, recorder
+from tests.support import MockProvider
+
+
+def _link(findings, judge, root, *, store=None):
+    store = store or ItemStore(root / "review", "link")
+    return link_issues(findings, judge, str(root), store=store, concurrency=1, recorder=recorder())
 
 
 def _finding(title: str, *, file: str = "views.py", line: int = 2, cites=()) -> Finding:
@@ -45,7 +50,7 @@ def test_findings_at_one_line_with_one_category_form_one_issue_and_keep_every_me
     second = _finding("record save lacks authorization", file="./views.py", line=2)
     other = _finding("load skips the owner check", line=9)
 
-    issues = group_issues([first, second, other])
+    issues = group_issues([first, second, other], ())
 
     assert [issue.members for issue in issues] == [(first, second), (other,)]
     assert issues[0].representative is first
@@ -56,7 +61,7 @@ def test_findings_on_different_lines_of_one_function_are_separate_issues():
     """Owner and quota reports at views.py lines 2 and 3 give two single-member issues."""
     findings = [_finding("save checks no owner", line=2), _finding("save checks no quota", line=3)]
 
-    assert [len(issue.members) for issue in group_issues(findings)] == [1, 1]
+    assert [len(issue.members) for issue in group_issues(findings, ())] == [1, 1]
 
 
 def test_findings_at_one_line_with_different_categories_are_separate_issues():
@@ -64,7 +69,7 @@ def test_findings_at_one_line_with_different_categories_are_separate_issues():
     first = _finding("missing owner check", line=2)
     second = replace(_finding("unbounded size", line=2), category="denial-of-service")
 
-    assert [len(issue.members) for issue in group_issues([first, second])] == [1, 1]
+    assert [len(issue.members) for issue in group_issues([first, second], ())] == [1, 1]
 
 
 GATE = ("gate.py", 1, 9)
@@ -75,7 +80,7 @@ def test_one_function_with_two_lines_is_two_issues_until_a_judgment_links_them()
     first = _finding("missing owner check", line=2, cites=[("views.py", 1, 9)])
     second = _finding("unbounded size", line=4, cites=[("views.py", 1, 9)])
 
-    assert [len(issue.members) for issue in group_issues([first, second])] == [1, 1]
+    assert [len(issue.members) for issue in group_issues([first, second], ())] == [1, 1]
     assert [{item.title for item in pair} for pair in link_candidates([first, second])] == [
         {"missing owner check", "unbounded size"}
     ]
@@ -92,7 +97,7 @@ def test_issue_ids_membership_and_link_candidates_are_stable_under_input_permuta
     reordered = [findings[3], findings[1], findings[2], findings[0]]
 
     def shape(items):
-        return {issue.id: {item.candidate_id for item in issue.members} for issue in group_issues(items)}
+        return {issue.id: {item.candidate_id for item in issue.members} for issue in group_issues(items, ())}
 
     def pairs(items):
         return [(first.candidate_id, second.candidate_id) for first, second in link_candidates(items)]
@@ -154,7 +159,7 @@ def test_a_judgment_links_two_issues_only_when_one_change_fixes_both(tmp_path):
     separate = _finding("separate", file="models.py", line=30, cites=[("views.py", 1, 9), GATE])
     judge = StubIssueJudge(lambda pair: model.candidate_id in pair and view.candidate_id in pair)
 
-    links = link_issues([view, model, separate], judge, str(tmp_path))
+    links = _link([view, model, separate], judge, tmp_path)
     issues = group_issues([view, model, separate], links.links)
 
     assert len(judge.pairs) == 2
@@ -170,7 +175,7 @@ def test_the_model_judge_asks_one_closed_schema_question_from_structured_fields_
     provider = MockProvider(default=json.dumps({"same_fix": True, "rationale": "the save owner check fixes both"}))
     judge = ModelIssueJudge(provider=provider, model="mock", seat_id="seat-test")
 
-    links = link_issues([view, model], judge, str(tmp_path))
+    links = _link([view, model], judge, tmp_path)
 
     (call,) = provider.calls
     prompt = call["messages"][0].content
@@ -206,9 +211,9 @@ def test_decisions_under_an_earlier_judge_contract_are_asked_again(tmp_path, mon
 
     with monkeypatch.context() as patch:
         patch.setattr(issues_module, "_SYSTEM", "an earlier same-fix contract")
-        link_issues(findings, judge, str(tmp_path), store=store)
-    link_issues(findings, judge, str(tmp_path), store=store)
-    link_issues(findings, judge, str(tmp_path), store=store)
+        _link(findings, judge, tmp_path, store=store)
+    _link(findings, judge, tmp_path, store=store)
+    _link(findings, judge, tmp_path, store=store)
 
     assert len(provider.calls) == 2
     assert provider.calls[0]["system"] == "an earlier same-fix contract"
@@ -221,8 +226,8 @@ def test_link_decisions_are_reused_from_their_item_records(tmp_path):
     store = ItemStore(tmp_path / "review", "link")
     first, resumed = StubIssueJudge(), StubIssueJudge(lambda pair: False)
 
-    linked = link_issues(findings, first, str(tmp_path), store=store)
-    reused = link_issues(findings, resumed, str(tmp_path), store=store)
+    linked = _link(findings, first, tmp_path, store=store)
+    reused = _link(findings, resumed, tmp_path, store=store)
 
     assert (len(first.pairs), len(resumed.pairs)) == (1, 0)
     assert reused.links == linked.links != ()
@@ -233,9 +238,9 @@ def test_a_failed_judgment_links_nothing_and_is_retried_on_resume(tmp_path):
     findings = list(_linked_pair(tmp_path))
     store = ItemStore(tmp_path / "review", "link")
 
-    failed = link_issues(findings, StubIssueJudge(error=RuntimeError("rate limited")), str(tmp_path), store=store)
+    failed = _link(findings, StubIssueJudge(error=RuntimeError("rate limited")), tmp_path, store=store)
     retried = StubIssueJudge()
-    linked = link_issues(findings, retried, str(tmp_path), store=store)
+    linked = _link(findings, retried, tmp_path, store=store)
 
     assert failed.links == ()
     assert "rate limited" in failed.errors[0]

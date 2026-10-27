@@ -8,6 +8,16 @@ import pytest
 from cyberjury.providers.base import Message, ResponseSchema, Usage
 from cyberjury.providers.openai import OpenAIProvider, _responses_usage
 
+_SCHEMA = ResponseSchema(
+    name="review_reply",
+    schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"findings": {"type": "array", "items": {"type": "string"}}},
+        "required": ["findings"],
+    },
+)
+
 
 class _FakeResponsesClient:
     def __init__(self, output_text="{}", status="completed", error=None):
@@ -24,9 +34,14 @@ class _FakeResponsesClient:
         return SimpleNamespace(output_text=self._out, status=self._status)
 
 
-def _complete(client, content="c", **kw):
+def _complete(client, content="c", *, system="s", **kw):
     return OpenAIProvider(client=client).complete(
-        system="s", messages=[Message(role="user", content=content)], model="m", max_tokens=8, **kw
+        system=system,
+        messages=[Message(role="user", content=content)],
+        model="m",
+        max_tokens=8,
+        response_schema=_SCHEMA,
+        **kw,
     )
 
 
@@ -43,7 +58,7 @@ def test_sdk_exception_propagates():
 
 
 def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch):
-    """A client built with api_key k and a gateway api_base gets max_retries=0, that key, and the gateway base_url."""
+    """A client built with a gateway api_base gets max_retries=0 and the gateway base_url."""
     captured = {}
 
     class _OpenAI:
@@ -52,16 +67,9 @@ def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch
 
     monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=_OpenAI))
 
-    OpenAIProvider(api_key="k", api_base="https://gateway.example.test")._get_client()
+    OpenAIProvider(api_base="https://gateway.example.test")._get_client()
 
-    assert captured == {"max_retries": 0, "api_key": "k", "base_url": "https://gateway.example.test"}
-
-
-def test_missing_sdk_raises_a_clear_error(monkeypatch):
-    """With the openai module unimportable, complete raises RuntimeError pointing at pip install."""
-    monkeypatch.setitem(sys.modules, "openai", None)
-    with pytest.raises(RuntimeError, match="pip install"):
-        OpenAIProvider().complete(system="s", messages=[Message(role="user", content="x")], model="m", max_tokens=8)
+    assert captured == {"max_retries": 0, "base_url": "https://gateway.example.test"}
 
 
 def test_responses_usage_reads_the_cached_tokens_detail():
@@ -98,39 +106,27 @@ def test_usage_defaults_to_zero_when_unreported():
 
 def test_a_cached_prefix_becomes_a_stable_routing_key():
     """The system prompt plus the cached message prefix becomes one routing key."""
-    key = _sent("STABLE tail", cache=True, cache_prefix="STABLE")["prompt_cache_key"]
+    key = _sent("STABLE tail", cache_prefix="STABLE")["prompt_cache_key"]
     assert key
-    assert _sent("STABLE a different tail", cache=True, cache_prefix="STABLE")["prompt_cache_key"] == key
-    assert _sent("OTHER tail", cache=True, cache_prefix="OTHER")["prompt_cache_key"] != key
+    assert _sent("STABLE a different tail", cache_prefix="STABLE")["prompt_cache_key"] == key
+    assert _sent("OTHER tail", cache_prefix="OTHER")["prompt_cache_key"] != key
 
 
 def test_the_routing_key_covers_the_system_prompt():
     """Identical cache prefixes under different system prompts produce different prompt_cache_key values."""
     client = _FakeResponsesClient()
-    OpenAIProvider(client=client).complete(
-        system="other",
-        messages=[Message(role="user", content="STABLE")],
-        model="m",
-        max_tokens=8,
-        cache=True,
-        cache_prefix="STABLE",
-    )
-    assert client.kwargs["prompt_cache_key"] != _sent("STABLE", cache=True, cache_prefix="STABLE")["prompt_cache_key"]
+    _complete(client, "STABLE", system="other", cache_prefix="STABLE")
+    assert client.kwargs["prompt_cache_key"] != _sent("STABLE", cache_prefix="STABLE")["prompt_cache_key"]
 
 
 def test_a_repeated_system_prompt_alone_gets_a_routing_key():
-    """With cache=True and no cache_prefix, messages x and y share one key from the system prompt."""
-    assert _sent("x", cache=True)["prompt_cache_key"] == _sent("y", cache=True)["prompt_cache_key"]
-
-
-def test_no_routing_key_without_cache():
-    """A cache_prefix without cache=True sends no prompt_cache_key in the request."""
-    assert "prompt_cache_key" not in _sent("x", cache_prefix="STABLE")
+    """Without a cache_prefix, messages x and y share one key from the system prompt."""
+    assert _sent("x")["prompt_cache_key"] == _sent("y")["prompt_cache_key"]
 
 
 def test_caching_uses_only_portable_routing_fields():
     """A cached request keeps the whole message as input content and sends no prompt_cache_options field."""
-    request = _sent("STABLE changing judgment", cache=True, cache_prefix="STABLE")
+    request = _sent("STABLE changing judgment", cache_prefix="STABLE")
 
     assert request["input"][-1]["content"] == "STABLE changing judgment"
     assert "prompt_cache_options" not in request
@@ -139,12 +135,7 @@ def test_caching_uses_only_portable_routing_fields():
 def test_responses_maps_system_to_instructions_and_returns_output_text():
     """System goes to instructions, messages to input, output_text is returned, and no temperature is sent."""
     client = _FakeResponsesClient(output_text='{"holds": true}')
-    result = OpenAIProvider(client=client).complete(
-        system="review carefully",
-        messages=[Message(role="user", content="audit this")],
-        model="gpt-5.6",
-        max_tokens=1024,
-    )
+    result = _complete(client, "audit this", system="review carefully")
     assert result.text == '{"holds": true}'
     assert client.kwargs["instructions"] == "review carefully"
     assert client.kwargs["input"] == [{"role": "user", "content": "audit this"}]
@@ -154,25 +145,12 @@ def test_responses_maps_system_to_instructions_and_returns_output_text():
 
 def test_responses_maps_the_strict_output_schema():
     """A ResponseSchema becomes text.format of type json_schema with strict=True and its name."""
-    client = _FakeResponsesClient(output_text='{"findings": []}')
-    schema = ResponseSchema(
-        name="review_reply",
-        schema={
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {"findings": {"type": "array", "items": {"type": "string"}}},
-            "required": ["findings"],
-        },
-    )
-
-    _complete(client, "source", response_schema=schema)
-
-    assert client.kwargs["text"] == {
+    assert _sent("source")["text"] == {
         "format": {
             "type": "json_schema",
             "name": "review_reply",
             "strict": True,
-            "schema": schema.schema,
+            "schema": _SCHEMA.schema,
         }
     }
 
@@ -185,6 +163,7 @@ def test_responses_preserves_message_role_boundaries():
         messages=[Message(role="user", content="first"), Message(role="assistant", content="second")],
         model="gpt-5.6",
         max_tokens=1024,
+        response_schema=_SCHEMA,
     )
     assert client.kwargs["input"] == [
         {"role": "user", "content": "first"},

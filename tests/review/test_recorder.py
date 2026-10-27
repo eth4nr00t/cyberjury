@@ -8,6 +8,7 @@ from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
 from cyberjury.providers.metering import MeteringProvider, UsageMeter, model_call_context, model_call_scope
 from cyberjury.record import RecordError
 from cyberjury.review.recorder import INTERRUPTED, Recorder
+from tests.support import EMPTY_SCHEMA
 
 
 class _Provider(Provider):
@@ -17,13 +18,13 @@ class _Provider(Provider):
 
 def _call(meter: UsageMeter) -> None:
     MeteringProvider(_Provider(), meter).complete(
-        system="s", messages=[Message(role="user", content="u")], model="m", max_tokens=8
+        system="s", messages=[Message(role="user", content="u")], model="m", max_tokens=8, response_schema=EMPTY_SCHEMA
     )
 
 
 def test_a_stage_that_raises_is_recorded_failed_with_the_classified_error_and_reraises():
     """A stage raising ValueError("bad") records failed with the classifier's error and lets the error through."""
-    recorder = Recorder(classify=lambda exc: RecordError(code="input", message=str(exc)))
+    recorder = Recorder(meter=UsageMeter(), classify=lambda exc: RecordError(code="input", message=str(exc)))
 
     with pytest.raises(ValueError, match="bad"), recorder.stage("target"):
         raise ValueError("bad")
@@ -34,7 +35,7 @@ def test_a_stage_that_raises_is_recorded_failed_with_the_classified_error_and_re
 
 def test_an_interrupted_stage_is_recorded_interrupted_with_the_operator_reason():
     """A KeyboardInterrupt inside a stage records it interrupted with the operator reason and re-raises."""
-    recorder = Recorder()
+    recorder = Recorder(meter=UsageMeter())
 
     with pytest.raises(KeyboardInterrupt), recorder.stage("source"):
         raise KeyboardInterrupt
@@ -46,7 +47,7 @@ def test_an_interrupted_stage_is_recorded_interrupted_with_the_operator_reason()
 
 def test_a_stage_marked_incomplete_ends_incomplete_with_a_model_error():
     """Calling incomplete("unit failed") ends the stage incomplete with a model error carrying that reason."""
-    recorder = Recorder()
+    recorder = Recorder(meter=UsageMeter())
 
     with recorder.stage("review") as measure:
         measure.incomplete("unit failed")
@@ -72,7 +73,7 @@ def test_unit_usage_counts_only_the_calls_of_that_unit():
     """Two calls for unit-a and one for unit-b give unit-a two calls and 20 input tokens."""
     meter = UsageMeter()
     for unit in ("unit-a", "unit-a", "unit-b"):
-        with model_call_scope(unit_id=unit), model_call_context(role="finder"):
+        with model_call_scope(unit_id=unit), model_call_context(role="finder", trigger="initial_judgment"):
             _call(meter)
 
     assert Recorder(meter=meter).unit_usage("unit-a") == {
@@ -85,7 +86,7 @@ def test_unit_usage_counts_only_the_calls_of_that_unit():
 
 def test_stages_finished_before_attach_are_written_on_attach_with_their_held_artifacts():
     """A config stage binding a value before attach is written on attach, listing the path the binder returns."""
-    recorder = Recorder()
+    recorder = Recorder(meter=UsageMeter())
     with recorder.stage("config") as measure:
         measure.bind("value")
     written = []
@@ -98,9 +99,11 @@ def test_stages_finished_before_attach_are_written_on_attach_with_their_held_art
 
 
 def test_each_record_prints_its_line_to_the_stream():
-    """A skipped link stage prints exactly its one-line view to the stream."""
+    """A finished stage prints exactly its one-line view to the stream."""
     stream = io.StringIO()
+    recorder = Recorder(meter=UsageMeter(), stream=stream)
 
-    record = Recorder(stream=stream).skip("link", "nothing to link")
+    with recorder.stage("plan"):
+        pass
 
-    assert stream.getvalue() == record.line() + "\n"
+    assert stream.getvalue() == recorder.stages[0].line() + "\n"

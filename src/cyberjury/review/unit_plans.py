@@ -78,37 +78,19 @@ class UnitPlanReceipt:
     """Bind one complete deterministic unit worklist to its extracted facts."""
 
     facts_receipt_sha256: str
-    expected_owned_paths: tuple[str, ...]
     units: tuple[UnitPlanRecord, ...]
     receipt_sha256: str
 
     @classmethod
-    def create(
-        cls,
-        *,
-        facts: FactsReceipt,
-        units: tuple[UnitPlanRecord, ...],
-        expected_owned_paths: tuple[str, ...] = (),
-    ) -> UnitPlanReceipt:
-        """Build one unit plan and refuse a worklist that leaves an expected path unowned."""
-        owned = {path for unit in units for path in unit.owned_paths}
-        expected = tuple(dict.fromkeys(expected_owned_paths)) or tuple(sorted(owned))
-        unowned = [path for path in expected if path not in owned]
-        if unowned:
-            raise ValueError(f"unit planning left expected paths unowned: {', '.join(unowned)}")
-        receipt = cls(
-            facts_receipt_sha256=facts.receipt_sha256,
-            expected_owned_paths=expected,
-            units=tuple(units),
-            receipt_sha256="",
-        )
+    def create(cls, *, facts: FactsReceipt, units: tuple[UnitPlanRecord, ...]) -> UnitPlanReceipt:
+        """Build one unit plan bound to its facts receipt."""
+        receipt = cls(facts_receipt_sha256=facts.receipt_sha256, units=units, receipt_sha256="")
         return replace(receipt, receipt_sha256=canonical_sha256(receipt.semantic_dict()))
 
     def semantic_dict(self) -> dict[str, object]:
         """Return every receipt field covered by the receipt hash."""
         return {
             "facts_receipt_sha256": self.facts_receipt_sha256,
-            "expected_owned_paths": list(self.expected_owned_paths),
             "units": [unit.to_dict() for unit in self.units],
         }
 

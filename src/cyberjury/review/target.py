@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cyberjury.canonical import canonical_sha256
+from cyberjury.review.request import ReviewTargetKind
 from cyberjury.sources.git import (
     GitSourceError,
     canonical_patch,
@@ -78,7 +79,7 @@ class GitTarget:
 class ResolvedTarget:
     """Canonical target identity used by source acquisition and review adapters."""
 
-    kind: str
+    kind: ReviewTargetKind
     repository_root: str
     git: GitTarget | None = None
     patch: PatchArtifact | None = None
@@ -186,8 +187,6 @@ def resolve_diff_target(repository: str | Path, git_range: str) -> ResolvedTarge
 @contextlib.contextmanager
 def materialize_diff_target(target: ResolvedTarget) -> Iterator[Path]:
     """Adapt one resolved diff target to committed Git source acquisition."""
-    if target.kind != "diff" or target.git is None:
-        raise ValueError("only a resolved diff target can be materialized")
     try:
         with materialize_revision(target.repository_root, target.git.right_revision) as source_root:
             yield source_root

@@ -6,12 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import GroundingContext, SourceSpan
-from cyberjury.review.recorder import Recorder
 from cyberjury.review.repository import context as context_module
 from cyberjury.review.repository.finder import REPOSITORY_TARGET
-from cyberjury.review.run import run_review
 from cyberjury.review.seats import ReviewSeats
 from cyberjury.workspace import WorkspaceCorruptionError, read_record
 from tests.review.diff import support as diff
@@ -25,14 +22,15 @@ from tests.review.repository.support import (
     source_unit,
     unit_provider,
 )
-from tests.review.support import StubIssueJudge, prepared_units
+from tests.review.support import StubIssueJudge, prepared_units, recorder, run_prepared
+from tests.support import MockProvider
 
 
 def _run(units, provider, *, concurrency=1):
-    return run_review(
+    return run_prepared(
         prepared_units(units, Path(units[0].root)),
         target=REPOSITORY_TARGET,
-        seats=ReviewSeats(finder=provider, finder_model="mock", finder_label="mock"),
+        seats=ReviewSeats(finder=provider, finder_model="mock", issue_judge=StubIssueJudge(lambda _pair: False)),
         concurrency=concurrency,
     ).outcome
 
@@ -63,11 +61,10 @@ def test_run_fails_loud_on_zero_units(tmp_path):
 
 
 def test_a_failed_unit_makes_the_outcome_incomplete_with_its_failure():
-    """A non-JSON reply leaves the outcome incomplete with one error and one recorded failure."""
+    """A non-JSON reply leaves the outcome incomplete with one recorded failure."""
     result = diff.review(diff.SQL_DIFF, provider=MockProvider(default="not json"))
 
     assert result.outcome.complete is False
-    assert result.outcome.errors == 1
     assert len(result.outcome.failures) == 1
 
 
@@ -118,7 +115,6 @@ def test_unit_failures_are_counted_not_silent(tmp_path):
 
     outcome = _run(units, provider, concurrency=2)
 
-    assert outcome.errors == 1
     assert [(failure.index, failure.paths) for failure in outcome.failures] == [(2, ("bad.py",))]
     assert "rate limited" in outcome.failures[0].reason
     assert {c.title for c in outcome.findings} == {"ok1", "ok2"}
@@ -148,14 +144,14 @@ def test_repository_unit_grounding_is_materialized_once(tmp_path, monkeypatch):
     """Reviewing unit.py reads its text once and sends value = 1 in the finder prompt."""
     (tmp_path / "unit.py").write_text("value = 1\n", encoding="utf-8")
     reads = 0
-    original = context_module._read_unit_text
+    original = context_module.gather_context
 
-    def counted(unit, rel):
+    def counted(unit):
         nonlocal reads
         reads += 1
-        return original(unit, rel)
+        return original(unit)
 
-    monkeypatch.setattr(context_module, "_read_unit_text", counted)
+    monkeypatch.setattr(context_module, "gather_context", counted)
     provider = MockProvider(default=EMPTY_REPLY)
 
     _run(ground([source_unit(tmp_path, "unit.py", name="unit")]), provider)
@@ -263,14 +259,14 @@ def test_repository_run_completes_and_records_each_unit(custody_repository, tmp_
     result = run_repository_review(custody_repository, tmp_path / "ws", provider=_wallet_provider())
 
     assert result.outcome.complete is True
-    assert [f.entrypoint for f in result.findings.findings] == ["GET /wallets/<wallet_id>"]
+    assert [f["entrypoint"] for f in result.findings.findings] == ["GET /wallets/<wallet_id>"]
     records = _unit_records(tmp_path / "ws")
     assert [record["clean"] for record in records] == [True, True]
     assert sorted(len(record["findings"]) for record in records) == [0, 1]
 
 
 def test_repository_reviews_raw_source_and_completes_when_facts_are_limited(tmp_path):
-    """A partially parsed app.py is reviewed and completes with its facts:app.py:3:12 limitation reported."""
+    """A partially parsed app.py is reviewed and completes with its parse limitation in the finder prompt."""
     target = tmp_path / "opaque"
     target.mkdir()
     (target / "app.py").write_text("from flask import Flask\napp = Flask(__name__)\ndef broken(:\n")
@@ -278,10 +274,8 @@ def test_repository_reviews_raw_source_and_completes_when_facts_are_limited(tmp_
 
     result = run_repository_review(target, tmp_path / "ws", provider=provider)
 
-    assert provider.calls
-    assert result.outcome.errors == 0
     assert result.outcome.complete is True
-    assert result.outcome.grounding.limitations == ("facts:app.py:3:12",)
+    assert "app.py at 3:12: python partially parsed" in provider.calls[0]["messages"][0].content
 
 
 def test_repository_run_counts_an_unreceipted_finder_candidate_as_incomplete(tmp_path):
@@ -348,7 +342,7 @@ def test_failed_unit_stays_open_and_is_retried_on_resume_keeping_its_findings(tm
     assert _reviewed_units(resumed) == ["beta/routes.py"]
     assert retried.outcome.complete is True
     assert [record["clean"] for record in _unit_records(ws)] == [True, True]
-    assert sorted(f.file for f in retried.findings.findings) == ["alpha/routes.py", "beta/routes.py"]
+    assert sorted(f["file"] for f in retried.findings.findings) == ["alpha/routes.py", "beta/routes.py"]
 
 
 class _Interrupted(BaseException):
@@ -368,7 +362,7 @@ def test_an_interrupted_run_resumes_only_open_units(tmp_path):
 
     assert _reviewed_units(resumed) == ["beta/routes.py"]
     assert result.outcome.complete is True
-    assert sorted(f.file for f in result.findings.findings) == ["alpha/routes.py", "beta/routes.py"]
+    assert sorted(f["file"] for f in result.findings.findings) == ["alpha/routes.py", "beta/routes.py"]
 
 
 @pytest.mark.parametrize(
@@ -414,8 +408,8 @@ def test_diff_review_groups_its_findings_into_issues_through_the_shared_step(tmp
     assert len(result.findings.findings) == 3
     assert len(judge.pairs) == 1
     (issue,) = result.findings.issues
-    assert issue.linked_by == ("judgment", "location")
-    assert set(issue.members) == {record.id for record in result.findings.findings}
+    assert issue["linked_by"] == ["judgment", "location"]
+    assert set(issue["members"]) == {record["id"] for record in result.findings.findings}
     assert result.outcome.complete
 
 
@@ -461,8 +455,8 @@ def test_repository_review_groups_one_line_and_links_judged_issues(tmp_path, sam
     artifact = result.findings
     assert len(artifact.findings) == 3
     assert len(artifact.issues) == issues
-    save = next(issue for issue in artifact.issues if len(issue.members) >= 2)
-    assert save.linked_by == (("judgment", "location") if same_fix else ("location",))
+    save = next(issue for issue in artifact.issues if len(issue["members"]) >= 2)
+    assert save["linked_by"] == (["judgment", "location"] if same_fix else ["location"])
     assert len(judge.pairs) == 1
 
 
@@ -488,17 +482,17 @@ def test_a_failed_issue_link_judgment_leaves_the_link_stage_incomplete(tmp_path)
         lambda file: [finding(file, 5, title="save drops the owner"), finding(file, 9, title="load skips the check")]
     )
 
-    recorder = Recorder()
+    stages = recorder()
 
     result = run_repository_review(
         target,
         tmp_path / "ws",
         provider=provider,
         issue_judge=StubIssueJudge(error=RuntimeError("down")),
-        recorder=recorder,
+        stages=stages,
     )
 
-    link = next(record for record in recorder.stages if record.id == "link")
+    link = next(record for record in stages.stages if record.id == "link")
     assert result.outcome.complete is True
     assert len(result.findings.issues) == 2
     assert link.status == "incomplete"

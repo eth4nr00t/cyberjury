@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 RECORD_SCHEMA = "cyberjury.record/v1"
-STATUSES = ("running", "ok", "incomplete", "failed", "skipped", "interrupted")
+STATUSES = ("running", "ok", "incomplete", "failed", "interrupted")
 ERROR_CODES = ("config", "input", "model", "internal")
 STAGES = ("config", "target", "session", "source", "facts", "plan", "grounding", "review", "link", "result")
 METRICS = (
@@ -129,8 +129,8 @@ class Record:
             raise ValueError("record artifacts must be unique paths")
         if (self.error is not None) != (self.status in {"failed", "incomplete"}):
             raise ValueError("record error is set exactly when the record failed or is incomplete")
-        if ("reason" in self.attributes) != (self.status in {"skipped", "interrupted"}):
-            raise ValueError("record reason is set exactly when the record was skipped or interrupted")
+        if ("reason" in self.attributes) != (self.status == "interrupted"):
+            raise ValueError("record reason is set exactly when the record was interrupted")
         if "reason" in self.attributes and (
             not isinstance(self.attributes["reason"], str) or not self.attributes["reason"]
         ):

@@ -27,6 +27,7 @@ from cyberjury.review.context import (
     select_evidence,
 )
 from cyberjury.review.failures import exception_reason
+from cyberjury.review.finding import Finding
 from cyberjury.review.navigation import (
     RepeatedSourceQueryError,
     SourceNavigationError,
@@ -37,7 +38,7 @@ from cyberjury.review.navigation import (
     parse_source_queries,
 )
 from cyberjury.review.replies import CorrectableRoleResponseError, RoleReply
-from cyberjury.review.union import FindingAccumulator
+from cyberjury.review.union import MERGE_RULE, FindingAccumulator
 
 _CORRECTION_BUDGET = {
     "response": 1,
@@ -56,21 +57,21 @@ _REPEATED_QUERY_CORRECTION = (
 
 
 @dataclass(frozen=True, kw_only=True)
-class EvidenceJudgment[T]:
+class EvidenceJudgment:
     """Findings and grounding receipt from one bounded evidence exchange."""
 
-    findings: list[T]
+    findings: list[Finding]
     grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
     failure_reason: str = ""
     source_evidence: tuple[SourceEvidence, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True)
-class _ParsedEvidenceReply[T]:
-    findings: list[T]
+class _ParsedEvidenceReply:
+    findings: list[Finding]
     requested: list[str]
     source_queries: list[dict[str, object]]
-    deferred: list[T]
+    deferred: list[Finding]
     repeated_evidence_requests: tuple[str, ...] = ()
 
 
@@ -89,13 +90,11 @@ class _RejectedBatch(Exception):
         *,
         failure_reason: str,
         unresolved: tuple[str, ...],
-        fatal: Exception | None = None,
     ) -> None:
         self.kind = kind
         self.instruction = instruction
         self.failure_reason = failure_reason
         self.unresolved = unresolved
-        self.fatal = fatal
         super().__init__(failure_reason)
 
 
@@ -106,30 +105,23 @@ class _MalformedEvidenceRequest(EvidenceRequestError):
         super().__init__(failure)
 
 
-class _EvidenceExchange[T]:
+class _EvidenceExchange:
     def __init__(
         self,
         context: GroundingContext,
         *,
-        findings_from_reply: Callable[[RoleReply], list[T]],
-        accumulator: FindingAccumulator[T],
+        findings_from_reply: Callable[[RoleReply], list[Finding]],
         target_chars: int,
         max_followups: int,
-        evidence_refs: Callable[[T], tuple[str, ...]],
         navigation: SourceNavigationSession | None,
-        finding_prompt_record: Callable[[T], Mapping[str, object]],
-        merge_rule: str,
     ) -> None:
         self.context = context
         self.navigation = navigation
         self.findings_from_reply = findings_from_reply
-        self.evidence_refs = evidence_refs
-        self.finding_prompt_record = finding_prompt_record
-        self.merge_rule = merge_rule
         self.target_chars = target_chars
-        self.accumulator = accumulator
-        self.provisional = self._union()
-        self.correction_fallback = self._union()
+        self.accumulator = FindingAccumulator()
+        self.provisional = FindingAccumulator()
+        self.correction_fallback = FindingAccumulator()
         self.followup_budget = max_followups if navigation is not None or context.evidence else 0
         self.prompt = _with_request_budget(
             replace(context.prompt, navigation_available=navigation is not None),
@@ -149,21 +141,18 @@ class _EvidenceExchange[T]:
         if navigation is not None:
             navigation.record_delivered(context.source_evidence, seed_spans=context.source_spans)
 
-    def _union(self) -> FindingAccumulator[T]:
-        return FindingAccumulator(key=self.accumulator.key, fold=self.accumulator.fold)
-
-    def _retained_findings(self) -> list[T]:
-        retained = self._union()
+    def _retained_findings(self) -> list[Finding]:
+        retained = FindingAccumulator()
         retained.add(self.correction_fallback.findings)
         retained.add(self.accumulator.findings)
         retained.add(self.provisional.findings)
         return retained.findings
 
     def _accepted_records(self) -> tuple[Mapping[str, object], ...]:
-        accepted = self._union()
+        accepted = FindingAccumulator()
         accepted.add(self.accumulator.findings)
         accepted.add(self.provisional.findings)
-        return tuple(self.finding_prompt_record(finding) for finding in accepted.findings)
+        return tuple(finding.reply_record() for finding in accepted.findings)
 
     def _published_ids(self) -> set[str]:
         return {
@@ -179,8 +168,8 @@ class _EvidenceExchange[T]:
         self,
         unresolved: tuple[str, ...],
         failure_reason: str,
-        findings: list[T] | None = None,
-    ) -> EvidenceJudgment[T]:
+        findings: list[Finding] | None = None,
+    ) -> EvidenceJudgment:
         return _evidence_judgment(
             findings=self._retained_findings() if findings is None else findings,
             coverage=self.coverage,
@@ -191,13 +180,12 @@ class _EvidenceExchange[T]:
 
     def read_reply(
         self, ask: Callable[[EvidencePromptContext], RoleReply], call_index: int
-    ) -> _ParsedEvidenceReply[T] | EvidenceJudgment[T]:
+    ) -> _ParsedEvidenceReply | EvidenceJudgment:
         self.turn = _Turn()
         try:
             return _parse_evidence_reply(
                 ask(self.prompt),
                 findings_from_reply=self.findings_from_reply,
-                evidence_refs=self.evidence_refs,
                 available_refs=self.available_refs,
                 evidence_ids={item.id for item in self.context.evidence},
                 navigation=self.navigation,
@@ -233,7 +221,6 @@ class _EvidenceExchange[T]:
                 "distinct queries, keeping only the searches needed to decide the current candidates.",
                 failure_reason=exception_reason(exc),
                 unresolved=("source query batch exceeds the published limit",),
-                fatal=exc,
             ) from exc
         except Exception as exc:
             record_model_parse(exception_reason(exc))
@@ -241,12 +228,11 @@ class _EvidenceExchange[T]:
                 raise
             return self.finish((f"model response {call_index + 1} failed",), exception_reason(exc))
 
-    def accept(self, reply: _ParsedEvidenceReply[T]) -> EvidenceJudgment[T] | None:
+    def accept(self, reply: _ParsedEvidenceReply) -> EvidenceJudgment | None:
         requested = [
             str(item)
             for item in _implicit_reference_requests(
                 list(self.provisional.findings),
-                evidence_refs=self.evidence_refs,
                 available=self.available_refs,
                 evidence_ids={item.id for item in self.context.evidence},
                 navigation=self.navigation,
@@ -300,7 +286,7 @@ class _EvidenceExchange[T]:
             )
         return self._deliver(requested, source_queries)
 
-    def _deliver(self, requested: list[str], source_queries: list[dict[str, object]]) -> EvidenceJudgment[T] | None:
+    def _deliver(self, requested: list[str], source_queries: list[dict[str, object]]) -> EvidenceJudgment | None:
         try:
             delivered, held_ids, held_queries = _deliver_within_budget(
                 self.context,
@@ -333,16 +319,13 @@ class _EvidenceExchange[T]:
             f"Evidence exchange {self.evidence_exchanges}:\n{delivered.text}{held}",
             self._remaining(),
             accepted=self._accepted_records(),
-            merge_rule=self.merge_rule,
             durable=True,
         )
         return None
 
-    def reject(self, rejected: _RejectedBatch, call_index: int) -> EvidenceJudgment[T] | None:
+    def reject(self, rejected: _RejectedBatch, call_index: int) -> EvidenceJudgment | None:
         self.turn.correction = rejected.kind
         if self.corrections[rejected.kind] < 1:
-            if rejected.fatal is not None and call_index == 0:
-                raise rejected.fatal from None
             return self.finish(rejected.unresolved, rejected.failure_reason)
         self.corrections[rejected.kind] -= 1
         if rejected.kind == "unknown_evidence":
@@ -352,35 +335,26 @@ class _EvidenceExchange[T]:
             rejected.instruction,
             self._remaining(),
             accepted=self._accepted_records(),
-            merge_rule=self.merge_rule,
         )
         return None
 
 
-def run_evidence_judgment[T](
+def run_evidence_judgment(
     context: GroundingContext,
     *,
     ask: Callable[[EvidencePromptContext], RoleReply],
-    findings_from_reply: Callable[[RoleReply], list[T]],
-    accumulator: FindingAccumulator[T],
+    findings_from_reply: Callable[[RoleReply], list[Finding]],
     target_chars: int,
     max_followups: int,
-    evidence_refs: Callable[[T], tuple[str, ...]],
     navigation: SourceNavigationSession | None,
-    finding_prompt_record: Callable[[T], Mapping[str, object]],
-    merge_rule: str,
-) -> EvidenceJudgment[T]:
+) -> EvidenceJudgment:
     """Run bounded evidence and source navigation without losing earlier findings."""
     exchange = _EvidenceExchange(
         context,
         findings_from_reply=findings_from_reply,
-        accumulator=accumulator,
         target_chars=target_chars,
         max_followups=max_followups,
-        evidence_refs=evidence_refs,
         navigation=navigation,
-        finding_prompt_record=finding_prompt_record,
-        merge_rule=merge_rule,
     )
     call_index = 0
     while True:
@@ -411,7 +385,7 @@ class _Turn:
     correction: str | None = None
 
 
-def _exchange_record(turn: _Turn, result: EvidenceJudgment[object] | None) -> dict[str, object]:
+def _exchange_record(turn: _Turn, result: EvidenceJudgment | None) -> dict[str, object]:
     if result is None:
         outcome, stop_reason = ("correction" if turn.correction is not None else "evidence"), ""
     elif result.failure_reason:
@@ -508,7 +482,6 @@ def _continue_prompt(
     remaining: int,
     *,
     accepted: tuple[Mapping[str, object], ...],
-    merge_rule: str,
     durable: bool = False,
 ) -> EvidencePromptContext:
     text = instruction.strip()
@@ -516,19 +489,19 @@ def _continue_prompt(
         prompt,
         delivered=(*prompt.delivered, text) if durable else prompt.delivered,
         correction="" if durable else text,
-        provisional=_accepted_instruction(accepted, merge_rule),
+        provisional=_accepted_instruction(accepted),
         budget=_request_budget_instruction(remaining, navigation_available=prompt.navigation_available),
     )
 
 
-def _evidence_judgment[T](
+def _evidence_judgment(
     *,
-    findings: list[T],
+    findings: list[Finding],
     coverage: GroundingCoverage,
     source_evidence: list[SourceEvidence],
-    unresolved: tuple[str, ...] = (),
-    failure_reason: str = "",
-) -> EvidenceJudgment[T]:
+    unresolved: tuple[str, ...],
+    failure_reason: str,
+) -> EvidenceJudgment:
     grounding = (
         merge_grounding_coverage((coverage, GroundingCoverage(unresolved=unresolved))) if unresolved else coverage
     )
@@ -540,47 +513,41 @@ def _evidence_judgment[T](
     )
 
 
-def _accepted_instruction(accepted: tuple[Mapping[str, object], ...], merge_rule: str) -> str:
+def _accepted_instruction(accepted: tuple[Mapping[str, object], ...]) -> str:
     if not accepted:
         return ""
     return (
         "Findings already accepted for this unit from your earlier responses:\n"
         f"{json.dumps(accepted, ensure_ascii=False, sort_keys=True)}\n"
         "They stay accepted whether or not you return them, and they cannot be edited or withdrawn. "
-        f"{merge_rule} Return only new findings."
+        f"{MERGE_RULE} Return only new findings."
     )
 
 
-def _parse_evidence_reply[T](
+def _parse_evidence_reply(
     reply: RoleReply,
     *,
-    findings_from_reply: Callable[[RoleReply], list[T]],
-    evidence_refs: Callable[[T], tuple[str, ...]],
+    findings_from_reply: Callable[[RoleReply], list[Finding]],
     available_refs: set[str],
     evidence_ids: set[str],
     navigation: SourceNavigationSession | None,
-) -> _ParsedEvidenceReply[T]:
+) -> _ParsedEvidenceReply:
     findings = findings_from_reply(reply)
-    raw_requests = reply.get("evidence_requests", [])
+    raw_requests = reply["evidence_requests"]
     try:
         requested_evidence_ids = evidence_request_ids(raw_requests)
     except EvidenceRequestError as exc:
-        well_formed = tuple(
-            item
-            for item in (raw_requests if isinstance(raw_requests, list) else ())
-            if isinstance(item, str) and is_evidence_id(item)
-        )
+        well_formed = tuple(item for item in raw_requests if is_evidence_id(item))
         raise _MalformedEvidenceRequest(str(exc), tuple(findings), tuple(dict.fromkeys(well_formed))) from exc
     repeated_evidence_requests = tuple(item for item in requested_evidence_ids if item in available_refs)
     unread_evidence_ids = tuple(item for item in requested_evidence_ids if item not in available_refs)
     try:
-        source_queries = parse_source_queries(reply.get("source_queries", []))
+        source_queries = parse_source_queries(reply["source_queries"])
     except SourceQueryLimitError as exc:
         exc.response_findings = tuple(findings)
         raise
     requested = _implicit_reference_requests(
         findings,
-        evidence_refs=evidence_refs,
         available=available_refs,
         evidence_ids=evidence_ids,
         navigation=navigation,
@@ -589,7 +556,6 @@ def _parse_evidence_reply[T](
     ids = list(evidence_request_ids(requested))
     accepted, deferred = _partition_evidence_bound_findings(
         findings,
-        evidence_refs=evidence_refs,
         available=available_refs,
         requested=set(ids),
     )
@@ -623,18 +589,17 @@ def _request_budget_instruction(remaining: int, *, navigation_available: bool) -
     return budget
 
 
-def _partition_evidence_bound_findings[T](
-    findings: list[T],
+def _partition_evidence_bound_findings(
+    findings: list[Finding],
     *,
-    evidence_refs: Callable[[T], tuple[str, ...]],
     available: set[str],
     requested: set[str],
-) -> tuple[list[T], list[T]]:
-    accepted: list[T] = []
-    deferred: list[T] = []
+) -> tuple[list[Finding], list[Finding]]:
+    accepted: list[Finding] = []
+    deferred: list[Finding] = []
     invalid: list[int] = []
     for index, finding in enumerate(findings):
-        unknown = tuple(ref for ref in evidence_refs(finding) if ref not in available)
+        unknown = tuple(ref for ref in finding.evidence_refs if ref not in available)
         if not unknown:
             accepted.append(finding)
         elif set(unknown).issubset(requested):
@@ -737,7 +702,7 @@ def _held_notice(
 def _deliver_exact_evidence(
     context: GroundingContext,
     navigation: SourceNavigationSession | None,
-    requested: object,
+    requested: list[str],
     *,
     target_chars: int,
 ) -> SourceNavigationResult:
@@ -777,18 +742,17 @@ def _deliver_exact_evidence(
     )
 
 
-def _implicit_reference_requests[T](
-    findings: list[T],
+def _implicit_reference_requests(
+    findings: list[Finding],
     *,
-    evidence_refs: Callable[[T], tuple[str, ...]],
     available: set[str],
     evidence_ids: set[str],
     navigation: SourceNavigationSession | None,
-    evidence_requests: list[object],
-) -> list[object]:
-    cited: list[object] = []
+    evidence_requests: list[str],
+) -> list[str]:
+    cited: list[str] = []
     for finding in findings:
-        for reference in evidence_refs(finding):
+        for reference in finding.evidence_refs:
             if reference in available or reference in cited:
                 continue
             if reference in evidence_ids or (navigation is not None and navigation.can_read(reference)):

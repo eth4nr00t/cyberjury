@@ -1,20 +1,24 @@
 """Shared builders for review tests."""
 
-from dataclasses import dataclass
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
+from cyberjury.providers.metering import UsageMeter
 from cyberjury.review.detection import load_detection
 from cyberjury.review.facts import Facts
+from cyberjury.review.finding import Finding
 from cyberjury.review.issues import LinkDecision
 from cyberjury.review.navigation import SourceNavigator
-from cyberjury.review.prepare import SharedGrounding
+from cyberjury.review.prepare import PreparedReview, SharedGrounding
+from cyberjury.review.recorder import Recorder
 from cyberjury.review.relationships import (
     CallsiteEvidence,
     DefinitionEvidence,
     RelationshipEvidenceBundle,
     SourceReference,
 )
+from cyberjury.review.run import ReviewRun, run_review
 from cyberjury.review.selection import select_files
 from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
 
@@ -110,18 +114,40 @@ def shared_grounding(
     )
 
 
-@dataclass(frozen=True, kw_only=True)
-class _GroundedWork:
-    shared: SharedGrounding
-    units: tuple
-
-
-def prepared_units(units, root: Path, *, facts: Facts | None = None) -> _GroundedWork:
+def prepared_units(units, root: Path, *, facts: Facts | None = None) -> PreparedReview:
     """Wrap already grounded units as review work over an empty manifest of one source root."""
-    return _GroundedWork(
+    return PreparedReview(
         shared=shared_grounding(root, facts=facts, snapshot=SourceSnapshot.capture(root, ())),
         units=tuple(units),
     )
+
+
+def recorder() -> Recorder:
+    """Return a recorder that meters model calls and writes nothing."""
+    return Recorder(meter=UsageMeter())
+
+
+def bound_artifacts(recorder: Recorder) -> dict[type, object]:
+    """Collect the artifact each stage of the recorder binds, keyed by its type."""
+    artifacts: dict[type, object] = {}
+
+    def bind(value: object) -> str:
+        artifacts[type(value)] = value
+        return type(value).__name__
+
+    recorder.attach(bind=bind, sink=lambda _record: None)
+    return artifacts
+
+
+def run_prepared(
+    prepared: PreparedReview, *, review: Path | None = None, stages: Recorder | None = None, **values
+) -> ReviewRun:
+    """Run one review of prepared units, recording into the review directory or a temporary one."""
+    stages = stages or recorder()
+    if review is not None:
+        return run_review(prepared, review=review, recorder=stages, **values)
+    with tempfile.TemporaryDirectory() as directory:
+        return run_review(prepared, review=Path(directory), recorder=stages, **values)
 
 
 class StubIssueJudge:
@@ -143,31 +169,17 @@ class StubIssueJudge:
         return LinkDecision(same_fix=self.same_fix(pair), rationale="one change decides both findings")
 
 
-@dataclass(frozen=True)
-class StubFinding:
-    """A minimal finding for scheduler and evidence exchange tests."""
-
-    title: str
-    location: str
-    severity: str = "HIGH"
-    found_by: tuple[str, ...] = ()
-    evidence_refs: tuple[str, ...] = ()
-    category: str = ""
-
-
-def finding_key(finding: StubFinding) -> str:
-    """Identify a stub finding by its location."""
-    return finding.location
-
-
-def fold_findings(existing: StubFinding, incoming: StubFinding) -> StubFinding:
-    """Merge two stub findings at one location, uniting their labels and evidence references."""
-    labels = tuple(sorted(set(existing.found_by) | set(incoming.found_by)))
-    return StubFinding(
-        existing.title,
-        existing.location,
-        existing.severity,
-        labels,
-        tuple(dict.fromkeys((*existing.evidence_refs, *incoming.evidence_refs))),
-        existing.category,
+def stub_finding(title: str, location: str, *, evidence_refs: tuple[str, ...] = ()) -> Finding:
+    """Build one finding at a file:line location for scheduler and evidence exchange tests."""
+    file, line = location.rsplit(":", 1)
+    return Finding(
+        title=title,
+        category="c",
+        severity="HIGH",
+        entrypoint="e",
+        file=file,
+        line=int(line),
+        evidence="evidence",
+        attack_path="path",
+        evidence_refs=evidence_refs,
     )

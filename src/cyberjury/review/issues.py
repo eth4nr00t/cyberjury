@@ -55,7 +55,7 @@ def _group_key(finding: Finding) -> tuple[str, int, str]:
     return (normalized_location_path(finding.file), finding.line, finding.category)
 
 
-def group_issues(findings: Sequence[Finding], links: Iterable[tuple[str, str]] = ()) -> tuple[Issue, ...]:
+def group_issues(findings: Sequence[Finding], links: Iterable[tuple[str, str]]) -> tuple[Issue, ...]:
     """Union findings over equal locations and categories and accepted judgment links, keeping every finding."""
     position = {finding.candidate_id: index for index, finding in enumerate(findings)}
     parent = list(range(len(findings)))
@@ -205,19 +205,11 @@ class IssueJudge(Protocol):
 class ModelIssueJudge:
     """One closed-schema same-fix judgment on a configured model seat."""
 
-    def __init__(
-        self,
-        *,
-        provider: Provider,
-        model: str,
-        seat_id: str,
-        max_tokens: int = _SETTINGS.max_output_tokens,
-    ) -> None:
-        """Bind the seat, its model, and its output bound."""
+    def __init__(self, *, provider: Provider, model: str, seat_id: str) -> None:
+        """Bind the seat and its model."""
         self._provider = provider
         self._model = model
         self._seat_id = seat_id
-        self._max_tokens = max_tokens
 
     @property
     def fingerprint(self) -> str:
@@ -226,7 +218,7 @@ class ModelIssueJudge:
             {
                 "seat_id": self._seat_id,
                 "model": self._model,
-                "max_tokens": self._max_tokens,
+                "max_tokens": _SETTINGS.max_output_tokens,
                 "system": _SYSTEM,
                 "finding_fields": list(CLAIM_FIELDS),
                 "prompt_template": _PROMPT_TEMPLATE,
@@ -241,8 +233,7 @@ class ModelIssueJudge:
                 system=_SYSTEM,
                 messages=[Message(role="user", content=prompt)],
                 model=self._model,
-                max_tokens=self._max_tokens,
-                cache=True,
+                max_tokens=_SETTINGS.max_output_tokens,
                 response_schema=_RESPONSE_SCHEMA,
             )
             reply = parse_role_response(result.text, role="issue linker", response_schema=_RESPONSE_SCHEMA)
@@ -262,6 +253,14 @@ class IssueLinks:
     errors: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, kw_only=True)
+class _PairOutcome:
+    ids: tuple[str, str]
+    decision: LinkDecision | None
+    error: str = ""
+    restored: bool = False
+
+
 def _restored_decision(record: Record, _payload: object) -> LinkDecision | None:
     if record.status != "ok":
         return None
@@ -275,24 +274,23 @@ def link_issues(
     judge: IssueJudge,
     root: str,
     *,
-    store: ItemStore | None = None,
-    concurrency: int = 1,
-    recorder: Recorder | None = None,
+    store: ItemStore,
+    concurrency: int,
+    recorder: Recorder,
 ) -> IssueLinks:
     """Judge every candidate pair once, `concurrency` at a time, and keep the pairs one code change fixes."""
-    recorder = recorder or Recorder()
 
-    def decide(pair: tuple[Finding, Finding]) -> tuple[tuple[str, str], LinkDecision | None, str, bool]:
+    def decide(pair: tuple[Finding, Finding]) -> _PairOutcome:
         first, second = pair
         ids = (first.candidate_id, second.candidate_id)
         try:
             prompt = link_prompt(first, second, root)
         except IssueLinkError as exc:
-            return ids, None, f"issue link {ids[0]} {ids[1]}: {exc}", False
+            return _PairOutcome(ids=ids, decision=None, error=f"issue link {ids[0]} {ids[1]}: {exc}")
         name = f"pair-{canonical_sha256({'prompt': prompt, 'judge': judge.fingerprint})[:20]}"
-        decision = store.restore(name, _restored_decision) if store is not None else None
+        decision = store.restore(name, _restored_decision)
         if decision is not None:
-            return ids, decision, "", True
+            return _PairOutcome(ids=ids, decision=decision, restored=True)
         started_at, started = utc_timestamp(), time.monotonic()
         error = ""
         try:
@@ -313,16 +311,15 @@ def link_issues(
             },
             error=RecordError(code="model", message=error_message(error)) if error else None,
         )
-        if store is not None:
-            store.save(item)
+        store.save(item)
         recorder.item(item)
-        return ids, decision, error, False
+        return _PairOutcome(ids=ids, decision=decision, error=error)
 
-    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
         results = list(pool.map(decide, link_candidates(findings)))
     return IssueLinks(
-        links=tuple(ids for ids, decision, _error, _restored in results if decision is not None and decision.same_fix),
-        judged=sum(1 for _ids, decision, _error, restored in results if decision is not None and not restored),
-        restored=sum(1 for _ids, _decision, _error, restored in results if restored),
-        errors=tuple(error for _ids, _decision, error, _restored in results if error),
+        links=tuple(item.ids for item in results if item.decision is not None and item.decision.same_fix),
+        judged=sum(1 for item in results if item.decision is not None and not item.restored),
+        restored=sum(1 for item in results if item.restored),
+        errors=tuple(item.error for item in results if item.error),
     )

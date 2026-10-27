@@ -35,8 +35,6 @@ _CURRENT_UNIT: ContextVar[str] = ContextVar("model_call_unit", default="")
 @contextmanager
 def model_call_scope(*, unit_id: str) -> Iterator[None]:
     """Bind one review unit or issue link item around its model calls."""
-    if not unit_id:
-        raise ValueError("model call scope unit_id must be nonempty")
     token = _CURRENT_UNIT.set(unit_id)
     try:
         yield
@@ -48,7 +46,7 @@ def model_call_scope(*, unit_id: str) -> Iterator[None]:
 def model_call_context(
     *,
     role: str,
-    trigger: str = "provider_request",
+    trigger: str,
     candidate_id: str = "",
 ) -> Iterator[None]:
     """Publish one role context until provider response validation completes."""
@@ -130,10 +128,9 @@ class MeteringProvider(Provider):
         messages: list[Message],
         model: str,
         max_tokens: int,
-        cache: bool = False,
+        response_schema: ResponseSchema,
         cache_prefix: str = "",
         cache_segments: tuple[str, ...] = (),
-        response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
         """Delegate one completion and record its call, including a failed one, in the shared meter."""
         started = perf_counter()
@@ -153,10 +150,9 @@ class MeteringProvider(Provider):
                 messages=messages,
                 model=model,
                 max_tokens=max_tokens,
-                cache=cache,
+                response_schema=response_schema,
                 cache_prefix=cache_prefix,
                 cache_segments=cache_segments,
-                response_schema=response_schema,
             )
         except Exception as exc:
             record.update(

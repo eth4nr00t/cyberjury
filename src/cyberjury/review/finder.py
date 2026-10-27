@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import Literal, Protocol
+from typing import Literal
 
 from cyberjury.providers.base import Message, Provider, ResponseSchema
 from cyberjury.review.context import (
     EvidencePromptContext,
-    GroundingContext,
     SourceEvidence,
     SourceSpan,
     cited_source_spans,
@@ -19,11 +18,10 @@ from cyberjury.review.exchange import EvidenceJudgment, run_evidence_judgment
 from cyberjury.review.finding import ChangeAnchor, Finding
 from cyberjury.review.identity import canonical_category
 from cyberjury.review.knowledge import load_review_brief, load_severity_rubric
-from cyberjury.review.navigation import SourceNavigationSession, bind_source_operation, navigation_instructions
+from cyberjury.review.navigation import SourceNavigationSession, navigation_instructions
 from cyberjury.review.paths import is_unsafe_rel
 from cyberjury.review.replies import CorrectableRoleResponseError, RoleReply, parse_role_response
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
-from cyberjury.review.union import MERGE_RULE, finding_accumulator
 
 _EXECUTION = DEFAULT_REVIEW_SETTINGS.execution
 
@@ -87,37 +85,9 @@ def findings_from_reply(reply: RoleReply) -> list[Finding]:
     return findings
 
 
-def finding_prompt_record(finding: Finding) -> dict[str, object]:
-    """Render one provisional finding in the exact response shape the model can return again."""
-    record: dict[str, object] = {
-        "title": finding.title,
-        "category": finding.category,
-        "severity": finding.severity,
-        "entrypoint": finding.entrypoint,
-        "file": finding.file,
-        "line": finding.line,
-    }
-    if finding.change_anchor is not None:
-        record["change_anchor"] = finding.change_anchor.to_dict()
-    return {
-        **record,
-        "evidence": finding.evidence,
-        "attack_path": finding.attack_path,
-        "evidence_refs": list(finding.evidence_refs),
-    }
-
-
-class GroundedUnit(ReviewUnit, Protocol):
-    """A planned unit bound to its initial grounding."""
-
-    @property
-    def grounding(self) -> GroundingContext:
-        """The unit's initial evidence envelope."""
-
-
 @dataclass(frozen=True, kw_only=True)
-class ReviewTarget[U: GroundedUnit]:
-    """What genuinely differs between review targets around the shared Finder judgment."""
+class ReviewTarget[U: ReviewUnit]:
+    """What differs between review targets around the shared Finder judgment."""
 
     kind: Literal["diff", "repository"]
     role: str
@@ -129,7 +99,7 @@ class ReviewTarget[U: GroundedUnit]:
     covers_all_files: bool
 
 
-class UnitFinder[U: GroundedUnit]:
+class UnitFinder[U: ReviewUnit]:
     """One provider backed Finder seat bound to one target contract."""
 
     def __init__(
@@ -138,16 +108,12 @@ class UnitFinder[U: GroundedUnit]:
         *,
         provider: Provider,
         model: str,
-        label: str,
-        max_tokens: int = _EXECUTION.reviewer_max_output_tokens,
     ) -> None:
         """Bind the seat and render the target system contract once for every unit."""
         self._target = target
         self._provider = provider
         self._model = model
-        self._label = label
-        self._max_tokens = max_tokens
-        review_brief = load_review_brief().render()
+        review_brief = load_review_brief()
         rubric = load_severity_rubric()
         self._systems = {
             navigation: target.system(
@@ -158,20 +124,12 @@ class UnitFinder[U: GroundedUnit]:
             for navigation in (False, True)
         }
 
-    def review_unit(self, unit: U) -> ReviewCycle[Finding]:
+    def review_unit(self, unit: U) -> ReviewCycle:
         """Judge one grounded unit, keep only located findings, and bind their source operations and cited spans."""
         grounding = unit.grounding
-        if not grounding.coverage.complete:
-            return ReviewCycle(
-                findings=[],
-                errors=1,
-                failure_reason=grounding.coverage.failure_reason,
-                grounding=grounding.coverage,
-            )
         cycle = run_grounded_judgment(
             grounding,
             run_judgment=lambda navigation: self._judge(unit, navigation),
-            finder_label=self._label,
         )
         cycle = self._validate_locations(unit, cycle)
         session = grounding.navigator.session() if grounding.navigator is not None else None
@@ -180,7 +138,8 @@ class UnitFinder[U: GroundedUnit]:
             cycle,
             findings=[
                 replace(
-                    bind_source_operation(finding, session),
+                    finding,
+                    source_operation_id=session.source_operation_id(finding.file, finding.line) if session else "",
                     cited_spans=cited_source_spans(
                         finding.evidence_refs, seed_spans=grounding.source_spans, source_evidence=evidence
                     ),
@@ -189,7 +148,7 @@ class UnitFinder[U: GroundedUnit]:
             ],
         )
 
-    def _judge(self, unit: U, navigation: SourceNavigationSession | None) -> EvidenceJudgment[Finding]:
+    def _judge(self, unit: U, navigation: SourceNavigationSession | None) -> EvidenceJudgment:
         target = self._target
 
         def ask(prompt_context: EvidencePromptContext) -> RoleReply:
@@ -198,11 +157,10 @@ class UnitFinder[U: GroundedUnit]:
                 system=self._systems[prompt_context.navigation_available],
                 messages=[Message(role="user", content=prompt.text)],
                 model=self._model,
-                max_tokens=self._max_tokens,
-                cache=True,
+                max_tokens=_EXECUTION.reviewer_max_output_tokens,
+                response_schema=target.response_schema,
                 cache_prefix=prompt.stable_prefix,
                 cache_segments=prompt.cache_segments,
-                response_schema=target.response_schema,
             )
             return parse_role_response(result.text, role=target.role, response_schema=target.response_schema)
 
@@ -210,16 +168,12 @@ class UnitFinder[U: GroundedUnit]:
             unit.grounding,
             ask=ask,
             findings_from_reply=lambda reply: target.findings_from_reply(unit, reply),
-            accumulator=finding_accumulator(),
             target_chars=_EXECUTION.target_evidence_request_chars,
             max_followups=_EXECUTION.max_source_navigation_followups,
-            evidence_refs=lambda finding: finding.evidence_refs,
             navigation=navigation,
-            finding_prompt_record=finding_prompt_record,
-            merge_rule=MERGE_RULE,
         )
 
-    def _validate_locations(self, unit: U, cycle: ReviewCycle[Finding]) -> ReviewCycle[Finding]:
+    def _validate_locations(self, unit: U, cycle: ReviewCycle) -> ReviewCycle:
         evidence = _unit_evidence(unit, cycle)
         located = [
             (finding, self._target.locate(unit, finding, evidence, unit.grounding.source_spans))
@@ -236,5 +190,5 @@ class UnitFinder[U: GroundedUnit]:
         )
 
 
-def _unit_evidence(unit: GroundedUnit, cycle: ReviewCycle[Finding]) -> tuple[SourceEvidence, ...]:
+def _unit_evidence(unit: ReviewUnit, cycle: ReviewCycle) -> tuple[SourceEvidence, ...]:
     return tuple(dict.fromkeys((*unit.grounding.source_evidence, *cycle.source_evidence)))

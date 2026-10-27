@@ -172,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
         "diff", parents=[benchmark], help="run diff cases and record one attempt per case and run", allow_abbrev=False
     )
     diff_parser.add_argument("--case", default=None, help="run one exact case name")
-    diff_parser.add_argument("--runs", type=int, default=1, help="independent runs of every case")
+    diff_parser.add_argument("--runs", type=positive_int, default=1, help="independent runs of every case")
     diff_parser.add_argument(
         "--concurrency",
         type=positive_int,
@@ -276,8 +276,6 @@ def main(argv: list[str] | None = None) -> int:
     validate_parser.set_defaults(func=_cmd_validate)
 
     args = parser.parse_args(argv)
-    if args.cmd == "diff" and (args.runs < 1 or args.concurrency < 1):
-        parser.error("diff runs and concurrency must be at least 1")
     return args.func(args)
 
 

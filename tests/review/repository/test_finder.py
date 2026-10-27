@@ -2,11 +2,11 @@
 
 import pytest
 
-from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import SourceEvidence, SourceSpan
 from cyberjury.review.finding import Finding
 from cyberjury.review.repository.finder import locate
 from tests.review.repository.support import UnitReviewError, finder, finder_reply, finding, review, source_unit
+from tests.support import MockProvider
 
 
 def test_repository_finding_location_must_be_covered_by_its_cited_source(tmp_path):

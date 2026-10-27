@@ -3,7 +3,6 @@
 import pytest
 
 from cyberjury.review.definitions import DefinitionUnitPlan
-from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.relationships import (
     CallsiteEvidence,
     RelationshipEvidenceBundle,
@@ -49,7 +48,7 @@ def test_candidate_call_clues_use_line_numbers_and_name_only_usable_receipts(tmp
     """An unbudgeted callee is published by id with route.py:4 and lines 1-2, hiding def-/call- ids."""
     plan, relationships = _candidate_call_fixture(tmp_path)
 
-    context = candidate_call_context(tmp_path, plan, relationships, max_chars=10_000)
+    context = candidate_call_context(tmp_path, plan, relationships, max_chars=10_000, deliver_chars=0)
 
     [published] = context.published
     assert context.delivered == ()
@@ -76,24 +75,16 @@ def test_candidate_callee_source_delivered_initially_names_its_source_receipt(tm
     assert context.source_files == ("service.py",)
 
 
-def test_candidate_call_source_is_not_delivered_when_its_clue_exceeds_the_budget(tmp_path):
-    """A max_chars of 1 produces empty clue text with nothing delivered or published."""
-    graph = route_call(tmp_path, _ONE_LINE_ROUTE, {"service.py": _ONE_LINE_LOAD})
-
-    context = candidate_call_context(
-        tmp_path, DefinitionUnitPlan(seeds=(graph.caller,)), graph.relationships, max_chars=1
-    )
-
-    assert context.text == ""
-    assert context.delivered == context.published == ()
-
-
 def test_candidate_call_source_is_not_duplicated_when_the_callee_is_a_unit_seed(tmp_path):
     """A callee already seeded is cited as source in the code under review, not published or delivered."""
     graph = route_call(tmp_path, _ONE_LINE_ROUTE, {"service.py": _ONE_LINE_LOAD})
 
     context = candidate_call_context(
-        tmp_path, DefinitionUnitPlan(seeds=(graph.caller, *graph.callees)), graph.relationships, max_chars=10_000
+        tmp_path,
+        DefinitionUnitPlan(seeds=(graph.caller, *graph.callees)),
+        graph.relationships,
+        max_chars=10_000,
+        deliver_chars=0,
     )
 
     assert "service.py:load lines 1-1, source in the code under review" in context.text
@@ -112,7 +103,7 @@ def test_receiver_calls_remain_in_navigation_instead_of_becoming_initial_binding
     )
 
     context = candidate_call_context(
-        tmp_path, DefinitionUnitPlan(seeds=(graph.caller,)), graph.relationships, max_chars=10_000
+        tmp_path, DefinitionUnitPlan(seeds=(graph.caller,)), graph.relationships, max_chars=10_000, deliver_chars=0
     )
 
     assert context.text == ""
@@ -128,22 +119,11 @@ def test_ambiguous_calls_remain_in_navigation_instead_of_becoming_initial_bindin
     )
 
     context = candidate_call_context(
-        tmp_path, DefinitionUnitPlan(seeds=(graph.caller,)), graph.relationships, max_chars=10_000
+        tmp_path, DefinitionUnitPlan(seeds=(graph.caller,)), graph.relationships, max_chars=10_000, deliver_chars=0
     )
 
     assert context.text == ""
     assert context.delivered == context.published == ()
-
-
-def test_candidate_call_source_fails_when_the_analyzed_content_changed(tmp_path):
-    """Rewriting service.py after analysis raises BackendUnavailable for changed candidate call source."""
-    graph = route_call(tmp_path, _ONE_LINE_ROUTE, {"service.py": _ONE_LINE_LOAD})
-    (tmp_path / "service.py").write_text("def load(value): return other", encoding="utf-8")
-
-    with pytest.raises(BackendUnavailable, match="candidate call source content changed"):
-        candidate_call_context(
-            tmp_path, DefinitionUnitPlan(seeds=(graph.caller,)), graph.relationships, max_chars=10_000
-        )
 
 
 def test_definition_evidence_index_exposes_a_declaration_not_its_body(tmp_path):

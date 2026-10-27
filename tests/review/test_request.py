@@ -29,7 +29,6 @@ def _request() -> ReviewAttemptRequest:
     return ReviewAttemptRequest(
         engine_version="test",
         concurrency=ConcurrencyRecord(review=8),
-        dry_run=False,
         fresh=False,
         providers=ProviderPlanRecord(
             retries=2,

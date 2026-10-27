@@ -6,11 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
-from cyberjury.providers.mock import MockProvider
 from cyberjury.providers.openai import OpenAIProvider
-from cyberjury.review.context import EvidenceItem, GroundingContext, GroundingCoverage, SourceSpan
-from cyberjury.review.definitions import DefinitionUnitPlan
-from cyberjury.review.diff.model import DiffUnit
+from cyberjury.review.context import EvidenceItem, GroundingContext, SourceSpan
 from cyberjury.review.finder import findings_from_reply
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.replies import CorrectableRoleResponseError
@@ -18,7 +15,8 @@ from cyberjury.review.repository.model import RepositoryUnit
 from cyberjury.review.union import MERGE_RULE
 from tests.review.diff import support as diff
 from tests.review.repository import support as repository
-from tests.review.support import definition, navigator_from_callgraph
+from tests.review.support import navigator_from_callgraph
+from tests.support import MockProvider
 
 
 def _unit(name, grounding, root="."):
@@ -84,13 +82,12 @@ def test_finder_rejects_a_model_supplied_candidate_id():
 
 
 def test_finder_reports_a_malformed_finding_as_failed_work():
-    """A finding with only severity yields no findings, one error, and a "missing fields" reason."""
+    """A finding with only severity yields no findings and a "missing fields" failure reason."""
     reviewer = repository.finder(MockProvider(default=repository.finder_reply([{"severity": "HIGH"}])))
 
     cycle = reviewer.review_unit(_unit("u", GroundingContext(text="")))
 
     assert cycle.findings == []
-    assert cycle.errors == 1
     assert "$response.findings[0] is missing fields" in cycle.failure_reason
 
 
@@ -228,31 +225,6 @@ def test_a_unit_runs_one_judgment_even_when_it_finds_a_candidate():
     assert [finding.title for finding in cycle.findings] == ["first"]
 
 
-def test_finder_fails_before_model_call_when_grounding_is_incomplete():
-    """A unit whose required definition is omitted from grounding fails with one error and no model call."""
-    provider = MockProvider(default=diff.reply([]))
-    fragment = definition("policy.py", "Policy", 0, 20)
-    context = GroundingContext(
-        text="",
-        coverage=GroundingCoverage(required=(fragment.identity,), omitted=(fragment.identity,)),
-    )
-    unit = DiffUnit(
-        index=1,
-        total=1,
-        diff=diff.SQL_DIFF,
-        paths=("app.py",),
-        id="diff-unit-1",
-        definition_plan=DefinitionUnitPlan(seeds=(fragment,)),
-        grounding=context,
-    )
-
-    result = diff.review([unit], provider=provider)
-
-    assert provider.calls == []
-    assert result.outcome.complete is False
-    assert result.outcome.errors == 1
-
-
 def test_finder_binds_each_finding_to_its_source_operation(tmp_path):
     """Findings at lines 63 and 64 are bound to the navigator's call-shared operation and stay two findings."""
 
@@ -289,7 +261,6 @@ def test_finder_sends_the_contract_as_a_cacheable_system_prompt():
     _diff_findings(provider)
     call = provider.calls[0]
     prompt = call["messages"][0].content
-    assert call["cache"] is True
     assert prompt.startswith(call["cache_prefix"])
     assert "SELECT * FROM u" in call["cache_prefix"]
     assert "# Security Reasoning Kernel" in call["system"]
@@ -319,7 +290,6 @@ def test_reviewing_one_unit_again_reuses_its_cache_prefix(tmp_path):
     repository.review(reviewer, unit)
 
     first, second = provider.calls
-    assert second["cache"] is True
     assert second["cache_prefix"] == first["cache_prefix"]
     assert second["system"] == first["system"]
 
@@ -428,8 +398,6 @@ def test_a_navigation_follow_up_reuses_the_system_prompt_and_cache_prefix(tmp_pa
     assert first["system"] == final["system"]
     assert "# Security Reasoning Kernel" in first["system"]
     assert "# Source Navigation" in first["system"]
-    assert first["cache"] is True
-    assert final["cache"] is True
     assert first["cache_prefix"] == final["cache_prefix"]
     assert first["messages"][0].content.startswith(first["cache_prefix"])
     assert first["cache_segments"] == ()

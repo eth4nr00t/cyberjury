@@ -62,8 +62,8 @@ def require_provider_key(seat: ProviderSeat) -> None:
     )
 
 
-def provider_for_seat(configuration: ProviderConfiguration, *, meter: UsageMeter | None = None) -> Provider:
-    """Build the configured seat's provider with the client policy and optional metering."""
+def provider_for_seat(configuration: ProviderConfiguration, *, meter: UsageMeter) -> Provider:
+    """Build the configured seat's provider with the client policy, metered into the run meter."""
     seat = configuration.seat
     require_provider_key(seat)
     provider = make_provider(
@@ -72,4 +72,4 @@ def provider_for_seat(configuration: ProviderConfiguration, *, meter: UsageMeter
         retries=configuration.retries,
         timeout=configuration.timeout,
     )
-    return MeteringProvider(provider, meter) if meter is not None else provider
+    return MeteringProvider(provider, meter)

@@ -6,7 +6,13 @@ import pytest
 
 from cyberjury.review import navigation as navigation_module
 from cyberjury.review.context import SourceEvidence, SourceSpan
-from cyberjury.review.navigation import SourceNavigationError, SourceNavigator, navigation_instructions
+from cyberjury.review.navigation import (
+    SourceNavigationError,
+    SourceNavigator,
+    SourceQueryLimitError,
+    navigation_instructions,
+    parse_source_queries,
+)
 from cyberjury.review.relationships import (
     CallsiteEvidence,
     DefinitionEvidence,
@@ -60,6 +66,7 @@ def test_dependency_text_hits_are_labeled_and_bounded_on_minified_lines(tmp_path
     navigator = SourceNavigator.from_facts(
         tmp_path,
         source_files=("app.py", "vendor/notebook.min.js"),
+        relationship_evidence=RelationshipEvidenceBundle(),
         dependency_files=("vendor/notebook.min.js",),
     )
     assert navigator is not None
@@ -83,6 +90,7 @@ def test_documentation_navigation_preserves_its_source_kind(tmp_path):
     navigator = SourceNavigator.from_facts(
         tmp_path,
         source_files=("app.py", "docs/development.md"),
+        relationship_evidence=RelationshipEvidenceBundle(),
         documentation_files=("docs/development.md",),
     )
     assert navigator is not None
@@ -385,16 +393,10 @@ def test_source_target_ids_are_stable_across_sessions_and_query_order(tmp_path):
     assert first.source_evidence == second.source_evidence == third.source_evidence
 
 
-def test_navigation_rejects_more_than_eight_queries_per_batch(tmp_path):
-    """A batch of nine search_text queries raises SourceNavigationError naming the limit of 8."""
-    source = "class Record:\n    pass\n"
-    navigator = _record_navigator(tmp_path, source)
-
-    with pytest.raises(SourceNavigationError, match="more than 8"):
-        navigator.session().execute(
-            [{"kind": "search_text", "query": f"q{index}", "page": 0} for index in range(9)],
-            target_chars=10_000,
-        )
+def test_navigation_rejects_more_than_eight_queries_per_batch():
+    """A batch of nine search_text queries raises SourceQueryLimitError naming the limit of 8."""
+    with pytest.raises(SourceQueryLimitError, match="more than 8"):
+        parse_source_queries([{"kind": "search_text", "query": f"q{index}", "page": 0} for index in range(9)])
 
 
 def test_navigation_rejects_more_than_the_session_query_budget(tmp_path):
@@ -465,23 +467,6 @@ def test_large_definition_search_publishes_bounded_page_targets(tmp_path):
     assert "page 1/" in result.text
     first_page = session.read([target_ids[0]], target_chars=48_000)
     assert len(first_page.text) <= 48_000
-
-
-def test_search_requires_the_documented_page_field(tmp_path):
-    """A search_symbols query without a page key raises SourceNavigationError."""
-    source = "class Record:\n    pass\n"
-    (tmp_path / "src").mkdir()
-    (tmp_path / "src/one.py").write_text(source, encoding="utf-8")
-    graph = _graph(first_end=len(source), second_end=len(source))
-    graph["callgraph"] = {"src/one.py": graph["callgraph"]["src/one.py"]}
-    navigator = navigator_from_callgraph(tmp_path, graph)
-
-    assert navigator is not None
-    with pytest.raises(SourceNavigationError, match="must include page"):
-        navigator.session().execute(
-            [{"kind": "search_symbols", "query": "Record"}],
-            target_chars=10_000,
-        )
 
 
 def test_reading_requires_a_target_published_by_the_same_session(tmp_path):
@@ -576,6 +561,7 @@ def test_unique_text_search_delivers_verified_source_without_a_graph_definition(
     navigator = SourceNavigator.from_facts(
         tmp_path,
         source_files=("routes.yaml",),
+        relationship_evidence=RelationshipEvidenceBundle(),
     )
 
     assert navigator is not None
@@ -597,6 +583,7 @@ def test_ambiguous_text_search_publishes_choices_without_reading_them(tmp_path):
     navigator = SourceNavigator.from_facts(
         tmp_path,
         source_files=("one.txt", "two.txt"),
+        relationship_evidence=RelationshipEvidenceBundle(),
     )
 
     assert navigator is not None
@@ -904,7 +891,9 @@ def test_caller_search_returns_the_go_function_calling_a_definition(tmp_path):
 def test_text_search_builds_only_the_requested_page_and_one_look_ahead(tmp_path, monkeypatch):
     """A query matching 500 lines builds 21 targets for page 0 and still reports that a next page exists."""
     (tmp_path / "big.py").write_text("".join(f"value_{index} = self.x\n" for index in range(500)), encoding="utf-8")
-    navigator = SourceNavigator.from_facts(tmp_path, source_files=("big.py",))
+    navigator = SourceNavigator.from_facts(
+        tmp_path, source_files=("big.py",), relationship_evidence=RelationshipEvidenceBundle()
+    )
     assert navigator is not None
     created = []
     create = navigation_module.SourceTarget.create
@@ -919,11 +908,3 @@ def test_text_search_builds_only_the_requested_page_and_one_look_ahead(tmp_path,
 
     assert len(created) == 21
     assert "more results are available on page 1" in result.text
-
-
-def test_an_unknown_source_query_kind_is_rejected(tmp_path):
-    """A source query of kind search_everything raises SourceNavigationError naming the unknown kind."""
-    navigator = _record_navigator(tmp_path, "class Record:\n    pass\n")
-
-    with pytest.raises(SourceNavigationError, match="source query 1 has unknown kind 'search_everything'"):
-        navigator.session().execute([{"kind": "search_everything", "query": "x", "page": 0}], target_chars=10_000)

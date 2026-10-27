@@ -6,11 +6,10 @@ import json
 import re
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal
 
-from cyberjury.canonical import text_sha256
 from cyberjury.numbering import split_lines
 from cyberjury.review.context import (
     EvidenceBudgetError,
@@ -22,7 +21,7 @@ from cyberjury.review.context import (
     source_id,
 )
 from cyberjury.review.definitions import definitions_by_name
-from cyberjury.review.paths import contained_repository_path, normalized_location_path, safe_repository_path
+from cyberjury.review.paths import normalized_location_path
 from cyberjury.review.prompts import fenced_source, inline_source, one_line_source
 from cyberjury.review.relationships import (
     AnalysisObservation,
@@ -33,8 +32,10 @@ from cyberjury.review.relationships import (
     StructuralRelationshipEvidence,
 )
 
+if TYPE_CHECKING:
+    from cyberjury.review.finding import Finding
+
 _MAX_RESULTS_PER_PAGE = 20
-_MAX_SEARCHABLE_FILE_BYTES = 2_000_000
 _SOURCE_LABELS = {"production": "source", "documentation": "documentation", "dependency": "third-party source"}
 MAX_QUERIES_PER_BATCH = 8
 MAX_UNIQUE_QUERIES_PER_SESSION = 64
@@ -56,26 +57,16 @@ class SourceQueryLimitError(SourceNavigationError):
         """Retain the observed count and published limit for correction."""
         self.count = count
         self.limit = limit
-        self.response_findings: tuple[object, ...] = ()
+        self.response_findings: tuple[Finding, ...] = ()
         super().__init__(f"source_queries cannot contain more than {limit} queries")
 
 
 class RepeatedSourceQueryError(SourceNavigationError):
     """A model repeated an exact query in one navigation session."""
 
-    def __init__(self, query: dict[str, object]) -> None:
-        """Retain the repeated query for a bounded model correction."""
-        self.query = query
-        super().__init__("source query repeats an earlier query in this session")
-
 
 class UnknownDefinitionQueryError(SourceNavigationError):
     """A model requested relationship candidates for an unpublished definition id."""
-
-    def __init__(self, definition_id: str) -> None:
-        """Retain the unknown definition id for one bounded correction."""
-        self.definition_id = definition_id
-        super().__init__(f"relationship candidate query references undiscovered definition {definition_id!r}")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -144,39 +135,39 @@ class SourceNavigator:
         cls,
         root: str | Path,
         *,
+        relationship_evidence: RelationshipEvidenceBundle,
         source_files: Iterable[str] = (),
         import_files: Iterable[str] = (),
-        relationship_evidence: RelationshipEvidenceBundle | None = None,
         documentation_files: Iterable[str] = (),
         dependency_files: Iterable[str] = (),
     ) -> SourceNavigator | None:
         """Build navigation from shared facts without adding resolver semantics."""
         base = Path(root).resolve()
-        relationships = relationship_evidence or RelationshipEvidenceBundle()
-        all_definitions = definitions_by_name(relationships.definitions)
+        all_definitions = definitions_by_name(relationship_evidence.definitions)
         relationship_files = (
-            *(definition.source.path for definition in relationships.definitions),
-            *(callsite.source.path for callsite in relationships.callsites),
-            *(source.path for source in relationships.sources),
+            *(definition.source.path for definition in relationship_evidence.definitions),
+            *(callsite.source.path for callsite in relationship_evidence.callsites),
+            *(source.path for source in relationship_evidence.sources),
         )
-        files = _navigation_files(
-            base,
-            (
-                *(definition.source.path for definition in all_definitions),
-                *source_files,
-                *relationship_files,
-                *import_files,
-            ),
+        files = tuple(
+            dict.fromkeys(
+                (
+                    *(definition.source.path for definition in all_definitions),
+                    *source_files,
+                    *relationship_files,
+                    *import_files,
+                )
+            )
         )
         included = set(files)
         definitions = tuple(definition for definition in all_definitions if definition.source.path in included)
-        if not definitions and not files and not relationships.definitions:
+        if not files:
             return None
         return cls(
             root=base,
             definitions=definitions,
             files=files,
-            relationship_evidence=relationships,
+            relationship_evidence=relationship_evidence,
             documentation_files=frozenset(documentation_files).intersection(included),
             dependency_files=frozenset(dependency_files).intersection(included),
         )
@@ -194,7 +185,6 @@ class SourceNavigationSession:
         self._navigator = navigator
         self._targets: dict[str, SourceTarget] = {}
         self._targets_by_identity: dict[str, SourceTarget] = {}
-        self._source_bytes: dict[str, bytes] = {}
         self._sources: dict[str, str] = {}
         self._relationship_definitions = {
             definition.id: definition for definition in navigator.relationship_evidence.definitions
@@ -229,10 +219,8 @@ class SourceNavigationSession:
                 return "seed" if item_id.startswith("seed:") else item_id
         return None
 
-    def source_operation_id(self, file: str, line: int | None) -> str:
+    def source_operation_id(self, file: str, line: int) -> str:
         """Map one source line to one unambiguous outer callsite identity."""
-        if line is None or isinstance(line, bool) or not isinstance(line, int) or line < 1:
-            return ""
         normalized = normalized_location_path(file)
         callsites = tuple(callsite for callsite in self._callsites.values() if callsite.source.path == normalized)
         if not callsites:
@@ -268,8 +256,6 @@ class SourceNavigationSession:
         state = (
             dict(self._targets),
             dict(self._targets_by_identity),
-            dict(self._source_bytes),
-            dict(self._sources),
             set(self._discovered_definition_ids),
             set(self._executed_query_keys),
             dict(self._delivered),
@@ -280,19 +266,16 @@ class SourceNavigationSession:
             (
                 self._targets,
                 self._targets_by_identity,
-                self._source_bytes,
-                self._sources,
                 self._discovered_definition_ids,
                 self._executed_query_keys,
                 self._delivered,
             ) = state
             raise
 
-    def execute(self, requested: object, *, target_chars: int) -> SourceNavigationResult:
-        """Execute a strict batch and fail rather than reinterpret malformed queries."""
-        queries = parse_source_queries(requested)
+    def execute(self, queries: list[dict[str, object]], *, target_chars: int) -> SourceNavigationResult:
+        """Execute one batch of queries checked by `parse_source_queries`."""
         query_keys = tuple(_query_key(query) for query in queries)
-        self._admit_batch(queries, query_keys)
+        self._admit_batch(query_keys)
         blocks: list[str] = []
         coverage = GroundingCoverage()
         source_evidence: list[SourceEvidence] = []
@@ -308,11 +291,9 @@ class SourceNavigationSession:
             elif kind == "search_call_candidates":
                 text = self._search_call_candidates(query["definition_id"], query["direction"], query["page"])
                 blocks.append(f"Source query {index} {text}")
-            elif kind == "search_structural_candidates":
+            else:
                 text = self._search_structural_candidates(query["definition_id"], query["direction"], query["page"])
                 blocks.append(f"Source query {index} {text}")
-            else:
-                raise SourceNavigationError(f"source query {index} has unknown kind {kind!r}")
             if len("\n\n".join(blocks)) > target_chars:
                 raise SourceBudgetError(f"source query results exceed the {target_chars} character target")
         source_evidence.extend(held_receipts)
@@ -321,7 +302,6 @@ class SourceNavigationSession:
             (
                 coverage,
                 GroundingCoverage(
-                    required=identities,
                     included=identities,
                     references=tuple(dict.fromkeys(item.id for item in held_receipts)),
                 ),
@@ -333,16 +313,9 @@ class SourceNavigationSession:
             source_evidence=tuple(source_evidence),
         )
 
-    def _admit_batch(self, queries: list[dict[str, object]], query_keys: tuple[str, ...]) -> None:
-        if len(query_keys) != len(set(query_keys)):
-            repeated = next(query for query, key in zip(queries, query_keys, strict=True) if query_keys.count(key) > 1)
-            raise RepeatedSourceQueryError(repeated)
-        already_executed = next(
-            (query for query, key in zip(queries, query_keys, strict=True) if key in self._executed_query_keys),
-            None,
-        )
-        if already_executed is not None:
-            raise RepeatedSourceQueryError(already_executed)
+    def _admit_batch(self, query_keys: tuple[str, ...]) -> None:
+        if len(query_keys) != len(set(query_keys)) or not self._executed_query_keys.isdisjoint(query_keys):
+            raise RepeatedSourceQueryError("source query repeats an earlier query in this session")
         if len(self._executed_query_keys) + len(query_keys) > MAX_UNIQUE_QUERIES_PER_SESSION:
             raise SourceNavigationError(
                 f"source navigation exceeds {MAX_UNIQUE_QUERIES_PER_SESSION} unique queries per session"
@@ -403,10 +376,7 @@ class SourceNavigationSession:
         return held
 
     def _receipt(self, target: SourceTarget) -> SourceEvidence:
-        source = self._source(target.file)
-        if target.end > len(source):
-            raise SourceNavigationError(f"source target {target.id} exceeds {target.file}")
-        text, span = numbered_source_range(target.file, source, target.start, target.end)
+        text, span = numbered_source_range(target.file, self._source(target.file), target.start, target.end)
         return SourceEvidence(id=target.id, identity=target.identity, text=text, source_span=span)
 
     def read(self, requested: Iterable[str], *, target_chars: int) -> SourceNavigationResult:
@@ -437,7 +407,6 @@ class SourceNavigationSession:
             self._delivered[target.id] = _span_key(receipt.source_span)
             source_evidence.append(receipt)
             coverage = GroundingCoverage(
-                required=(*coverage.required, target.identity),
                 included=(*coverage.included, target.identity),
                 references=(*coverage.references, target.id),
             )
@@ -509,9 +478,8 @@ class SourceNavigationSession:
                 continue
             reference = relationship.source
             source = self._source(reference.path)
-            selected = source[reference.start : reference.end]
-            text = " ".join(selected.split())
-            if text_sha256(selected) != reference.content_sha256 or not identifier.search(text):
+            text = " ".join(source[reference.start : reference.end].split())
+            if not identifier.search(text):
                 continue
             module = PurePosixPath(relationship.reference.strip("\"'")).name.split(".")[0]
             binds = name in {relationship.reference, module} or relationship.reference.startswith(f"{name} from ")
@@ -582,10 +550,9 @@ class SourceNavigationSession:
 
     def _search_call_candidates(self, definition_id: str, direction: str, page: int) -> str:
         if definition_id not in self._discovered_definition_ids:
-            raise UnknownDefinitionQueryError(definition_id)
-        selected = self._relationship_definitions.get(definition_id)
-        if selected is None:
-            raise SourceNavigationError(f"call candidate query references unknown definition {definition_id!r}")
+            raise UnknownDefinitionQueryError(
+                f"relationship candidate query references undiscovered definition {definition_id!r}"
+            )
         calls = []
         for callsite in self._callsites.values():
             candidate_ids = self._callsite_candidate_ids(callsite)
@@ -608,17 +575,13 @@ class SourceNavigationSession:
         return "\n".join(lines)
 
     def _callsite_candidate_ids(self, callsite: CallsiteEvidence) -> tuple[str, ...]:
-        relationship = self._call_relationships.get(callsite.id)
-        if relationship is None:
-            raise SourceNavigationError(f"callsite {callsite.id} has no relationship target state")
-        return relationship.candidate_callee_definition_ids
+        return self._call_relationships[callsite.id].candidate_callee_definition_ids
 
     def _search_structural_candidates(self, definition_id: str, direction: str, page: int) -> str:
         if definition_id not in self._discovered_definition_ids:
-            raise UnknownDefinitionQueryError(definition_id)
-        selected = self._relationship_definitions.get(definition_id)
-        if selected is None:
-            raise SourceNavigationError(f"structural candidate query references unknown definition {definition_id!r}")
+            raise UnknownDefinitionQueryError(
+                f"relationship candidate query references undiscovered definition {definition_id!r}"
+            )
         relationships: list[StructuralRelationshipEvidence] = []
         for relationship in self._structural_relationships:
             outgoing = relationship.source_definition_id == definition_id
@@ -706,8 +669,6 @@ class SourceNavigationSession:
     def _definition_targets(self, definition: DefinitionEvidence) -> tuple[SourceTarget, ...]:
         file, start, end = definition.source.path, definition.source.start, definition.source.end
         source = self._source(file)
-        if end > len(source):
-            raise SourceNavigationError(f"definition range exceeds source {definition.identity}")
         preview = next(
             (line.strip() for line in split_lines(source[start:end]) if line.strip()),
             "",
@@ -742,12 +703,7 @@ class SourceNavigationSession:
         name: str,
         definition_id: str = "",
     ) -> SourceTarget:
-        source = self._source(reference.path)
-        if reference.end > len(source):
-            raise SourceNavigationError(f"relationship source exceeds {reference.path}")
-        selected = source[reference.start : reference.end]
-        if text_sha256(selected) != reference.content_sha256:
-            raise SourceNavigationError(f"relationship source changed at {reference.path}:{reference.start}")
+        selected = self._source(reference.path)[reference.start : reference.end]
         preview = next((line.strip() for line in split_lines(selected) if line.strip()), "")
         return self._register_target(
             SourceTarget.create(
@@ -776,13 +732,9 @@ class SourceNavigationSession:
         existing = self._targets_by_identity.get(target.identity)
         if existing is not None:
             return existing
-        collision = self._targets.get(target.id)
-        if collision is not None and collision.identity != target.identity:
-            raise SourceNavigationError(f"source target id collision for {target.identity}")
-        registered = target
-        self._targets[registered.id] = registered
-        self._targets_by_identity[registered.identity] = registered
-        return registered
+        self._targets[target.id] = target
+        self._targets_by_identity[target.identity] = target
+        return target
 
     def _source_kind(self, file: str) -> Literal["production", "documentation", "dependency"]:
         if file in self._navigator.documentation_files:
@@ -792,50 +744,10 @@ class SourceNavigationSession:
         return "production"
 
     def _source(self, file: str) -> str:
-        source = self._sources.get(file)
-        if source is not None:
-            return source
-        raw = self._source_bytes_for(file)
-        try:
-            source = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise SourceNavigationError(f"cannot decode navigation source {file!r}: {exc}") from exc
-        source = source.replace("\r\n", "\n").replace("\r", "\n")
-        self._sources[file] = source
-        return source
-
-    def _source_bytes_for(self, file: str) -> bytes:
-        source = self._source_bytes.get(file)
-        if source is not None:
-            return source
-        try:
-            path = contained_repository_path(self._navigator.root, file)
-            if not path.is_file():
-                raise OSError("not a regular file")
-            if path.stat().st_size > _MAX_SEARCHABLE_FILE_BYTES:
-                raise OSError(f"file exceeds {_MAX_SEARCHABLE_FILE_BYTES} bytes")
-            source = path.read_bytes()
-        except (OSError, ValueError) as exc:
-            raise SourceNavigationError(f"cannot read navigation source {file!r}: {exc}") from exc
-        self._source_bytes[file] = source
-        return source
-
-
-class _OperationBindable(Protocol):
-    file: str
-    line: int | None
-    source_operation_id: str
-
-
-def bind_source_operation[T: _OperationBindable](
-    finding: T,
-    navigator: SourceNavigationSession | None,
-) -> T:
-    """Bind one report line to an unambiguous shared callsite identity."""
-    if navigator is None or finding.source_operation_id:
-        return finding
-    operation_id = navigator.source_operation_id(finding.file, finding.line)
-    return replace(finding, source_operation_id=operation_id) if operation_id else finding
+        if file not in self._sources:
+            text = (self._navigator.root / file).read_bytes().decode("utf-8")
+            self._sources[file] = text.replace("\r\n", "\n").replace("\r", "\n")
+        return self._sources[file]
 
 
 def navigation_instructions() -> str:
@@ -871,66 +783,22 @@ def navigation_instructions() -> str:
     )
 
 
-def parse_source_queries(value: object) -> list[dict[str, object]]:
-    """Validate model-facing source searches without accepting exact reads."""
-    if not isinstance(value, list):
-        raise SourceNavigationError("source_queries must be a list")
+def parse_source_queries(value: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Check the limits a schema-valid batch of searches cannot state, and trim each search query."""
     if len(value) > MAX_QUERIES_PER_BATCH:
         raise SourceQueryLimitError(len(value), MAX_QUERIES_PER_BATCH)
     queries: list[dict[str, object]] = []
-    for index, raw in enumerate(value):
-        if not isinstance(raw, dict):
-            raise SourceNavigationError(f"source query {index + 1} must be an object")
-        kind = raw.get("kind")
-        if kind not in {
-            "search_symbols",
-            "search_text",
-            "search_call_candidates",
-            "search_structural_candidates",
-        }:
-            raise SourceNavigationError(f"source query {index + 1} has unknown kind {kind!r}")
-        allowed = (
-            {"kind", "definition_id", "direction", "page"}
-            if kind in {"search_call_candidates", "search_structural_candidates"}
-            else {"kind", "query", "page"}
-        )
-        extra = set(raw).difference(allowed)
-        if extra:
-            raise SourceNavigationError(
-                f"source query {index + 1} has unknown fields: {', '.join(sorted(str(item) for item in extra))}"
-            )
-        if kind in {"search_call_candidates", "search_structural_candidates"}:
-            definition_id = raw.get("definition_id")
-            direction = raw.get("direction")
-            page = raw.get("page")
-            if not isinstance(definition_id, str) or not definition_id.startswith("def-"):
-                raise SourceNavigationError(f"source query {index + 1} definition_id must be a def-* id")
-            allowed_directions = (
-                {"callers", "callees", "both"} if kind == "search_call_candidates" else {"incoming", "outgoing", "both"}
-            )
-            if direction not in allowed_directions:
-                choices = ", ".join(sorted(allowed_directions))
-                raise SourceNavigationError(f"source query {index + 1} direction must be one of: {choices}")
-            if not isinstance(page, int) or isinstance(page, bool) or page < 0:
-                raise SourceNavigationError(f"source query {index + 1} page must be a nonnegative integer")
-            queries.append(
-                {
-                    "kind": kind,
-                    "definition_id": definition_id,
-                    "direction": direction,
-                    "page": page,
-                }
-            )
-            continue
-        query = raw.get("query")
-        if "page" not in raw:
-            raise SourceNavigationError(f"source query {index + 1} must include page")
-        page = raw["page"]
-        if not isinstance(query, str) or not query.strip():
-            raise SourceNavigationError(f"source query {index + 1} query must be a nonempty string")
-        if not isinstance(page, int) or isinstance(page, bool) or page < 0:
-            raise SourceNavigationError(f"source query {index + 1} page must be a nonnegative integer")
-        queries.append({"kind": kind, "query": query.strip(), "page": page})
+    for index, raw in enumerate(value, start=1):
+        if raw["page"] < 0:
+            raise SourceNavigationError(f"source query {index} page must be a nonnegative integer")
+        if "definition_id" in raw:
+            if not raw["definition_id"].startswith("def-"):
+                raise SourceNavigationError(f"source query {index} definition_id must be a def-* id")
+            queries.append(dict(raw))
+        elif not raw["query"].strip():
+            raise SourceNavigationError(f"source query {index} query must be a nonempty string")
+        else:
+            queries.append({**raw, "query": raw["query"].strip()})
     return queries
 
 
@@ -959,7 +827,7 @@ def _render_search(
     more: bool,
     held: Mapping[str, str],
     *,
-    exact_match: bool = True,
+    exact_match: bool,
 ) -> str:
     lines = [
         f"Source query {index} `{kind}` for {inline_source(query)}, page {page}.",
@@ -1002,15 +870,6 @@ def _already_delivered(heading: str, span: SourceSpan, target_id: str, delivered
 
 def _span_key(span: SourceSpan) -> tuple[str, int, int]:
     return (normalized_location_path(span.file), span.start_line, span.end_line)
-
-
-def _navigation_files(root: Path, candidates: Iterable[str]) -> tuple[str, ...]:
-    files = []
-    for file in dict.fromkeys(candidates):
-        path = safe_repository_path(root, file)
-        if path is not None and path.is_file():
-            files.append(file)
-    return tuple(files)
 
 
 def _line_offset(source: str, line: int) -> int:

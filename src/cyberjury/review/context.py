@@ -8,7 +8,6 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
-from cyberjury.canonical import normalized_repository_path
 from cyberjury.numbering import numbered_source, split_lines
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.facts import FactLimitation, render_fact_limitations
@@ -25,67 +24,37 @@ MAX_EVIDENCE_REQUESTS_PER_BATCH = 64
 _MAX_EVIDENCE_ID_CHARS = 128
 
 
-def _unique_strings(values: tuple[str, ...], label: str) -> None:
-    if not isinstance(values, tuple) or not all(isinstance(value, str) and value for value in values):
-        raise ValueError(f"grounding {label} must be a tuple of nonempty strings")
-    if len(values) != len(set(values)):
-        raise ValueError(f"grounding {label} must not contain duplicates")
-
-
 @dataclass(frozen=True, kw_only=True)
 class GroundingCoverage:
-    """Evidence obligations and the subset available to one judgment."""
+    """The evidence one judgment holds, what it could not resolve, and the fact limitations it saw."""
 
-    required: tuple[str, ...] = ()
     included: tuple[str, ...] = ()
-    omitted: tuple[str, ...] = ()
     unresolved: tuple[str, ...] = ()
     limitations: tuple[str, ...] = ()
     references: tuple[str, ...] = ()
 
-    def __post_init__(self) -> None:
-        """Require canonical evidence obligation sets."""
-        for label, values in (
-            ("required identities", self.required),
-            ("included identities", self.included),
-            ("omitted identities", self.omitted),
-            ("unresolved identities", self.unresolved),
-            ("limitation identities", self.limitations),
-            ("reference ids", self.references),
-        ):
-            _unique_strings(values, label)
-
     def to_dict(self) -> dict[str, object]:
-        """Return the strict coverage record."""
+        """Return the coverage record."""
         return {
-            "required": list(self.required),
             "included": list(self.included),
-            "omitted": list(self.omitted),
             "unresolved": list(self.unresolved),
             "limitations": list(self.limitations),
             "references": list(self.references),
         }
 
     @property
-    def missing(self) -> tuple[str, ...]:
-        """Return every required evidence identity absent from the prompt."""
-        absent = set(self.required).difference(self.included)
-        return tuple(dict.fromkeys((*self.omitted, *sorted(absent))))
-
-    @property
     def complete(self) -> bool:
-        """Require every known obligation to be resolved and included, while fact limitations stay advisory."""
-        return not self.missing and not self.unresolved
+        """Require every evidence need to be resolved, while fact limitations stay advisory."""
+        return not self.unresolved
 
     @property
     def failure_reason(self) -> str:
         """Explain why this grounding cannot support a complete judgment."""
-        reasons: list[str] = []
-        if self.missing:
-            reasons.append(f"omitted required evidence: {', '.join(self.missing)}")
-        if self.unresolved:
-            reasons.append(f"unresolved required evidence: {', '.join(self.unresolved)}")
-        return f"grounding incomplete, {'; '.join(reasons)}" if reasons else ""
+        return (
+            f"grounding incomplete, unresolved required evidence: {', '.join(self.unresolved)}"
+            if self.unresolved
+            else ""
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -95,19 +64,6 @@ class SourceSpan:
     file: str
     start_line: int
     end_line: int
-
-    def __post_init__(self) -> None:
-        """Reject unsafe paths and invalid line ranges."""
-        normalized_repository_path(self.file, "grounding source path")
-        if (
-            isinstance(self.start_line, bool)
-            or not isinstance(self.start_line, int)
-            or isinstance(self.end_line, bool)
-            or not isinstance(self.end_line, int)
-            or self.start_line < 1
-            or self.end_line < self.start_line
-        ):
-            raise ValueError("grounding source span must have a valid line range")
 
     def to_dict(self) -> dict[str, object]:
         """Return one exact source line range."""
@@ -152,8 +108,6 @@ class EvidenceItem:
         source_span: SourceSpan | None = None,
     ) -> EvidenceItem:
         """Publish one exact source range under its source id."""
-        if not (identity and label and text):
-            raise ValueError("evidence item identity, label, and text must be nonempty strings")
         return cls(
             id=source_id(identity),
             identity=identity,
@@ -166,7 +120,7 @@ class EvidenceItem:
 
 @dataclass(frozen=True, kw_only=True)
 class SourceEvidence:
-    """One exact source range read through a verified source provider."""
+    """One exact source range delivered to the model under its receipt id and span."""
 
     id: str
     identity: str
@@ -203,12 +157,9 @@ def publish_evidence(
     existing: tuple[EvidenceItem, ...],
     items: tuple[EvidenceItem, ...],
 ) -> tuple[EvidenceItem, ...]:
-    """Add retrievable evidence to a catalog without letting one id change identity or content."""
+    """Add retrievable evidence to a catalog, keeping the first item of each id."""
     by_id = {item.id: item for item in existing}
     for item in items:
-        prior = by_id.get(item.id)
-        if prior is not None and (prior.identity != item.identity or prior.text != item.text):
-            raise ValueError(f"candidate evidence id {item.id} changed identity or content")
         by_id.setdefault(item.id, item)
     return tuple(by_id.values())
 
@@ -245,10 +196,7 @@ def select_evidence(
         text="\n\n".join(
             f"Read evidence `{item.id}` {one_line_source(item.label)}:\n{fenced_source(item.text)}" for item in selected
         ),
-        coverage=GroundingCoverage(
-            required=tuple(item.identity for item in selected),
-            included=tuple(item.identity for item in selected),
-        ),
+        coverage=GroundingCoverage(included=tuple(item.identity for item in selected)),
     )
 
 
@@ -257,14 +205,10 @@ def is_evidence_id(value: str) -> bool:
     return len(value) <= _MAX_EVIDENCE_ID_CHARS and _EVIDENCE_ID.fullmatch(value) is not None
 
 
-def evidence_request_ids(requested: object) -> tuple[str, ...]:
+def evidence_request_ids(requested: list[str]) -> tuple[str, ...]:
     """Validate one exact request batch and collapse semantically identical ids."""
-    if not isinstance(requested, list) or not all(isinstance(item, str) for item in requested):
-        raise EvidenceRequestError("evidence_requests must be a list of evidence ids")
     if len(requested) > MAX_EVIDENCE_REQUESTS_PER_BATCH:
         raise EvidenceRequestError(f"evidence_requests cannot contain more than {MAX_EVIDENCE_REQUESTS_PER_BATCH} ids")
-    if any(not item or item != item.strip() for item in requested):
-        raise EvidenceRequestError("evidence_requests must contain nonempty exact evidence ids")
     if any(len(item) > _MAX_EVIDENCE_ID_CHARS for item in requested):
         raise EvidenceRequestError("evidence_requests contain an oversized evidence id")
     if any(not _EVIDENCE_ID.fullmatch(item) for item in requested):
@@ -278,15 +222,10 @@ def merge_grounding_coverage(values: tuple[GroundingCoverage, ...]) -> Grounding
     def unique(items: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(dict.fromkeys(items))
 
-    required = unique(tuple(item for value in values for item in value.required))
     included = unique(tuple(item for value in values for item in value.included))
     delivered = set(included)
     return GroundingCoverage(
-        required=required,
         included=included,
-        omitted=tuple(
-            item for item in unique(tuple(item for value in values for item in value.omitted)) if item not in delivered
-        ),
         unresolved=tuple(
             item
             for item in unique(tuple(item for value in values for item in value.unresolved))
@@ -371,29 +310,6 @@ class GroundingContext:
     source_snapshot: SourceSnapshot | None = None
     snapshot_files: tuple[str, ...] = ()
 
-    def __post_init__(self) -> None:
-        """Reject ambiguous initial evidence."""
-        for label, paths in (("files", self.files), ("snapshot files", self.snapshot_files)):
-            _unique_strings(paths, label)
-            for path in paths:
-                normalized_repository_path(path, "grounding source path")
-        for label, items in (("evidence catalog", self.evidence), ("source evidence", self.source_evidence)):
-            if len({item.id for item in items}) != len(items):
-                raise ValueError(f"grounding context {label} ids must be unique")
-            if label == "evidence catalog" and len({item.identity for item in items}) != len(items):
-                raise ValueError(f"grounding context {label} identities must be unique")
-        source_by_identity: dict[str, SourceEvidence] = {}
-        for item in self.source_evidence:
-            existing = source_by_identity.get(item.identity)
-            if existing is not None and (existing.text != item.text or existing.source_span != item.source_span):
-                raise ValueError("grounding source evidence aliases must bind identical source")
-            source_by_identity[item.identity] = item
-        catalog = {item.id: item for item in self.evidence}
-        for delivered in self.source_evidence:
-            published = catalog.get(delivered.id)
-            if published is not None and (delivered.identity != published.identity or delivered.text != published.text):
-                raise ValueError("grounding context delivered evidence differs from its catalog entry")
-
     @property
     def prompt(self) -> EvidencePromptContext:
         """Separate stable unit evidence from engine owned controls."""
@@ -422,18 +338,10 @@ def with_source_evidence(
 ) -> GroundingContext:
     """Extend one unit with exact source read by its navigation session."""
     by_id = {item.id: item for item in context.source_evidence}
-    delivered_by_id: dict[str, SourceEvidence] = {}
-    for item in evidence:
-        existing = delivered_by_id.get(item.id) or by_id.get(item.id)
-        if existing is not None and existing != item:
-            raise ValueError(f"source evidence id {item.id} changed identity or content")
-        delivered_by_id[item.id] = item
-        by_id[item.id] = item
-    delivered_items = tuple(delivered_by_id.values())
-    identities = tuple(dict.fromkeys(item.identity for item in delivered_items))
+    delivered_items = tuple({item.id: item for item in evidence}.values())
+    by_id.update((item.id, item) for item in delivered_items)
     delivered = GroundingCoverage(
-        required=identities,
-        included=identities,
+        included=tuple(dict.fromkeys(item.identity for item in delivered_items)),
         references=tuple(item.id for item in delivered_items),
     )
     snapshot_files = context.snapshot_files
@@ -451,66 +359,35 @@ def with_source_evidence(
     )
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class SourceLocationReceipt:
-    """One canonical source location bound to the evidence that exposed it."""
-
-    file: str
-    line: int
-    evidence_ref: str
-
-
-def source_location_receipt(
+def cited_location_file(
     *,
     file: str,
     line: int,
     evidence_refs: tuple[str, ...],
-    seed_spans: tuple[SourceSpan, ...] = (),
-    source_evidence: tuple[SourceEvidence, ...] = (),
-) -> SourceLocationReceipt | None:
-    """Return the first cited source span that covers one exact location."""
-    if not isinstance(file, str) or not file.strip():
-        return None
-    if isinstance(line, bool) or not isinstance(line, int) or line < 1:
-        return None
-    if not isinstance(evidence_refs, tuple) or not all(isinstance(item, str) and item for item in evidence_refs):
-        return None
+    seed_spans: tuple[SourceSpan, ...],
+    source_evidence: tuple[SourceEvidence, ...],
+) -> str | None:
+    """Return the canonical path of the first cited source span that covers one exact location."""
     requested = normalized_location_path(file)
-    for evidence_ref, span in _cited_spans(evidence_refs, seed_spans, source_evidence):
-        canonical = normalized_location_path(span.file)
-        if canonical == requested and span.start_line <= line <= span.end_line:
-            return SourceLocationReceipt(file=canonical, line=line, evidence_ref=evidence_ref)
-    return None
+    spans = cited_source_spans(evidence_refs, seed_spans=seed_spans, source_evidence=source_evidence)
+    return next(
+        (span.file for span in spans if span.file == requested and span.start_line <= line <= span.end_line), None
+    )
 
 
 def cited_source_spans(
     evidence_refs: tuple[str, ...],
     *,
-    seed_spans: tuple[SourceSpan, ...] = (),
-    source_evidence: tuple[SourceEvidence, ...] = (),
-) -> tuple[SourceSpan, ...]:
-    """Return the distinct source spans that one finding's evidence refs cite, in canonical path form."""
-    return tuple(
-        dict.fromkeys(
-            replace(span, file=normalized_location_path(span.file))
-            for _evidence_ref, span in _cited_spans(evidence_refs, seed_spans, source_evidence)
-        )
-    )
-
-
-def _cited_spans(
-    evidence_refs: tuple[str, ...],
     seed_spans: tuple[SourceSpan, ...],
     source_evidence: tuple[SourceEvidence, ...],
-) -> list[tuple[str, SourceSpan]]:
-    candidates: list[tuple[str, SourceSpan]] = []
-    if "seed" in evidence_refs:
-        candidates.extend(("seed", span) for span in seed_spans)
+) -> tuple[SourceSpan, ...]:
+    """Return the distinct source spans that one finding's evidence refs cite, in canonical path form."""
     cited = set(evidence_refs)
-    candidates.extend(
-        (item.id, item.source_span) for item in source_evidence if item.id in cited and item.source_span is not None
+    spans = (
+        *(seed_spans if "seed" in cited else ()),
+        *(item.source_span for item in source_evidence if item.id in cited and item.source_span is not None),
     )
-    return candidates
+    return tuple(dict.fromkeys(replace(span, file=normalized_location_path(span.file)) for span in spans))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -524,13 +401,6 @@ class EvidencePromptContext:
     provisional: str = ""
     budget: str = ""
     navigation_available: bool = False
-
-    def __post_init__(self) -> None:
-        """Reject navigation state and delivered exchanges of the wrong type."""
-        if not isinstance(self.navigation_available, bool):
-            raise ValueError("evidence prompt navigation state must be boolean")
-        if not isinstance(self.delivered, tuple) or not all(isinstance(item, str) for item in self.delivered):
-            raise ValueError("evidence prompt delivered exchanges must be strings")
 
     @property
     def followup(self) -> str:

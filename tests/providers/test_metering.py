@@ -15,29 +15,25 @@ from cyberjury.providers.metering import (
     usage_from_calls,
     validate_model_calls_document,
 )
+from tests.support import EMPTY_SCHEMA
 
 
 class _Fake(Provider):
     def __init__(self, usage):
         self._usage = usage
 
-    def complete(
-        self,
-        *,
-        system,
-        messages,
-        model,
-        max_tokens,
-        cache=False,
-        cache_prefix="",
-        cache_segments=(),
-        response_schema=None,
-    ):
+    def complete(self, **_kwargs):
         return CompletionResult(text="ok", usage=self._usage)
 
 
-def _call(provider):
-    return provider.complete(system="s", messages=[Message(role="user", content="u")], model="m", max_tokens=8)
+def _call(provider, content="u"):
+    return provider.complete(
+        system="s",
+        messages=[Message(role="user", content=content)],
+        model="m",
+        max_tokens=8,
+        response_schema=EMPTY_SCHEMA,
+    )
 
 
 def test_metering_records_each_calls_usage_and_returns_the_inner_result():
@@ -98,19 +94,20 @@ def test_meter_records_role_unit_prompt_size_usage_duration_and_status():
     meter = UsageMeter()
     provider = MeteringProvider(_Fake(Usage(input_tokens=3, output_tokens=2)), meter)
 
-    with model_call_scope(unit_id="unit-a"), model_call_context(role="finder"):
+    with model_call_scope(unit_id="unit-a"), model_call_context(role="finder", trigger="initial_judgment"):
         provider.complete(
             system="system",
             messages=[Message(role="user", content="prompt")],
             model="model-a",
             max_tokens=100,
+            response_schema=EMPTY_SCHEMA,
         )
         record_model_parse()
 
     record = meter.call_snapshot()[0]
     assert record == {
         "role": "finder",
-        "trigger": "provider_request",
+        "trigger": "initial_judgment",
         "unit_id": "unit-a",
         "candidate_id": "",
         "attempt": 1,

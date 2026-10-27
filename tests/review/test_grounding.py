@@ -18,7 +18,6 @@ def _plan(source_chars: int) -> UnitPlanReceipt:
     return UnitPlanReceipt.create(
         facts=FactsReceipt.create(backend_id="test", facts=Facts()),
         units=(unit,),
-        expected_owned_paths=("app.py",),
     )
 
 

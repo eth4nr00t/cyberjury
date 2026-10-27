@@ -1,9 +1,7 @@
 """Source fences remain intact, and every target sends one user message envelope."""
 
-import pytest
-
 from cyberjury.review.context import EvidencePromptContext, GroundingContext, SourceEvidence, SourceSpan
-from cyberjury.review.prompts import PromptPlan, fenced_source, inline_source, one_line_source
+from cyberjury.review.prompts import fenced_source, inline_source, one_line_source
 
 
 def test_fenced_source_preserves_the_common_prompt_shape():
@@ -59,9 +57,3 @@ def test_delivered_exchanges_are_the_cache_segments_that_lead_the_follow_up():
     assert plan.cache_segments == ("FIRST\n\n", "SECOND\n\n")
     assert plan.text == "SEED\n\nFIRST\n\nSECOND\n\nBUDGET"
     assert EvidencePromptContext(source="SEED", delivered=("ONLY",)).plan.cache_segments == ()
-
-
-def test_prompt_plan_rejects_segments_that_do_not_lead_the_suffix():
-    """Segments that are not the start of the dynamic suffix raise ValueError."""
-    with pytest.raises(ValueError, match="lead the dynamic suffix"):
-        PromptPlan(stable_prefix="SEED", dynamic_suffix="BUDGET", cache_segments=("FIRST",))

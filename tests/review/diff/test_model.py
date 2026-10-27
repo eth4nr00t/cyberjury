@@ -35,7 +35,7 @@ def test_split_diff_empty_and_unbounded():
 
 def test_pack_diff_chunks_empty_is_no_batches():
     """An empty diff packs into an empty batch list."""
-    assert pack_diff_chunks("") == []
+    assert pack_diff_chunks("", max_chars=100) == []
 
 
 def test_pack_diff_chunks_greedily_combines_files():

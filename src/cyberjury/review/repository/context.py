@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 from cyberjury.review.context import (
     GroundingContext,
@@ -12,7 +13,6 @@ from cyberjury.review.context import (
     syntax_hints,
     with_scoped_fact_limitations,
 )
-from cyberjury.review.paths import safe_repository_path
 from cyberjury.review.prepare import SharedGrounding
 from cyberjury.review.prompts import fenced_source
 from cyberjury.review.repository.model import RepositoryUnit
@@ -23,28 +23,11 @@ _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 _EXECUTION = DEFAULT_REVIEW_SETTINGS.execution
 
 
-class UnitSourceError(RuntimeError):
-    """A unit source file could not be read, so the unit review must fail loud."""
-
-
-def _read_unit_text(unit: RepositoryUnit, rel: str) -> str:
-    path = safe_repository_path(unit.root, rel)
-    if path is None:
-        raise UnitSourceError(f"unit {unit.name} references unsafe source path {rel!r}")
-    try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise UnitSourceError(f"unit {unit.name} could not read source file {rel}: {exc}") from exc
-
-
 def gather_context(unit: RepositoryUnit) -> GroundingContext:
-    """Number the unit's source file, or its planned span, at its original line numbers."""
+    """Number the unit's planned span of its source file at its original line numbers."""
     rel = unit.file
-    text = _read_unit_text(unit, rel)
-    start, end = unit.span or (0, len(text))
-    if end > len(text):
-        raise UnitSourceError(f"unit {unit.name} span exceeds source file {rel}")
-    numbered, span = numbered_source_range(rel, text, start, end)
+    text = (Path(unit.root) / rel).read_text(encoding="utf-8")
+    numbered, span = numbered_source_range(rel, text, *unit.span)
     return GroundingContext(
         text="",
         seed=f"Code under review, cited as `seed`:\n{fenced_source(numbered)}",

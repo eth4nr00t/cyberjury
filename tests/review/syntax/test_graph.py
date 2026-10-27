@@ -47,7 +47,6 @@ def test_relationship_evidence_preserves_calls_but_does_not_assign_targets(tmp_p
     evidence = syntax_facts(tmp_path).relationships.to_dict()
 
     assert [item["expression"] for item in evidence["callsites"]] == ["load(x)", "load(x + 1)"]
-    assert all(item["candidate_target_ids"] == [] for item in evidence["observations"] if item["kind"] == "syntax_call")
     load = next(item for item in evidence["definitions"] if item["name"] == "load")
     relationships = syntax_facts(tmp_path).relationships.call_relationships
     assert all(item.target_status == "candidate" for item in relationships)

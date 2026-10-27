@@ -91,7 +91,6 @@ def write_attempt(benchmark_project):
                     "title": f"Claim {identity}",
                     "category": "missing-authorization",
                     "candidate_id": identity,
-                    "supporting_reviewers": ["seat-a"],
                 }
                 for identity in candidates
             ],

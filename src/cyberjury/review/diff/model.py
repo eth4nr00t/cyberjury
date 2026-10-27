@@ -15,10 +15,8 @@ from cyberjury.review.context import GroundingContext
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.detection import Detection, load_detection
 from cyberjury.review.result import SkippedFile
-from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.unit_plans import UnitPlanRecord, UnitSourceSlice
 
-_SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
 _QUOTED_GIT_HEADER_RE = re.compile(r'^diff --git "(?:\\.|[^"])*" ("(?:\\.|[^"])*")$')
 
 type ChangedLineRanges = dict[str, tuple[tuple[int, int], ...]]
@@ -63,7 +61,7 @@ class HunkLine:
 
 @dataclass(frozen=True, kw_only=True)
 class ParsedHunk:
-    """One hunk whose lines share a single validated counter progression."""
+    """One hunk and its parsed lines with both side counters."""
 
     old_start: int
     new_start: int
@@ -91,8 +89,6 @@ def _parsed_hunks(chunk: str) -> tuple[ParsedHunk, ...]:
     old_start = new_start = old_line = new_line = 0
     for raw in split_lines(chunk):
         header = HUNK_HEADER.match(raw)
-        if raw.startswith("@@") and header is None:
-            raise ValueError("diff review contains a malformed unified diff hunk header")
         if header:
             if lines is not None:
                 hunks.append(ParsedHunk(old_start=old_start, new_start=new_start, lines=tuple(lines)))
@@ -112,8 +108,6 @@ def _parsed_hunks(chunk: str) -> tuple[ParsedHunk, ...]:
             lines.append(HunkLine(kind="context", text=raw[1:], old_line=old_line, new_line=new_line))
             old_line += 1
             new_line += 1
-        elif not raw.startswith("\\"):
-            raise ValueError("diff review contains a malformed unified diff hunk body")
     if lines is not None:
         hunks.append(ParsedHunk(old_start=old_start, new_start=new_start, lines=tuple(lines)))
     return tuple(hunks)
@@ -194,11 +188,6 @@ def diff_paths(diff: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(path for chunk in split_diff_by_file(diff) if (path := chunk_path(chunk))))
 
 
-def has_diff_hunk(diff: str) -> bool:
-    """Return whether nonempty input contains a reportable unified diff hunk."""
-    return any(_parsed_hunks(chunk) for chunk in split_diff_by_file(diff))
-
-
 def _is_submodule_chunk(chunk: str) -> bool:
     for line in split_lines(chunk):
         if line.startswith("@@"):
@@ -245,10 +234,8 @@ def strip_unreviewable_files(diff: str, detection: Detection) -> tuple[str, tupl
     return "".join(kept), tuple(skipped)
 
 
-def pack_diff_chunks(diff: str, max_chars: int = _SETTINGS.target_patch_chars_per_unit) -> list[str]:
+def pack_diff_chunks(diff: str, max_chars: int) -> list[str]:
     """Pack file and hunk chunks in source order under a soft line boundary."""
-    if max_chars < 1:
-        raise ValueError("diff unit size must be positive")
     chunks = [part for chunk in split_diff_by_file(diff) for part in _split_oversized_file_chunk(chunk, max_chars)]
     batches: list[str] = []
     current: list[str] = []

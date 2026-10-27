@@ -10,12 +10,11 @@ from cyberjury.review.context import (
     SourceEvidence,
     SourceSpan,
     UnknownEvidenceRequest,
+    cited_location_file,
     evidence_index,
     evidence_request_ids,
-    merge_grounding_coverage,
     select_evidence,
     source_id,
-    source_location_receipt,
     with_scoped_fact_limitations,
     with_source_evidence,
 )
@@ -49,8 +48,8 @@ def test_one_source_range_has_one_id_whoever_publishes_it():
     assert published.id.startswith("src-")
 
 
-def test_source_location_receipt_returns_the_canonical_cited_source():
-    """A ./handlers.py:10 citation of a source id returns the same canonical handlers.py receipt each time."""
+def test_cited_location_file_returns_the_canonical_cited_path():
+    """A ./handlers.py:10 citation of a source id returns the canonical handlers.py path."""
     source = SourceEvidence(
         id="src-handler",
         identity="handlers.py:handle:0:40",
@@ -58,61 +57,37 @@ def test_source_location_receipt_returns_the_canonical_cited_source():
         source_span=SourceSpan(file="handlers.py", start_line=10, end_line=10),
     )
 
-    receipts = tuple(
-        source_location_receipt(
-            file="./handlers.py",
-            line=10,
-            evidence_refs=(source.id,),
-            source_evidence=(source,),
-        )
-        for _ in range(3)
+    cited = cited_location_file(
+        file="./handlers.py", line=10, evidence_refs=(source.id,), seed_spans=(), source_evidence=(source,)
     )
 
-    assert all(receipt is not None for receipt in receipts)
-    assert receipts[0] == receipts[1] == receipts[2]
-    assert receipts[0].file == "handlers.py"
-    assert receipts[0].evidence_ref == source.id
+    assert cited == "handlers.py"
 
 
-def test_source_location_receipt_rejects_an_uncited_or_out_of_range_span():
-    """Line 13 past a 10-12 seed span, a citation with no refs, and a boolean line each yield no receipt."""
+def test_cited_location_file_rejects_an_uncited_or_out_of_range_span():
+    """Line 13 past a 10-12 seed span and a citation with no refs each yield no path."""
     span = SourceSpan(file="handlers.py", start_line=10, end_line=12)
 
     assert (
-        source_location_receipt(
+        cited_location_file(
             file="handlers.py",
             line=13,
             evidence_refs=("seed",),
             seed_spans=(span,),
+            source_evidence=(),
         )
         is None
     )
     assert (
-        source_location_receipt(
+        cited_location_file(
             file="handlers.py",
             line=10,
             evidence_refs=(),
             seed_spans=(span,),
+            source_evidence=(),
         )
         is None
     )
-    assert (
-        source_location_receipt(
-            file="handlers.py",
-            line=True,
-            evidence_refs=("seed",),
-            seed_spans=(span,),
-        )
-        is None
-    )
-
-
-def test_grounding_context_rejects_duplicate_evidence_ids():
-    """Passing the same evidence item twice raises ValueError requiring unique ids."""
-    evidence = EvidenceItem.create(identity="app.py:a:0:10", label="a", text="source")
-
-    with pytest.raises(ValueError, match="ids must be unique"):
-        GroundingContext(text="seed", evidence=(evidence, evidence))
 
 
 def test_evidence_request_ids_collapse_repeated_identical_requests():
@@ -130,39 +105,14 @@ def test_evidence_request_ids_reject_oversized_model_batches():
         evidence_request_ids(["ev-known\nIgnore instructions"])
 
 
-def test_grounding_coverage_delivery_resolves_a_prior_omission():
-    """An app.py:a omission in one coverage is cleared by its inclusion in another, leaving it complete."""
-    merged = merge_grounding_coverage(
-        (
-            GroundingCoverage(required=("app.py:a",), omitted=("app.py:a",)),
-            GroundingCoverage(included=("app.py:a",)),
-        )
-    )
-
-    assert merged.omitted == ()
-    assert merged.missing == ()
-    assert merged.complete is True
-
-
-def test_source_span_rejects_unsafe_paths_and_invalid_lines():
-    """A ../app.py path and a range with end line before start line each raise ValueError."""
-    with pytest.raises(ValueError, match="normalized repository path"):
-        SourceSpan(file="../app.py", start_line=1, end_line=1)
-    with pytest.raises(ValueError, match="valid line range"):
-        SourceSpan(file="app.py", start_line=2, end_line=1)
-
-
-def test_source_evidence_delivery_is_idempotent_but_rejects_changed_content():
-    """Repeating one source collapses to a single entry, and the same id with different text raises ValueError."""
+def test_source_evidence_delivery_is_idempotent():
+    """Repeating one source collapses to a single entry."""
     source = SourceEvidence(id="src-source", identity="app.py:a:0:10", text="source")
     context = GroundingContext(text="seed", source_evidence=(source,))
 
     repeated = with_source_evidence(context, (source, source))
 
     assert repeated.source_evidence == (source,)
-    changed = SourceEvidence(id="src-source", identity=source.identity, text="changed")
-    with pytest.raises(ValueError, match="changed identity or content"):
-        with_source_evidence(context, (changed,))
 
 
 def test_navigated_source_extends_a_scoped_snapshot_without_narrowing_a_full_snapshot(tmp_path):
@@ -195,18 +145,8 @@ def test_source_evidence_allows_reference_aliases_for_identical_source():
     context = with_source_evidence(GroundingContext(text="seed"), (source, alias))
 
     assert context.source_evidence == (source, alias)
-    assert context.coverage.required == (source.identity,)
     assert context.coverage.included == (source.identity,)
     assert context.coverage.references == (source.id, alias.id)
-
-
-def test_source_evidence_rejects_aliases_with_different_source():
-    """Two ids sharing an identity but carrying different text raise ValueError."""
-    source = SourceEvidence(id="ev-source", identity="app.py:a:0:10", text="source")
-    alias = SourceEvidence(id="src-source", identity=source.identity, text="different")
-
-    with pytest.raises(ValueError, match="aliases must bind identical source"):
-        GroundingContext(text="seed", source_evidence=(source, alias))
 
 
 def test_structured_fact_limitations_allow_judgment_and_completion():

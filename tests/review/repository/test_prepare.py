@@ -1,8 +1,9 @@
 """The repository prepare stage plans and grounds units without running model review."""
 
 from cyberjury.review.repository.prepare import prepare_repository_review
-from cyberjury.review.result import SkippedFile
+from cyberjury.review.result import SkippedFile, SkippedFiles
 from cyberjury.sources.snapshot import capture_source_snapshot
+from tests.review.support import bound_artifacts, recorder
 
 APP = """
 from flask import Flask
@@ -20,7 +21,7 @@ def delete_user(uid):
 
 def prepare_target(target):
     """Prepare a Repository Review of the target's current source."""
-    return prepare_repository_review(capture_source_snapshot(target))
+    return prepare_repository_review(capture_source_snapshot(target), recorder=recorder())
 
 
 def _target(tmp_path):
@@ -47,14 +48,13 @@ def _go_lib(tmp_path):
 
 
 def test_prepare_reviews_library_source_without_export_rules(tmp_path):
-    """A Go library with only matcher.go plans matcher.go as its single owned path and unit."""
+    """A Go library with only matcher.go plans matcher.go as its single unit."""
     res = prepare_target(_go_lib(tmp_path))
-    assert res.unit_plan.expected_owned_paths == ("matcher.go",)
     assert [unit.name for unit in res.units] == ["matcher.go"]
 
 
 def test_prepare_plans_a_django_url_module_for_review(tmp_path):
-    """A Django project with manage.py and app/urls.py lists app/urls.py among owned paths."""
+    """A Django project with manage.py and app/urls.py plans a unit for app/urls.py."""
     d = tmp_path / "dj"
     d.mkdir()
     (d / "manage.py").write_text("import django\n")
@@ -62,11 +62,11 @@ def test_prepare_plans_a_django_url_module_for_review(tmp_path):
     (d / "app" / "urls.py").write_text("from django.urls import path\nurlpatterns = []\n")
     (d / "requirements.txt").write_text("Django==4.2\n")
     res = prepare_target(d)
-    assert "app/urls.py" in res.unit_plan.expected_owned_paths
+    assert "app/urls.py" in [unit.file for unit in res.units]
 
 
 def test_prepare_assigns_downstream_logic_to_review_units(tmp_path):
-    """The file app/managers/auth_manager.py gets its own unit while files under app/tests are never owned."""
+    """The file app/managers/auth_manager.py gets its own unit while files under app/tests get none."""
     d = tmp_path / "dj"
     (d / "app" / "managers").mkdir(parents=True)
     (d / "app" / "tests").mkdir()
@@ -76,9 +76,8 @@ def test_prepare_assigns_downstream_logic_to_review_units(tmp_path):
     (d / "app" / "tests" / "test_managers.py").write_text("def test_x():\n    pass\n")
     (d / "requirements.txt").write_text("Django==4.2\n")
     res = prepare_target(d)
-    assert "app/managers/auth_manager.py" in res.unit_plan.expected_owned_paths
-    assert not any("test" in t for t in res.unit_plan.expected_owned_paths)
-    assert any(unit.file == "app/managers/auth_manager.py" for unit in res.units)
+    assert "app/managers/auth_manager.py" in [unit.file for unit in res.units]
+    assert not any("test" in unit.file for unit in res.units)
 
 
 def test_prepare_records_binary_undecodable_and_empty_files_as_skipped(tmp_path):
@@ -89,11 +88,13 @@ def test_prepare_records_binary_undecodable_and_empty_files_as_skipped(tmp_path)
     (target / "legacy.py").write_bytes("name = 'caf\xe9'\n".encode("latin-1"))
     (target / "empty.py").write_text("")
 
-    res = prepare_target(target)
+    stages = recorder()
+    artifacts = bound_artifacts(stages)
+
+    res = prepare_repository_review(capture_source_snapshot(target), recorder=stages)
 
     assert [unit.file for unit in res.units] == ["app.py"]
-    assert res.unit_plan.expected_owned_paths == ("app.py",)
-    assert res.skipped_files == (
+    assert artifacts[SkippedFiles].files == (
         SkippedFile(path="banner.png", reason="binary"),
         SkippedFile(path="empty.py", reason="empty_file"),
         SkippedFile(path="legacy.py", reason="not_utf8"),
@@ -101,10 +102,9 @@ def test_prepare_records_binary_undecodable_and_empty_files_as_skipped(tmp_path)
 
 
 def test_a_repository_without_source_prepares_no_units(tmp_path):
-    """A directory holding only notes.md prepares with no owned paths and no units."""
+    """A directory holding only notes.md prepares no units."""
     d = tmp_path / "plain"
     d.mkdir()
     (d / "notes.md").write_text("hi")
     res = prepare_target(d)
-    assert res.unit_plan.expected_owned_paths == ()
     assert res.units == ()

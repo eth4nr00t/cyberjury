@@ -1,4 +1,4 @@
-"""Shared review unit failure records for diff and repository paths."""
+"""Review failure types and their recorded reasons."""
 
 from __future__ import annotations
 

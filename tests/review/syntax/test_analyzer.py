@@ -1,25 +1,18 @@
 """Syntax analysis preserves source ranges, lexical owners, and parsed call identities."""
 
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 from tree_sitter import Language, Query
 
-from cyberjury.review.detection import load_detection
-from cyberjury.review.failures import BackendUnavailable
-from cyberjury.review.prepare import extract_facts
-from cyberjury.review.selection import FileSelection
 from cyberjury.review.syntax import analyzer as analyzer_module
 from cyberjury.review.syntax.analyzer import (
-    MAX_SOURCE_BYTES,
     AnalyzerConfigurationError,
     analyze_repository,
     grammar_for,
     load_specs,
     spec_for,
 )
-from cyberjury.sources.snapshot import capture_source_snapshot
 from tests.review.syntax.support import callgraph, syntax_facts, write_call_chain
 
 
@@ -349,29 +342,23 @@ def test_a_method_call_resolves_to_the_bare_callee_name(tmp_path):
 
 
 def test_an_untyped_member_call_remains_unresolved_syntax(tmp_path):
-    """A client.get() call with two classes defining get records "get" but no candidate target ids."""
+    """A client.get() call with two classes defining get records the bare callee "get"."""
     (tmp_path / "views.py").write_text(
         "class A:\n    def get(self):\n        return 1\n\n"
         "class B:\n    def get(self):\n        return 2\n\n"
         "def view(client):\n    return client.get()\n"
     )
 
-    observations = syntax_facts(tmp_path).relationships.to_dict()["observations"]
-
     assert callgraph(tmp_path)["views.py"]["view"][0]["calls"] == ["get"]
-    assert all(item["candidate_target_ids"] == [] for item in observations)
 
 
 def test_a_local_receiver_call_remains_a_syntax_observation(tmp_path):
-    """A self.inner() call records the callee "inner" without resolving it to Service.inner."""
+    """A self.inner() call records the bare callee "inner"."""
     (tmp_path / "service.py").write_text(
         "class Service:\n    def outer(self):\n        return self.inner()\n\n    def inner(self):\n        return 1\n"
     )
 
-    facts = syntax_facts(tmp_path)
-
     assert callgraph(tmp_path)["service.py"]["outer"][0]["calls"] == ["inner"]
-    assert all(item["candidate_target_ids"] == [] for item in facts.relationships.to_dict()["observations"])
 
 
 def test_python_recursion_is_preserved_as_an_unresolved_call_clue(tmp_path):
@@ -453,41 +440,6 @@ def test_references_inside_a_decorated_definition_keep_their_owner(tmp_path):
     )
 
     assert owners == ["handler", "plain"]
-
-
-def test_the_analyzer_refuses_a_file_that_grew_past_the_parse_cap(tmp_path):
-    """A huge.py handed to the analyzer beyond MAX_SOURCE_BYTES is an "over the parse cap" limitation."""
-    specs = load_specs()
-    inputs = []
-    for name, source in (
-        ("huge.py", "def f():\n    return 1\n" + "PAD = 1\n" * (MAX_SOURCE_BYTES // 8)),
-        ("small.py", "def g():\n    return 1\n"),
-    ):
-        (tmp_path / name).write_text(source)
-        inputs.append((tmp_path / name, name, specs["python"]))
-
-    analyzed = analyze_repository(inputs)
-
-    assert {definition.file for definition in analyzed.definitions} == {"small.py"}
-    assert [(item.source, item.reason) for item in analyzed.limitations] == [("huge.py", "over the parse cap")]
-
-
-def test_an_unreadable_source_fails_facts_extraction(monkeypatch, tmp_path):
-    """An OSError opening a snapshot file raises BackendUnavailable "cannot read source unreadable.py"."""
-    source = tmp_path / "unreadable.py"
-    source.write_text("def value():\n    return 1\n")
-    snapshot = capture_source_snapshot(tmp_path)
-    open_path = Path.open
-
-    def fail_selected_path(path, *args, **kwargs):
-        if path == source and args and args[0] == "rb":
-            raise OSError("permission denied")
-        return open_path(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", fail_selected_path)
-
-    with pytest.raises(BackendUnavailable, match=r"cannot read source unreadable\.py"):
-        extract_facts(snapshot, FileSelection(review_files=(), navigation_files=(), skipped_files=()), load_detection())
 
 
 def test_a_syntactically_broken_file_preserves_other_facts(tmp_path):

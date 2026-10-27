@@ -20,14 +20,12 @@ class AnthropicProvider(Provider):
     def __init__(
         self,
         *,
-        api_key: str | None = None,
         api_base: str | None = None,
         client: Any | None = None,
         temperature: float | None = 0.0,
         timeout: float = REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         """Store Anthropic connection settings without constructing the client eagerly."""
-        self._api_key = api_key
         self._api_base = api_base
         self._client = client
         self._temperature = temperature
@@ -35,15 +33,9 @@ class AnthropicProvider(Provider):
 
     def _get_client(self) -> Any:
         if self._client is None:
-            try:
-                import anthropic
-            except ImportError as exc:
-                raise RuntimeError(
-                    "anthropic not installed, it is a base dependency, run: pip install cyberjury"
-                ) from exc
+            import anthropic
+
             kwargs: dict[str, Any] = {"max_retries": 0}
-            if self._api_key:
-                kwargs["api_key"] = self._api_key
             if self._api_base:
                 kwargs["base_url"] = self._api_base
             self._client = anthropic.Anthropic(**kwargs)
@@ -56,33 +48,21 @@ class AnthropicProvider(Provider):
         messages: list[Message],
         model: str,
         max_tokens: int,
-        cache: bool = False,
+        response_schema: ResponseSchema,
         cache_prefix: str = "",
         cache_segments: tuple[str, ...] = (),
-        response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
-        """Return one provider completion with optional usage accounting."""
+        """Send one Messages API request with cached system and prefix blocks, and return its text and usage."""
         api_messages = [{"role": m.role, "content": m.content} for m in messages]
-        system_param: Any = system
-        if cache:
-            _mark_cache_prefix(api_messages, cache_prefix, cache_segments)
-            if system:
-                system_param = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
-
+        _mark_cache_prefix(api_messages, cache_prefix, cache_segments)
         request: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,
             "timeout": self._timeout,
-            "system": system_param,
+            "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             "messages": api_messages,
+            "output_config": {"format": {"type": "json_schema", "schema": response_schema.schema}},
         }
-        if response_schema is not None:
-            request["output_config"] = {
-                "format": {
-                    "type": "json_schema",
-                    "schema": response_schema.schema,
-                }
-            }
         response = self._create(request)
         return CompletionResult(text=_extract_text(response), usage=_extract_usage(response))
 
@@ -100,19 +80,12 @@ class AnthropicProvider(Provider):
 
 
 def _mark_cache_prefix(api_messages: list[dict], cache_prefix: str, cache_segments: tuple[str, ...]) -> None:
-    if not cache_prefix or not api_messages:
+    if not cache_prefix:
         return
-    content = api_messages[0].get("content")
-    if not isinstance(content, str) or not content.startswith(cache_prefix):
-        return
-    segments = [segment for segment in cache_segments if segment]
-    if not content.startswith(cache_prefix + "".join(segments)):
-        segments = []
-    blocks: list[dict] = [{"type": "text", "text": cache_prefix, "cache_control": {"type": "ephemeral"}}]
-    blocks.extend({"type": "text", "text": segment} for segment in segments)
-    if segments:
-        blocks[-1]["cache_control"] = {"type": "ephemeral"}
-    remainder = content[len(cache_prefix) + sum(len(segment) for segment in segments) :]
+    content = api_messages[0]["content"]
+    blocks: list[dict] = [{"type": "text", "text": text} for text in (cache_prefix, *cache_segments)]
+    blocks[0]["cache_control"] = blocks[-1]["cache_control"] = {"type": "ephemeral"}
+    remainder = content[len(cache_prefix) + sum(len(segment) for segment in cache_segments) :]
     if remainder:
         blocks.append({"type": "text", "text": remainder})
     api_messages[0]["content"] = blocks

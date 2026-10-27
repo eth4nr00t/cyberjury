@@ -38,9 +38,6 @@ def facts_from_repository(repository: AnalyzedRepository) -> Facts:
 
 def relationship_evidence(repository: AnalyzedRepository) -> RelationshipEvidenceBundle:
     """Publish exact syntax as clues without assigning relationship targets."""
-    missing = {definition.file for definition in repository.definitions}.difference(repository.sources)
-    if missing:
-        raise ValueError(f"missing analyzed source for: {', '.join(sorted(missing))}")
     definitions = _definition_evidences(repository.definitions, repository.sources)
     analyzed_by_id = {
         evidence.id: analyzed for analyzed, evidence in zip(repository.definitions, definitions, strict=True)
@@ -67,7 +64,6 @@ def relationship_evidence(repository: AnalyzedRepository) -> RelationshipEvidenc
                     producer_version=repository.producer_version,
                     kind="syntax_call",
                     subject_ids=(callsite.id,),
-                    candidate_target_ids=(),
                     provenance_source_ids=(definition.source.id, call_source.id),
                     label=(
                         f"{analyzed_call.receiver}.{analyzed_call.callee}"
@@ -124,7 +120,6 @@ def _declaration_observations(
                 producer_version=repository.producer_version,
                 kind="import_declaration",
                 subject_ids=(callsite.id,),
-                candidate_target_ids=(),
                 provenance_source_ids=(definition.source.id, call_source.id, declaration.id),
                 label=f"{local} from {_module_name(item.module)}",
             )
@@ -142,7 +137,6 @@ def _declaration_observations(
                 producer_version=repository.producer_version,
                 kind="namespace_declaration",
                 subject_ids=(callsite.id,),
-                candidate_target_ids=(),
                 provenance_source_ids=(definition.source.id, call_source.id, declaration.id),
                 label=_namespace_label(item),
             )
@@ -199,14 +193,11 @@ def _structural_relationships(
     for file, values in repository.structural_relationships.items():
         source = repository.sources[file]
         for item in values:
-            owner_id = _owner_id(file, item.owner, by_owner)
-            if not owner_id:
-                raise ValueError(f"structural relationship {file}:{item.start} has no definition owner")
             relationship = StructuralRelationshipEvidence.create(
                 kind=item.kind,
                 source=_source_reference(file, source, item.start, item.end),
                 reference=item.reference,
-                source_definition_id=owner_id,
+                source_definition_id=_owner_id(file, item.owner, by_owner),
                 candidate_target_definition_ids=definitions_by_name.get(item.target_name, ()),
             )
             relationships.setdefault(relationship.id, relationship)

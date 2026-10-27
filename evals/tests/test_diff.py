@@ -10,15 +10,20 @@ from types import SimpleNamespace
 import pytest
 
 from cyberjury.providers import configuration as configuration_module
-from cyberjury.providers.mock import MockProvider
 from cyberjury.record import Record
 from cyberjury.review import command as commandmod
 from evals import diff
 from evals.benchmarks.contract import ChangeAnchor
+from tests.support import MockProvider
 
 
 def _finder_reply(findings: list[dict]) -> str:
     return json.dumps({"findings": findings, "evidence_requests": [], "source_queries": []})
+
+
+def _run(cases, workspace, **values):
+    options = {"runs": 1, "concurrency": 8, "progress": lambda _line: None, "on_attempt": lambda _record: None}
+    return diff.run(cases, workspace=workspace, **(options | values))
 
 
 @pytest.fixture
@@ -69,7 +74,7 @@ def test_run_reviews_the_pinned_range_through_the_product_command(
     provider = scripted_model([owner_finding.reply])
     monkeypatch.setenv("CYBERJURY_MODEL", "override")
 
-    (record,) = diff.run([case], workspace=tmp_path / "reviews")
+    (record,) = _run([case], tmp_path / "reviews")
 
     assert (record["case"], record["attempt"], record["complete"], record["error"]) == (case.name, 1, True, "")
     [finding] = record["findings"]
@@ -93,7 +98,7 @@ def test_run_forwards_its_concurrency_to_the_review(tmp_path, case, scripted_mod
     """Running with concurrency=3 records a review request with review concurrency 3."""
     scripted_model()
 
-    diff.run([case], workspace=tmp_path / "reviews", concurrency=3)
+    _run([case], tmp_path / "reviews", concurrency=3)
 
     [attempt] = (tmp_path / "reviews").glob("demo/*/run-01/reviews/*/attempts/*")
     assert json.loads((attempt / "request.json").read_text())["concurrency"]["review"] == 3
@@ -104,7 +109,7 @@ def test_run_reports_each_case_start_and_finish(tmp_path, case, scripted_model, 
     scripted_model([owner_finding.reply])
     events = []
 
-    diff.run([case], workspace=tmp_path / "reviews", progress=events.append)
+    _run([case], tmp_path / "reviews", progress=events.append)
 
     assert events[0] == f"[1/1] {case.name} started"
     assert events[-1].startswith(f"[1/1] {case.name} finished in ")
@@ -116,7 +121,7 @@ def test_run_records_a_failed_review_with_its_reason(tmp_path, case, scripted_mo
     scripted_model(error=RuntimeError("backend stalled"))
     events = []
 
-    failed, again = diff.run([case], workspace=tmp_path / "reviews", runs=2, progress=events.append)
+    failed, again = _run([case], tmp_path / "reviews", runs=2, progress=events.append)
 
     assert (failed["attempt"], failed["complete"], again["attempt"]) == (1, False, 2)
     assert "backend stalled" in failed["error"]
@@ -130,17 +135,8 @@ def test_run_validates_change_anchors_before_any_model_call(tmp_path, case, scri
     check = replace(case.checks[0], change_anchors=(ChangeAnchor(file="views.py", line=9, side="new"),))
 
     with pytest.raises(ValueError, match="change anchor"):
-        diff.run([replace(case, checks=(check,))], workspace=tmp_path / "reviews")
+        _run([replace(case, checks=(check,))], tmp_path / "reviews")
     assert provider.calls == []
-
-
-def test_run_never_reuses_a_review_workspace(tmp_path, case, scripted_model):
-    """A pre-existing case workspace directory makes the run raise workspace already exists."""
-    scripted_model()
-    diff.case_workspace(tmp_path / "reviews", case, 1).mkdir(parents=True)
-
-    with pytest.raises(ValueError, match="workspace already exists"):
-        diff.run([case], workspace=tmp_path / "reviews")
 
 
 def test_run_aborts_on_missing_provider_credentials(tmp_path, case, scripted_model, monkeypatch):
@@ -150,7 +146,7 @@ def test_run_aborts_on_missing_provider_credentials(tmp_path, case, scripted_mod
     records = []
 
     with pytest.raises(SystemExit):
-        diff.run([case], workspace=tmp_path / "reviews", on_attempt=records.append)
+        _run([case], tmp_path / "reviews", on_attempt=records.append)
     assert records == []
 
 
@@ -168,11 +164,5 @@ def test_an_interrupted_review_stops_the_run(tmp_path, case, scripted_model, mon
     records = []
 
     with pytest.raises(KeyboardInterrupt):
-        diff.run([case], workspace=tmp_path / "reviews", on_attempt=records.append)
+        _run([case], tmp_path / "reviews", on_attempt=records.append)
     assert records == []
-
-
-def test_run_rejects_nonpositive_runs(tmp_path, case):
-    """Zero runs raise ValueError stating that runs must be at least 1."""
-    with pytest.raises(ValueError, match="runs must be at least 1"):
-        diff.run([case], workspace=tmp_path / "reviews", runs=0)

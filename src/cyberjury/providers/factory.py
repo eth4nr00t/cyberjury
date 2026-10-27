@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from cyberjury.providers.anthropic import AnthropicProvider
-from cyberjury.providers.base import REQUEST_TIMEOUT_SECONDS, Provider
+from cyberjury.providers.base import Provider
 from cyberjury.providers.openai import OpenAIProvider
 from cyberjury.providers.retry import RetryProvider
 
@@ -15,20 +15,12 @@ def default_model_for_provider(provider: str) -> str:
     return "gpt-5.6" if provider == "openai" else "claude-opus-5"
 
 
-def make_provider(
-    name: str,
-    *,
-    api_base: str | None = None,
-    retries: int = 0,
-    timeout: float = REQUEST_TIMEOUT_SECONDS,
-) -> Provider:
-    """Build the named provider and wrap it with retries when requested."""
+def make_provider(name: str, *, api_base: str | None, retries: int, timeout: float) -> Provider:
+    """Build the named provider and wrap it with retries."""
     if name == "openai":
         provider: Provider = OpenAIProvider(api_base=api_base, timeout=timeout)
     elif name == "anthropic":
         provider = AnthropicProvider(api_base=api_base, timeout=timeout)
     else:
         raise ValueError(f"unknown provider: {name}")
-    if retries > 0:
-        provider = RetryProvider(provider, max_attempts=retries + 1, hard_timeout=timeout)
-    return provider
+    return RetryProvider(provider, max_attempts=retries + 1, hard_timeout=timeout)

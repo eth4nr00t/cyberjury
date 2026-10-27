@@ -1,4 +1,4 @@
-"""CLI tests cover argument handling, the slash command installer, and the exit code of each review outcome."""
+"""CLI tests cover argument handling and the exit code of each review outcome."""
 
 from __future__ import annotations
 
@@ -12,41 +12,6 @@ from cyberjury.record import Record, RecordError
 from cyberjury.review.command import ReviewCommand
 from cyberjury.review.request import TargetInput
 from cyberjury.workspace import new_attempt_id
-
-
-def test_install_slash_command_writes_the_file(tmp_path):
-    """Writing to --dir creates cyberjury-review.md naming both review commands and their target flags."""
-    rc = main(["install-slash-command", "--dir", str(tmp_path)])
-    assert rc == 0
-    f = tmp_path / "cyberjury-review.md"
-    text = f.read_text()
-    assert f.is_file()
-    assert "cyberjury review repository" in text
-    assert "cyberjury review diff" in text
-    assert "--repository <path>" in text
-    assert "--git-range <range>" in text
-
-
-def test_install_slash_command_refuses_to_clobber_without_force(tmp_path, capsys):
-    """An existing cyberjury-review.md is kept with an 'already exists' error unless --force overwrites it."""
-    target = tmp_path / "cyberjury-review.md"
-    target.write_text("my own prompt")
-    assert main(["install-slash-command", "--dir", str(tmp_path)]) == 1
-    assert target.read_text() == "my own prompt"
-    assert "already exists" in capsys.readouterr().err
-    assert main(["install-slash-command", "--dir", str(tmp_path), "--force"]) == 0
-    assert "cyberjury review repository" in target.read_text()
-
-
-def test_install_slash_command_writes_both_agent_dirs(monkeypatch, tmp_path):
-    """Without --dir the identical command file lands in ~/.claude/commands and ~/.codex/prompts."""
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-    assert main(["install-slash-command"]) == 0
-    claude = tmp_path / ".claude" / "commands" / "cyberjury-review.md"
-    codex = tmp_path / ".codex" / "prompts" / "cyberjury-review.md"
-    assert claude.is_file()
-    assert codex.is_file()
-    assert claude.read_text() == codex.read_text()
 
 
 def test_default_workspace_is_user_private(monkeypatch, tmp_path):
@@ -75,7 +40,7 @@ def test_abbreviated_live_flag_is_rejected(tmp_path):
 def test_diff_rejects_invalid_cli_values(flag, capsys):
     """A --concurrency of 0 or 'two' exits with usage code 2 and names the flag on stderr."""
     with pytest.raises(SystemExit) as exc:
-        main(["review", "diff", "--repository", "repo", "--git-range", "base..HEAD", "--dry-run", *flag])
+        main(["review", "diff", "--repository", "repo", "--git-range", "base..HEAD", *flag])
     assert exc.value.code == 2
     assert flag[0] in capsys.readouterr().err
 
@@ -92,22 +57,18 @@ def test_review_arguments_become_one_review_command(monkeypatch, tmp_path):
     workspace = str(tmp_path / "state")
 
     main(["review", "diff", "--repository", str(tmp_path), "--git-range", "a..b", "--workspace", workspace])
-    main(
-        ["review", "repository", str(tmp_path), "--workspace", workspace, "--dry-run", "--fresh", "--concurrency", "3"]
-    )
+    main(["review", "repository", str(tmp_path), "--workspace", workspace, "--fresh", "--concurrency", "3"])
 
     assert seen == [
         ReviewCommand(
             target=TargetInput(kind="diff", repository=str(tmp_path.resolve()), git_range="a..b"),
             workspace=workspace,
-            dry_run=False,
             fresh=None,
             concurrency=None,
         ),
         ReviewCommand(
             target=TargetInput(kind="repository", repository=str(tmp_path.resolve())),
             workspace=workspace,
-            dry_run=True,
             fresh=True,
             concurrency=3,
         ),

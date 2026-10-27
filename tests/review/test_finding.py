@@ -20,21 +20,16 @@ _FINDING = Finding(
     source_operation_id="call-account-export",
     cited_spans=(SourceSpan(file="app/v.py", start_line=1, end_line=20),),
     evidence_refs=("seed", "src-control"),
-    found_by=("finder",),
 )
 
 
-def test_stored_form_preserves_identity_provenance_and_anchor():
-    """A to_dict/from_dict round trip keeps candidate id, operation id, evidence refs, found_by, and spans."""
+def test_stored_form_preserves_identity_evidence_and_anchor():
+    """A to_dict/from_dict round trip keeps candidate id, operation id, evidence refs, and spans."""
     restored = Finding.from_dict(_FINDING.to_dict())
 
     assert restored == _FINDING
     assert restored.candidate_id == _FINDING.candidate_id
-    assert (restored.source_operation_id, restored.evidence_refs, restored.found_by) == (
-        "call-account-export",
-        ("seed", "src-control"),
-        ("finder",),
-    )
+    assert (restored.source_operation_id, restored.evidence_refs) == ("call-account-export", ("seed", "src-control"))
     assert restored.cited_spans == _FINDING.cited_spans
 
 
@@ -49,7 +44,6 @@ def test_cited_spans_never_change_the_candidate_identity():
     ("field", "value"),
     [
         ("evidence_refs", "abc"),
-        ("found_by", [1]),
         ("severity", "SEVERE"),
         ("line", "1"),
         ("line", True),

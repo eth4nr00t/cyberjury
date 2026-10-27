@@ -6,17 +6,17 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
-from cyberjury.providers.mock import MockProvider
 from cyberjury.review.facts import Facts
 from cyberjury.review.finder import UnitFinder
 from cyberjury.review.repository.context import ground_repository_unit
 from cyberjury.review.repository.finder import REPOSITORY_TARGET
 from cyberjury.review.repository.model import RepositoryUnit
 from cyberjury.review.repository.prepare import prepare_repository_review
-from cyberjury.review.run import ReviewRun, run_review
+from cyberjury.review.run import ReviewRun
 from cyberjury.review.seats import ReviewSeats
 from cyberjury.sources.snapshot import capture_source_snapshot
-from tests.review.support import shared_grounding
+from tests.review.support import StubIssueJudge, recorder, run_prepared, shared_grounding
+from tests.support import MockProvider
 
 EMPTY_REPLY = '{"findings": [], "evidence_requests": [], "source_queries": []}'
 
@@ -92,7 +92,7 @@ def ground(units, *, limitations=(), navigator=None) -> list[RepositoryUnit]:
 
 def finder(provider, *, model: str = "mock") -> UnitFinder[RepositoryUnit]:
     """Return the Repository Finder bound to one test provider."""
-    return UnitFinder(REPOSITORY_TARGET, provider=provider, model=model, label=model)
+    return UnitFinder(REPOSITORY_TARGET, provider=provider, model=model)
 
 
 class UnitReviewError(RuntimeError):
@@ -115,22 +115,20 @@ def run_repository_review(
     *,
     provider=None,
     concurrency=1,
-    finder_label="mock",
     issue_judge=None,
-    **values,
+    stages=None,
 ) -> ReviewRun:
     """Prepare and run one resumable repository review."""
-    prepared = prepare_repository_review(capture_source_snapshot(target))
-    return run_review(
+    prepared = prepare_repository_review(capture_source_snapshot(target), recorder=recorder())
+    return run_prepared(
         prepared,
         target=REPOSITORY_TARGET,
         seats=ReviewSeats(
             finder=provider or MockProvider(default=EMPTY_REPLY),
             finder_model="mock",
-            finder_label=finder_label,
-            issue_judge=issue_judge,
+            issue_judge=issue_judge or StubIssueJudge(lambda _pair: False),
         ),
         concurrency=concurrency,
         review=Path(workspace),
-        **values,
+        stages=stages,
     )

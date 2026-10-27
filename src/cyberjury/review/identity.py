@@ -23,26 +23,25 @@ def candidate_identity(
     *,
     target: str,
     file: str,
-    line: int | None,
+    line: int,
     category: str,
     path_anchor: str,
-    anchor: tuple[str, int, str] | None = None,
-    root_cause: str = "",
-    source_operation_id: str = "",
+    anchor: tuple[str, int, str] | None,
+    root_cause: str,
+    source_operation_id: str,
 ) -> str:
     """Identify one candidate from its location, class, anchors, and normalized root cause."""
     normalized_file = file.strip().replace("\\", "/")
     normalized_category = category.strip().lower().replace("_", "-")
     normalized_cause = " ".join(root_cause.lower().split())
     attack_path_id = _attack_path_identity(target=target, path_anchor=path_anchor)
-    location = str(line) if line is not None else ""
     anchor_text = "\x1e".join(map(str, anchor)) if anchor is not None else ""
     material = "\x1f".join(
         (
             "candidate-v1",
             target,
             normalized_file,
-            location,
+            str(line),
             normalized_category,
             normalized_cause,
             attack_path_id,

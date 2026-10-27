@@ -5,14 +5,13 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
-import re
 import shutil
 import stat
 import tempfile
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 
 from cyberjury.canonical import canonical_sha256
 from cyberjury.sources.git import GitSourceError, worktree_files
@@ -24,7 +23,6 @@ from cyberjury.sources.paths import (
 )
 
 SNAPSHOT_SCHEMA = "cyberjury.snapshot/v1"
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MAX_SOURCE_FILE_BYTES = 100_000_000
 _MAX_SNAPSHOT_BYTES = 2_000_000_000
 _READ_CHUNK_BYTES = 1_048_576
@@ -101,7 +99,7 @@ class SourceFileSnapshot:
     """Exact type, mode, and content identity for one source path."""
 
     path: str
-    kind: str
+    kind: Literal["regular", "symlink"]
     executable: bool | None
     size_bytes: int
     content_sha256: str
@@ -194,19 +192,6 @@ class SourceSnapshot:
     snapshot_id: str
     _scope_provider: ScopeProvider | None = field(default=None, repr=False, compare=False)
 
-    def __post_init__(self) -> None:
-        """Require canonical ordering and a content-derived snapshot id."""
-        canonical_root = self.root.resolve()
-        if canonical_root != self.root or not canonical_root.is_dir():
-            raise ValueError("source snapshot root must be one canonical directory")
-        paths = tuple(entry.path for entry in self.entries)
-        if paths != tuple(sorted(paths)) or len(set(paths)) != len(paths):
-            raise ValueError("source snapshot entries must be unique and sorted")
-        if not isinstance(self.snapshot_id, str) or not _SHA256.fullmatch(self.snapshot_id):
-            raise ValueError("source snapshot id is invalid")
-        if self.snapshot_id != _snapshot_id(self.entries):
-            raise ValueError("source snapshot id does not match its manifest")
-
     @classmethod
     def capture(
         cls,
@@ -216,12 +201,7 @@ class SourceSnapshot:
         scope_provider: ScopeProvider | None = None,
     ) -> SourceSnapshot:
         """Capture a canonical manifest without contract or analyzer identity."""
-        raw_root = Path(root)
-        if raw_root.is_symlink():
-            raise SourceSnapshotError("snapshot root cannot be a symlink")
-        canonical_root = raw_root.resolve()
-        if not canonical_root.is_dir():
-            raise SourceSnapshotError(f"snapshot root is not a directory: {canonical_root}")
+        canonical_root = Path(root).resolve()
         entries: list[SourceFileSnapshot] = []
         total_bytes = 0
         for relative in portable_paths(files):
@@ -268,10 +248,10 @@ class SourceSnapshot:
             return False
 
     @contextlib.contextmanager
-    def materialize(self, *, name: str | None = None) -> Iterator[Path]:
+    def materialize(self, *, name: str) -> Iterator[Path]:
         """Write captured bytes to one private source root for deterministic consumers."""
         temporary_root = Path(tempfile.mkdtemp(prefix="review-source-snapshot-")).resolve()
-        source_root = temporary_root / (name or self.root.name or "source")
+        source_root = temporary_root / name
         source_root.mkdir(mode=0o700)
         try:
             for expected in self.entries:
@@ -281,7 +261,6 @@ class SourceSnapshot:
                     entry = _source_file(self.root, expected.path)
                     if entry != expected:
                         raise SourceSnapshotError(f"source changed while materializing: {expected.path}")
-                    assert entry.link_target is not None
                     path.symlink_to(entry.link_target)
                     continue
                 with path.open("xb") as sink:

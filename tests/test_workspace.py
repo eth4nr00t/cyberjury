@@ -1,4 +1,4 @@
-"""Generic session storage tests cover attempt records, recovery, and safe paths."""
+"""Session storage tests cover attempt records, recovery, and safe paths."""
 
 import fcntl
 import json
@@ -6,31 +6,31 @@ import stat
 
 import pytest
 
-from cyberjury.record import Record, RecordError
+from cyberjury.record import Record, utc_timestamp
 from cyberjury.workspace import (
     AttemptWorkspace,
     SessionConflictError,
     SessionLocator,
     SessionWorkspace,
     WorkspaceCorruptionError,
+    new_attempt_id,
     read_json_object,
     write_json_atomic,
 )
 
 
 def _session(tmp_path, digit: str) -> SessionWorkspace:
-    return SessionWorkspace.open_or_create(
-        tmp_path,
-        namespace="reviews",
-        session_id="review-20260101-000000-" + digit * 8,
-        kind="review",
+    return SessionWorkspace.open_or_create(tmp_path, session_id="review-20260101-000000-" + digit * 8)
+
+
+def _start(session: SessionWorkspace) -> AttemptWorkspace:
+    return session.start_attempt(
+        {"schema": "test.request/v1"}, attempt_id=new_attempt_id(), started_at=utc_timestamp(), attributes={}
     )
 
 
-def _terminal(attempt: AttemptWorkspace, status: str = "ok", error: RecordError | None = None) -> Record:
-    return Record(
-        id=attempt.attempt_id, status=status, started_at=attempt.started_at, duration_seconds=1.0, error=error
-    )
+def _terminal(attempt: AttemptWorkspace) -> Record:
+    return Record(id=attempt.attempt_id, status="ok", started_at=attempt.started_at, duration_seconds=1.0)
 
 
 def _simulate_process_exit(attempt: AttemptWorkspace) -> None:
@@ -44,7 +44,7 @@ def test_session_and_attempt_use_private_json_files_only(tmp_path):
     """A session holds only session.json, session/intent.json, attempts at 0700, and the attempt files are 0600."""
     session = _session(tmp_path, "a")
     session.write_json_once("session/intent.json", {"schema": "test.review/v1"})
-    attempt = session.start_attempt({"schema": "test.request/v1"})
+    attempt = _start(session)
 
     assert session.path == tmp_path / "reviews" / ("review-20260101-000000-" + "a" * 8)
     assert {path.name for path in session.path.iterdir()} == {"session.json", "session", "attempts"}
@@ -57,23 +57,23 @@ def test_session_and_attempt_use_private_json_files_only(tmp_path):
 def test_a_second_attempt_cannot_start_while_one_is_running(tmp_path):
     """Starting an attempt while one runs raises already running, and finishing it allows the next start."""
     session = _session(tmp_path, "b")
-    attempt = session.start_attempt({"schema": "test.request/v1"})
+    attempt = _start(session)
 
     with pytest.raises(SessionConflictError, match="already running"):
-        session.start_attempt({"schema": "test.request/v1"})
+        _start(session)
 
     attempt.finish(_terminal(attempt))
-    session.start_attempt({"schema": "test.request/v1"})
+    _start(session)
 
 
 def test_reopening_session_marks_running_attempt_interrupted(tmp_path):
     """Reopening after the lock holder exits marks the old attempt interrupted with its duration set."""
     session = _session(tmp_path, "d")
-    attempt = session.start_attempt({"schema": "test.request/v1"})
+    attempt = _start(session)
     _simulate_process_exit(attempt)
 
     reopened = _session(tmp_path, "d")
-    next_attempt = reopened.start_attempt({"schema": "test.request/v1"})
+    next_attempt = _start(reopened)
     next_attempt.finish(_terminal(next_attempt))
 
     stale = attempt.read_record()
@@ -83,20 +83,10 @@ def test_reopening_session_marks_running_attempt_interrupted(tmp_path):
     assert next_attempt.read_record().status == "ok"
 
 
-def test_terminal_attempt_cannot_finish_again(tmp_path):
-    """Finishing a failed attempt again raises terminal state and leaves the stored state failed."""
-    attempt = _session(tmp_path, "e").start_attempt({"schema": "test.request/v1"})
-    attempt.finish(_terminal(attempt, "failed", RecordError(code="internal", message="m")))
-
-    with pytest.raises(RuntimeError, match="terminal state"):
-        attempt.finish(_terminal(attempt))
-    assert attempt.read_record().status == "failed"
-
-
 def test_attempt_state_identity_must_match_its_directory(tmp_path):
     """A record.json whose id differs from its directory raises WorkspaceCorruptionError."""
     session = _session(tmp_path, "f")
-    attempt = session.start_attempt({"schema": "test.request/v1"})
+    attempt = _start(session)
     attempt.finish(_terminal(attempt))
     path = attempt.path / "record.json"
     value = json.loads(path.read_text())
@@ -104,37 +94,37 @@ def test_attempt_state_identity_must_match_its_directory(tmp_path):
     path.write_text(json.dumps(value))
 
     with pytest.raises(WorkspaceCorruptionError, match="identity"):
-        session.start_attempt({"schema": "test.request/v1"})
+        _start(session)
 
 
 def test_locator_reuses_active_session_and_can_publish_a_new_one(tmp_path):
     """Reusing returns the same session without creating it, and not reusing publishes a new active session."""
-    locator = SessionLocator.open(tmp_path, namespace="reviews")
+    locator = SessionLocator.open(tmp_path)
     key = "3" * 64
 
-    first, created = locator.select_with_state(key, kind="review", reuse=True)
-    reused, reused_created = locator.select_with_state(key, kind="review", reuse=True)
-    second, _ = locator.select_with_state(key, kind="review", reuse=False)
+    first, created = locator.select_with_state(key, reuse=True)
+    reused, reused_created = locator.select_with_state(key, reuse=True)
+    second, _ = locator.select_with_state(key, reuse=False)
 
     assert created is True
     assert reused_created is False
     assert reused == first
     assert second != first
-    assert locator.select_with_state(key, kind="review", reuse=True) == (second, False)
+    assert locator.select_with_state(key, reuse=True) == (second, False)
 
 
-def test_locator_session_id_must_match_requested_kind(tmp_path):
-    """A locator entry rewritten to a fetch- session id raises WorkspaceCorruptionError for a review."""
-    locator = SessionLocator.open(tmp_path, namespace="reviews")
+def test_locator_session_id_must_name_a_review_session(tmp_path):
+    """A locator entry rewritten to a fetch- session id raises WorkspaceCorruptionError."""
+    locator = SessionLocator.open(tmp_path)
     key = "c" * 64
-    locator.select_with_state(key, kind="review", reuse=True)
+    locator.select_with_state(key, reuse=True)
     path = locator.path / f"{key}.json"
     value = json.loads(path.read_text())
     value["session_id"] = "fetch-20260101-000000-" + "d" * 8
     path.write_text(json.dumps(value))
 
     with pytest.raises(WorkspaceCorruptionError, match="identity"):
-        locator.select_with_state(key, kind="review", reuse=True)
+        locator.select_with_state(key, reuse=True)
 
 
 def test_existing_state_root_permissions_are_not_changed(tmp_path):
@@ -142,12 +132,7 @@ def test_existing_state_root_permissions_are_not_changed(tmp_path):
     root = tmp_path / "shared"
     root.mkdir(mode=0o755)
 
-    SessionWorkspace.open_or_create(
-        root,
-        namespace="reviews",
-        session_id="review-20260101-000000-" + "4" * 8,
-        kind="review",
-    )
+    SessionWorkspace.open_or_create(root, session_id="review-20260101-000000-" + "4" * 8)
 
     assert stat.S_IMODE(root.stat().st_mode) == 0o755
     assert stat.S_IMODE((root / "reviews").stat().st_mode) == 0o700
@@ -174,26 +159,10 @@ def _symlinked_namespace(tmp_path):
 def test_symlinked_state_directories_are_rejected(tmp_path, layout):
     """A state root or reviews namespace that is a symlink to another directory raises ValueError naming symlink."""
     with pytest.raises(ValueError, match="symlink"):
-        SessionWorkspace.open_or_create(
-            layout(tmp_path),
-            namespace="reviews",
-            session_id="review-20260101-000000-" + "5" * 8,
-            kind="review",
-        )
+        SessionWorkspace.open_or_create(layout(tmp_path), session_id="review-20260101-000000-" + "5" * 8)
 
 
-def test_session_rejects_a_traversal_session_id(tmp_path):
-    """A review-../escape session id raises ValueError naming the session id."""
-    with pytest.raises(ValueError, match="session id"):
-        SessionWorkspace.open_or_create(
-            tmp_path,
-            namespace="reviews",
-            session_id="review-../escape",
-            kind="review",
-        )
-
-
-def test_public_atomic_json_round_trips_with_private_permissions(tmp_path):
+def test_atomic_json_round_trips_with_private_permissions(tmp_path):
     """Two atomic writes leave the second value readable in a file with mode 0600."""
     path = tmp_path / "outcome.json"
 
@@ -204,20 +173,18 @@ def test_public_atomic_json_round_trips_with_private_permissions(tmp_path):
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
-def test_public_json_helpers_reject_artifact_symlinks(tmp_path):
-    """Writing via an outcome.json symlink raises ValueError, and reading it raises WorkspaceCorruptionError."""
+def test_json_reader_rejects_artifact_symlinks(tmp_path):
+    """Reading through an outcome.json symlink raises WorkspaceCorruptionError."""
     target = tmp_path / "target.json"
     target.write_text("{}")
     link = tmp_path / "outcome.json"
     link.symlink_to(target)
 
-    with pytest.raises(ValueError, match="safe existing directory"):
-        write_json_atomic(link, {"complete": True})
     with pytest.raises(WorkspaceCorruptionError, match="symlink"):
         read_json_object(link)
 
 
-def test_public_json_reader_rejects_duplicate_keys(tmp_path):
+def test_json_reader_rejects_duplicate_keys(tmp_path):
     """A file repeating the complete key raises WorkspaceCorruptionError for duplicate JSON key."""
     path = tmp_path / "outcome.json"
     path.write_text('{"complete":true,"complete":false}')

@@ -10,7 +10,6 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury.review.result import FindingsArtifact
 from cyberjury.sources.snapshot import capture_source_snapshot
 from cyberjury.workspace import read_record
 from evals.benchmarks.cases import BenchmarkCase
@@ -134,7 +133,6 @@ def recorded_attempt(case: BenchmarkCase, directory: Path, number: int, *, error
             "findings": [],
         }
     findings = read_json(findings_path)
-    FindingsArtifact.from_dict(findings)
     _require_case_source(case, directory, str(read_record(directory / "stages" / "source.json").attributes["snapshot"]))
     complete = record.status == "ok"
     return {

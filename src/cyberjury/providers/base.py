@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Literal
@@ -46,17 +45,6 @@ class ResponseSchema:
     name: str
     schema: dict[str, object]
 
-    def __post_init__(self) -> None:
-        """Reject a schema that providers cannot name or apply."""
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", self.name):
-            raise ValueError("response schema name is invalid")
-        if (
-            not isinstance(self.schema, dict)
-            or self.schema.get("type") != "object"
-            or self.schema.get("additionalProperties") is not False
-        ):
-            raise ValueError("response schema root must be a closed object")
-
 
 class Provider(ABC):
     """Common provider interface used by both review paths."""
@@ -69,9 +57,8 @@ class Provider(ABC):
         messages: list[Message],
         model: str,
         max_tokens: int,
-        cache: bool = False,
+        response_schema: ResponseSchema,
         cache_prefix: str = "",
         cache_segments: tuple[str, ...] = (),
-        response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
-        """Return one provider completion with optional usage accounting."""
+        """Return one completion of the messages under the closed response schema."""

@@ -8,6 +8,16 @@ import pytest
 from cyberjury.providers.anthropic import AnthropicProvider, _extract_usage
 from cyberjury.providers.base import Message, ResponseSchema, Usage
 
+_SCHEMA = ResponseSchema(
+    name="review_reply",
+    schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"findings": {"type": "array", "items": {"type": "string"}}},
+        "required": ["findings"],
+    },
+)
+
 
 class _FakeClient:
     def __init__(self):
@@ -22,95 +32,53 @@ class _FakeClient:
         )
 
 
-def _provider():
+def _sent(content: str, **values) -> dict:
     client = _FakeClient()
-    return AnthropicProvider(client=client), client
-
-
-def test_maps_messages_and_joins_text_blocks():
-    """Text blocks he and llo join to hello, and the SDK gets role/content dicts, max_tokens 64, temperature 0."""
-    provider, client = _provider()
-    result = provider.complete(
-        system="be careful",
-        messages=[Message(role="user", content="hi")],
-        model="claude-x",
+    AnthropicProvider(client=client).complete(
+        system="sys",
+        messages=[Message(role="user", content=content)],
+        model="m",
         max_tokens=64,
+        response_schema=_SCHEMA,
+        **values,
     )
+    return client.create_kwargs
+
+
+def test_maps_the_request_and_joins_text_blocks():
+    """Text blocks he and llo join to hello, and the SDK gets messages, max_tokens 64, and temperature 0."""
+    client = _FakeClient()
+    result = AnthropicProvider(client=client).complete(
+        system="sys", messages=[Message(role="user", content="hi")], model="m", max_tokens=64, response_schema=_SCHEMA
+    )
+
     assert result.text == "hello"
     assert client.create_kwargs["messages"] == [{"role": "user", "content": "hi"}]
     assert client.create_kwargs["max_tokens"] == 64
     assert client.create_kwargs["temperature"] == 0
 
 
-def test_no_cache_keeps_system_as_plain_string():
-    """Without cache=True the system prompt is sent as the bare string sys."""
-    provider, client = _provider()
-    provider.complete(system="sys", messages=[Message(role="user", content="x")], model="m", max_tokens=8)
-    assert client.create_kwargs["system"] == "sys"
+def test_caches_the_system_and_sends_the_strict_output_schema():
+    """The system prompt is one cached text block, and the schema goes out unchanged as output_config."""
+    request = _sent("x")
+
+    assert request["system"] == [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}]
+    assert request["output_config"] == {"format": {"type": "json_schema", "schema": _SCHEMA.schema}}
 
 
-def test_maps_the_strict_output_schema():
-    """A response schema is sent as output_config format json_schema carrying the schema unchanged."""
-    provider, client = _provider()
-    schema = ResponseSchema(
-        name="review_reply",
-        schema={
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {"findings": {"type": "array", "items": {"type": "string"}}},
-            "required": ["findings"],
-        },
-    )
-
-    provider.complete(
-        system="sys",
-        messages=[Message(role="user", content="source")],
-        model="m",
-        max_tokens=8,
-        response_schema=schema,
-    )
-
-    assert client.create_kwargs["output_config"] == {"format": {"type": "json_schema", "schema": schema.schema}}
-
-
-def test_cache_marks_system_with_ephemeral_cache_control():
-    """With cache=True the system prompt becomes one text block with ephemeral cache_control."""
-    provider, client = _provider()
-    provider.complete(system="sys", messages=[Message(role="user", content="x")], model="m", max_tokens=8, cache=True)
-    assert client.create_kwargs["system"] == [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}]
-
-
-def test_cache_prefix_marks_the_system_and_the_stable_message_prefix():
+def test_cache_prefix_splits_the_stable_message_prefix_into_a_cached_block():
     """A STABLE prefix splits STABLEvariable into a cached STABLE block and a plain variable block."""
-    provider, client = _provider()
-    provider.complete(
-        system="sys",
-        messages=[Message(role="user", content="STABLEvariable")],
-        model="m",
-        max_tokens=8,
-        cache=True,
-        cache_prefix="STABLE",
-    )
-    assert client.create_kwargs["messages"][0]["content"] == [
+    assert _sent("STABLEvariable", cache_prefix="STABLE")["messages"][0]["content"] == [
         {"type": "text", "text": "STABLE", "cache_control": {"type": "ephemeral"}},
         {"type": "text", "text": "variable"},
     ]
-    assert client.create_kwargs["system"] == [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}]
 
 
 def test_cache_segments_become_blocks_with_a_breakpoint_on_the_last_one():
     """Segments ONE and TWO after the STABLE prefix are separate blocks, and TWO carries the third breakpoint."""
-    provider, client = _provider()
-    provider.complete(
-        system="sys",
-        messages=[Message(role="user", content="STABLEONETWOtail")],
-        model="m",
-        max_tokens=8,
-        cache=True,
-        cache_prefix="STABLE",
-        cache_segments=("ONE", "TWO"),
-    )
-    assert client.create_kwargs["messages"][0]["content"] == [
+    assert _sent("STABLEONETWOtail", cache_prefix="STABLE", cache_segments=("ONE", "TWO"))["messages"][0][
+        "content"
+    ] == [
         {"type": "text", "text": "STABLE", "cache_control": {"type": "ephemeral"}},
         {"type": "text", "text": "ONE"},
         {"type": "text", "text": "TWO", "cache_control": {"type": "ephemeral"}},
@@ -118,53 +86,11 @@ def test_cache_segments_become_blocks_with_a_breakpoint_on_the_last_one():
     ]
 
 
-def test_cache_segments_that_do_not_follow_the_prefix_mark_only_the_prefix():
-    """Segments absent from the message leave the STABLE breakpoint and one plain remainder block."""
-    provider, client = _provider()
-    provider.complete(
-        system="sys",
-        messages=[Message(role="user", content="STABLEtail")],
-        model="m",
-        max_tokens=8,
-        cache=True,
-        cache_prefix="STABLE",
-        cache_segments=("ONE",),
-    )
-    assert client.create_kwargs["messages"][0]["content"] == [
-        {"type": "text", "text": "STABLE", "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": "tail"},
-    ]
-
-
 def test_cache_prefix_equal_to_the_message_marks_a_single_block():
     """A message equal to the STABLE prefix is sent as one cached text block with no empty remainder."""
-    provider, client = _provider()
-    provider.complete(
-        system="sys",
-        messages=[Message(role="user", content="STABLE")],
-        model="m",
-        max_tokens=8,
-        cache=True,
-        cache_prefix="STABLE",
-    )
-    assert client.create_kwargs["messages"][0]["content"] == [
+    assert _sent("STABLE", cache_prefix="STABLE")["messages"][0]["content"] == [
         {"type": "text", "text": "STABLE", "cache_control": {"type": "ephemeral"}},
     ]
-
-
-def test_cache_prefix_that_does_not_lead_the_message_marks_only_the_system():
-    """A STABLE prefix absent from the message other leaves it a plain string and caches only the system."""
-    provider, client = _provider()
-    provider.complete(
-        system="sys",
-        messages=[Message(role="user", content="other")],
-        model="m",
-        max_tokens=8,
-        cache=True,
-        cache_prefix="STABLE",
-    )
-    assert client.create_kwargs["messages"] == [{"role": "user", "content": "other"}]
-    assert client.create_kwargs["system"] == [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}]
 
 
 def test_extract_usage_maps_cache_read_and_write_separately():
@@ -202,7 +128,9 @@ class _RecordingClient:
 
 
 def _run(provider):
-    return provider.complete(system="s", messages=[Message(role="user", content="x")], model="opus", max_tokens=8)
+    return provider.complete(
+        system="s", messages=[Message(role="user", content="x")], model="opus", max_tokens=8, response_schema=_SCHEMA
+    )
 
 
 def test_drops_temperature_when_model_rejects_it_then_skips_it():
@@ -233,7 +161,7 @@ def test_non_temperature_bad_request_still_fails_loud():
 
 
 def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch):
-    """A client built with key k and a gateway base gets max_retries=0, leaving retries to the outer provider."""
+    """A client built with a gateway base gets max_retries=0, leaving retries to the outer provider."""
     captured = {}
 
     class _Anthropic:
@@ -242,6 +170,6 @@ def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch
 
     monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=_Anthropic))
 
-    AnthropicProvider(api_key="k", api_base="https://gateway.example.test")._get_client()
+    AnthropicProvider(api_base="https://gateway.example.test")._get_client()
 
-    assert captured["max_retries"] == 0
+    assert captured == {"max_retries": 0, "base_url": "https://gateway.example.test"}

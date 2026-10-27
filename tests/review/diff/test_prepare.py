@@ -4,41 +4,43 @@ from __future__ import annotations
 
 import pytest
 
-from cyberjury.providers.configuration import ProviderConfiguration, ProviderSeat
-from cyberjury.providers.metering import UsageMeter
-from cyberjury.providers.mock import MockProvider
 from cyberjury.review import prepare
 from cyberjury.review.diff.finder import DIFF_TARGET
 from cyberjury.review.diff.prepare import prepare_diff_review
-from cyberjury.review.run import run_review
-from cyberjury.review.seats import review_seats
+from cyberjury.review.grounding import GroundingReceipt
+from cyberjury.review.result import SkippedFiles
+from cyberjury.review.seats import ReviewSeats
+from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.sources.snapshot import capture_source_snapshot
 from tests.review.diff.support import reply
+from tests.review.support import StubIssueJudge, bound_artifacts, recorder, run_prepared
+from tests.support import MockProvider
 
 
 def _patch(path: str, before: str, after: str) -> str:
     return f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-{before}\n+{after}\n"
 
 
-def _configuration() -> ProviderConfiguration:
-    finder = ProviderSeat(provider="openai", model="finder")
-    return ProviderConfiguration(seat=finder, retries=0, timeout=10)
+def _prepare(diff: str, root):
+    stages = recorder()
+    artifacts = bound_artifacts(stages)
+    return prepare_diff_review(diff, capture_source_snapshot(root), recorder=stages), artifacts
 
 
-def test_dry_run_review_binds_receipts_and_skips_noise(tmp_path):
-    """README.md is skipped as noise, app.py is planned with a matching receipt, and the dry run completes."""
+def test_diff_review_binds_receipts_and_skips_noise(tmp_path):
+    """README.md is skipped as noise, app.py is planned with a matching receipt, and the review completes."""
     (tmp_path / "app.py").write_text("def run(name):\n    return name\n", encoding="utf-8")
     (tmp_path / "README.md").write_text("After\n", encoding="utf-8")
     diff = _patch("app.py", "def run():", "def run(name):") + _patch("README.md", "Before", "After")
-    seats = review_seats(_configuration(), meter=UsageMeter(), dry_run_provider=MockProvider(default=reply([])))
 
-    prepared = prepare_diff_review(diff, capture_source_snapshot(tmp_path))
-    result = run_review(prepared, target=DIFF_TARGET, seats=seats, concurrency=2)
+    prepared, artifacts = _prepare(diff, tmp_path)
+    seats = ReviewSeats(finder=MockProvider(default=reply([])), finder_model="m", issue_judge=StubIssueJudge())
+    result = run_prepared(prepared, target=DIFF_TARGET, seats=seats, concurrency=2)
 
-    assert [item.to_dict() for item in prepared.skipped_files] == [{"path": "README.md", "reason": "noise"}]
+    assert [item.to_dict() for item in artifacts[SkippedFiles].files] == [{"path": "README.md", "reason": "noise"}]
     assert prepared.shared.root == tmp_path.resolve()
-    assert prepared.unit_plan.expected_owned_paths == ("app.py",)
-    assert prepared.grounding.unit_plan_receipt_sha256 == prepared.unit_plan.receipt_sha256
+    assert [unit.paths for unit in prepared.units] == [("app.py",)]
+    assert artifacts[GroundingReceipt].unit_plan_receipt_sha256 == artifacts[UnitPlanReceipt].receipt_sha256
     assert result.outcome.complete is True
 
 
@@ -55,23 +57,11 @@ def test_file_sections_without_a_hunk_are_skipped_without_review_units(tmp_path,
     """Rename, mode, and empty new or deleted file sections record their skip reason and plan no units."""
     (tmp_path / "new.py").write_text("def run():\n    return True\n", encoding="utf-8")
 
-    prepared = prepare_diff_review(section, capture_source_snapshot(tmp_path))
+    prepared, artifacts = _prepare(section, tmp_path)
 
-    assert [item.to_dict() for item in prepared.skipped_files] == [{"path": "new.py", "reason": reason}]
+    assert [item.to_dict() for item in artifacts[SkippedFiles].files] == [{"path": "new.py", "reason": reason}]
     assert prepared.units == ()
-    assert prepared.unit_plan.units == ()
-
-
-def test_nonempty_input_without_a_diff_hunk_fails_before_facts_extraction(tmp_path, monkeypatch):
-    """Plain 'ordinary text' raises 'no unified diff hunk' without calling syntax facts extraction."""
-
-    def unexpected_facts(*args, **kwargs):
-        raise AssertionError("facts extraction must not run for invalid input")
-
-    monkeypatch.setattr(prepare, "extract_syntax_facts", unexpected_facts)
-
-    with pytest.raises(ValueError, match="no unified diff hunk"):
-        prepare_diff_review("ordinary text", capture_source_snapshot(tmp_path))
+    assert artifacts[UnitPlanReceipt].units == ()
 
 
 def test_a_diff_of_only_skipped_files_plans_no_units_without_facts_extraction(tmp_path, monkeypatch):
@@ -84,7 +74,7 @@ def test_a_diff_of_only_skipped_files_plans_no_units_without_facts_extraction(tm
 
     monkeypatch.setattr(prepare, "extract_syntax_facts", unexpected_facts)
 
-    prepared = prepare_diff_review(_patch("README.md", "Before", "After"), capture_source_snapshot(tmp_path))
+    prepared, artifacts = _prepare(_patch("README.md", "Before", "After"), tmp_path)
 
-    assert [item.to_dict() for item in prepared.skipped_files] == [{"path": "README.md", "reason": "noise"}]
+    assert [item.to_dict() for item in artifacts[SkippedFiles].files] == [{"path": "README.md", "reason": "noise"}]
     assert prepared.units == ()

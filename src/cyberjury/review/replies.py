@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from cyberjury.json_parse import parse_json_object
 from cyberjury.providers.base import ResponseSchema
 from cyberjury.providers.metering import record_model_parse
 from cyberjury.review.schemas import validate_response_object
+
+if TYPE_CHECKING:
+    from cyberjury.review.finding import Finding
 
 
 class RoleResponseError(RuntimeError):
@@ -18,8 +23,8 @@ class CorrectableRoleResponseError(RoleResponseError):
     def __init__(
         self,
         instruction: str,
-        response_findings: tuple[object, ...] = (),
-        fallback_findings: tuple[object, ...] = (),
+        response_findings: tuple[Finding, ...] = (),
+        fallback_findings: tuple[Finding, ...] = (),
     ) -> None:
         """Separate valid carried candidates from invalid correction fallbacks."""
         self.instruction = instruction

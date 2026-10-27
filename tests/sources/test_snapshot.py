@@ -197,7 +197,7 @@ def test_materialize_copies_exact_bytes_modes_and_relative_symlinks(tmp_path):
     (root / "link.py").symlink_to("app.py")
     snapshot = SourceSnapshot.capture(root, ("app.py", "bin/run.sh", "link.py"))
 
-    with snapshot.materialize() as materialized:
+    with snapshot.materialize(name="source") as materialized:
         assert (materialized / "app.py").read_bytes() == (root / "app.py").read_bytes()
         assert os.access(materialized / "bin" / "run.sh", os.X_OK)
         assert os.readlink(materialized / "link.py") == "app.py"

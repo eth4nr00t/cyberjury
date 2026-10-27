@@ -8,7 +8,6 @@ import pytest
 
 from cyberjury.record import Record
 from cyberjury.review.issues import issue_id
-from cyberjury.review.result import FindingRecord, FindingsArtifact, IssueRecord
 from cyberjury.sources.snapshot import capture_source_snapshot
 from cyberjury.workspace import write_record
 from evals.attempts import load_attempt, recorded_attempt
@@ -36,28 +35,28 @@ def _review_attempt(directory, reviewed_root, *, target=None):
         (session / name).write_text(json.dumps(value), encoding="utf-8")
     write_record(attempt / "stages" / "source.json", _ok("source", snapshot=snapshot.snapshot_id))
     write_record(attempt / "record.json", _ok(_ATTEMPT))
-    record = FindingRecord(
-        id=A,
-        title="Create saves without an owner check",
-        category="missing-authorization",
-        severity="HIGH",
-        file="views.py",
-        line=2,
-        entrypoint="POST /objects",
-        evidence="views.py:2 saves with no owner",
-        attack_path="Any caller creates objects for another owner",
-        evidence_refs=(),
-        supporting_reviewers=(),
-        issue_id=issue_id((A,)),
-    )
-    issue = IssueRecord(
-        id=record.issue_id,
-        representative=record.id,
-        members=(record.id,),
-        linked_by=(),
-    )
-    findings = FindingsArtifact.create((record,), (issue,))
-    (attempt / "findings.json").write_text(json.dumps(findings.to_dict()), encoding="utf-8")
+    findings = {
+        "schema": "cyberjury.findings/v1",
+        "findings": [
+            {
+                "id": A,
+                "title": "Create saves without an owner check",
+                "category": "missing-authorization",
+                "severity": "HIGH",
+                "file": "views.py",
+                "line": 2,
+                "entrypoint": "POST /objects",
+                "evidence": "views.py:2 saves with no owner",
+                "attack_path": "Any caller creates objects for another owner",
+                "evidence_refs": [],
+                "issue_id": issue_id((A,)),
+                "change_anchor": None,
+            }
+        ],
+        "issues": [{"id": issue_id((A,)), "representative": A, "members": [A], "linked_by": []}],
+        "summary": {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 0, "LOW": 0},
+    }
+    (attempt / "findings.json").write_text(json.dumps(findings), encoding="utf-8")
     return attempt
 
 

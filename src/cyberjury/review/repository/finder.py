@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from cyberjury.review.context import SourceEvidence, SourceSpan, source_location_receipt
+from cyberjury.review.context import SourceEvidence, SourceSpan, cited_location_file
 from cyberjury.review.finder import ReviewTarget, findings_from_reply
 from cyberjury.review.finding import Finding
 from cyberjury.review.replies import RoleReply
@@ -19,14 +19,14 @@ def locate(
     seed_spans: tuple[SourceSpan, ...],
 ) -> Finding | None:
     """Require a cited source receipt covering the primary location, and use its canonical path."""
-    receipt = source_location_receipt(
+    cited = cited_location_file(
         file=finding.file,
         line=finding.line,
         evidence_refs=finding.evidence_refs,
         seed_spans=seed_spans,
         source_evidence=source_evidence,
     )
-    return replace(finding, file=receipt.file) if receipt is not None else None
+    return replace(finding, file=cited) if cited is not None else None
 
 
 def _findings_from_reply(_unit: RepositoryUnit, reply: RoleReply) -> list[Finding]:

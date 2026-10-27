@@ -2,13 +2,13 @@
 
 from types import SimpleNamespace
 
-from cyberjury.providers.mock import MockProvider
 from cyberjury.review.context import GroundingContext, GroundingCoverage, SourceEvidence, SourceSpan
 from cyberjury.review.diff.finder import locate
 from cyberjury.review.diff.model import DiffLineRanges
 from cyberjury.review.finding import ChangeAnchor, Finding
 from cyberjury.review.union import MERGE_RULE
 from tests.review.diff.support import SQL_DIFF, diff_unit, finder, reply, review
+from tests.support import MockProvider
 
 
 def _run(runner, diff, *, context=""):
@@ -321,7 +321,6 @@ def test_diff_review_accepts_a_cited_repository_location_outside_the_patch():
         text="repository context",
         source_evidence=(evidence,),
         coverage=GroundingCoverage(
-            required=(evidence.identity,),
             included=(evidence.identity,),
             references=(evidence.id,),
         ),

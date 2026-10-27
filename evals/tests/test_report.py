@@ -14,24 +14,14 @@ from cyberjury.providers.metering import (
     record_model_parse,
 )
 from evals.report import failures, format_summary, summarize
+from tests.support import EMPTY_SCHEMA
 
 A, B = "candidate-" + "a" * 20, "candidate-" + "b" * 20
 _CREDIT = ("supported", ("create-missing-owner",))
 
 
 class _Fake(Provider):
-    def complete(
-        self,
-        *,
-        system,
-        messages,
-        model,
-        max_tokens,
-        cache=False,
-        cache_prefix="",
-        cache_segments=(),
-        response_schema=None,
-    ):
+    def complete(self, **_kwargs):
         return CompletionResult(text="{}", usage=Usage(input_tokens=7, cache_read_tokens=5, output_tokens=3))
 
 
@@ -39,7 +29,11 @@ def _receipt(path):
     meter = UsageMeter()
     with model_call_scope(unit_id="unit-one"), model_call_context(role="finder", trigger="initial_judgment"):
         MeteringProvider(_Fake(), meter).complete(
-            system="system", messages=[Message(role="user", content="source")], model="test", max_tokens=100
+            system="system",
+            messages=[Message(role="user", content="source")],
+            model="test",
+            max_tokens=100,
+            response_schema=EMPTY_SCHEMA,
         )
         record_model_parse()
     path.parent.mkdir(parents=True, exist_ok=True)
