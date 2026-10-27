@@ -21,9 +21,9 @@ def _finder_reply(findings: list[dict]) -> str:
     return json.dumps({"findings": findings, "evidence_requests": [], "source_queries": []})
 
 
-def _run(cases, workspace, **values):
+def _run(cases, state_dir, **values):
     options = {"runs": 1, "concurrency": 8, "progress": lambda _line: None, "on_attempt": lambda _record: None}
-    return diff.run(cases, workspace=workspace, **(options | values))
+    return diff.run(cases, state_dir=state_dir, **(options | values))
 
 
 @pytest.fixture

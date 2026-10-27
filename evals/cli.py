@@ -12,7 +12,7 @@ from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from evals.attempts import attempt_path, recorded_attempt
 from evals.benchmarks.cases import find_case, load_cases
 from evals.benchmarks.validate import validate_benchmark
-from evals.diff import case_workspace, run
+from evals.diff import case_state_dir, run
 from evals.packets import build_packets, write_ledgers
 from evals.report import failures, format_summary, summarize, write_json
 
@@ -40,12 +40,12 @@ def _cmd_diff(args) -> int:
         if not cases:
             raise ValueError(f"unknown diff case {args.case!r}")
     attempts = Path(args.attempts_dir)
-    workspace = Path(args.workspace).expanduser().resolve()
+    state_dir = Path(args.state_dir).expanduser().resolve()
     paths = [
         path
         for case in cases
         for number in range(1, args.runs + 1)
-        for path in (attempt_path(attempts, case.name, number), case_workspace(workspace, case, number))
+        for path in (attempt_path(attempts, case.name, number), case_state_dir(state_dir, case, number))
     ]
     if existing := next((path for path in paths if path.exists()), None):
         raise ValueError(f"diff output already exists: {existing}")
@@ -55,9 +55,9 @@ def _cmd_diff(args) -> int:
 
     records = run(
         cases,
-        workspace=workspace,
         runs=args.runs,
         concurrency=args.concurrency,
+        state_dir=state_dir,
         progress=_progress,
         on_attempt=save_attempt,
     )
@@ -179,9 +179,9 @@ def main(argv: list[str] | None = None) -> int:
         "--attempts-dir", required=True, help="runs directory for <project>/<case>/attempt-NN.json"
     )
     diff_parser.add_argument(
-        "--workspace",
+        "--state-dir",
         required=True,
-        help="review state root for <project>/<case>/run-NN, holding each attempt and its model-calls.json",
+        help="review state directory for <project>/<case>/run-NN, holding each attempt and its model-calls.json",
     )
     diff_parser.set_defaults(func=_cmd_diff)
 

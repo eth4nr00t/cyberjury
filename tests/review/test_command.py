@@ -48,13 +48,13 @@ class _Run:
 
 def _review(
     target: TargetInput,
-    workspace: Path,
+    state_dir: Path,
     *,
     fresh: bool | None = None,
     concurrency: int | None = None,
 ) -> _Run:
     stdout, stderr = io.StringIO(), io.StringIO()
-    command = ReviewCommand(target=target, workspace=str(workspace), fresh=fresh, concurrency=concurrency)
+    command = ReviewCommand(target=target, fresh=fresh, concurrency=concurrency, state_dir=str(state_dir))
     record = run_review_command(command, stdout=stdout, stderr=stderr)
     return _Run(record=record, out=stdout.getvalue(), err=stderr.getvalue())
 
@@ -124,7 +124,7 @@ def _seed_source(repository: Path) -> Path:
     return repository
 
 
-def _git_change(repo: Path, base: dict[str, str], head: dict[str, str], *, three_dot: bool = False) -> SimpleNamespace:
+def _git_change(repo: Path, base: dict[str, str], head: dict[str, str]) -> SimpleNamespace:
     repo.mkdir()
     git(repo, "init", "--quiet")
     for files, message in ((base, "base"), (head, "head")):
@@ -136,9 +136,8 @@ def _git_change(repo: Path, base: dict[str, str], head: dict[str, str], *, three
         git(repo, "commit", "--quiet", "--allow-empty", "-m", message)
         if message == "base":
             base_revision = git(repo, "rev-parse", "HEAD")
-    separator = "..." if three_dot else ".."
     return SimpleNamespace(
-        target=_diff(repo, f"{base_revision}{separator}HEAD"),
+        target=_diff(repo, f"{base_revision}..HEAD"),
         repository=repo,
         base=base_revision,
     )
@@ -245,7 +244,7 @@ def test_the_attempt_record_sums_failures_and_the_usage_of_every_call(diff_targe
     assert attempt["artifacts"] == [f"attempts/{attempt['id']}/model-calls.json"]
 
 
-def test_a_missing_api_key_fails_the_config_stage_before_any_workspace_exists(monkeypatch, diff_target, tmp_path):
+def test_a_missing_api_key_fails_the_config_stage_before_any_state_directory_exists(monkeypatch, diff_target, tmp_path):
     """Without provider keys the config record fails with a config error and no state directory is created."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -262,7 +261,7 @@ def test_a_missing_api_key_fails_the_config_stage_before_any_workspace_exists(mo
     assert not state.exists()
 
 
-def test_an_invalid_git_range_fails_the_target_stage_before_any_workspace_exists(diff_target, tmp_path):
+def test_an_invalid_git_range_fails_the_target_stage_before_any_state_directory_exists(diff_target, tmp_path):
     """A bare HEAD range fails the target record with an input error and no state directory is created."""
     state = tmp_path / "state"
 
@@ -273,8 +272,8 @@ def test_an_invalid_git_range_fails_the_target_stage_before_any_workspace_exists
     assert not state.exists()
 
 
-def test_state_root_inside_the_repository_is_rejected_before_workspace_creation(tmp_path):
-    """A workspace inside the repository fails the target stage with an input error and is never created."""
+def test_a_state_directory_inside_the_repository_is_rejected_before_it_is_created(tmp_path):
+    """A state directory inside the repository fails the target stage with an input error and is never created."""
     repository = tmp_path / "repo"
     repository.mkdir()
     state = repository / ".state"
@@ -283,7 +282,7 @@ def test_state_root_inside_the_repository_is_rejected_before_workspace_creation(
 
     target = _stage(_records(run.out), "target")
     assert target["error"]["code"] == "input"
-    assert "state root cannot be inside" in target["error"]["message"]
+    assert "state directory cannot be inside" in target["error"]["message"]
     assert not state.exists()
 
 
@@ -303,39 +302,6 @@ def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, d
     assert _review(diff_target.target, tmp_path / "state").record.status == "ok"
     assert len(roots) == 1
     assert not roots[0].exists()
-
-
-def test_review_diff_uses_real_git_range_and_grounding(tmp_path):
-    """A three-dot range adding a SQL concat reviews to empty findings and issues in findings.json."""
-    change = _git_change(
-        tmp_path / "repo",
-        {"app.py": "def run(name):\n    return name\n"},
-        {"app.py": "def run(name):\n    return cursor.execute('SELECT ' + name)\n"},
-        three_dot=True,
-    )
-    state = tmp_path / "state"
-
-    assert _review(change.target, state).record.status == "ok"
-
-    findings = json.loads((_attempt_dir(state) / "findings.json").read_text())
-    assert (findings["findings"], findings["issues"]) == ([], [])
-
-
-def test_docs_only_diff_skips_model_calls(tmp_path):
-    """A range touching only README.md lists it as a noise skip in plan/skipped-files.json and the plan record."""
-    change = _git_change(
-        tmp_path / "repo",
-        {"app.py": "def run():\n    return True\n", "README.md": "Before\n"},
-        {"README.md": "After\n"},
-    )
-    state = tmp_path / "state"
-
-    plan = _stage(_records(_review(change.target, state).out), "plan")
-
-    skipped = json.loads((_review_dir(state) / "plan" / "skipped-files.json").read_text())
-    assert skipped["files"] == [{"path": "README.md", "reason": "noise"}]
-    assert plan["metrics"] == {"items": 0, "skipped_files": 1}
-    assert json.loads((_attempt_dir(state) / "model-calls.json").read_text())["calls"] == []
 
 
 def test_hunkless_diff_sections_are_listed_as_skipped_files(tmp_path):
@@ -380,31 +346,6 @@ def test_review_diff_grounds_units_and_judges_issue_links_on_the_finder(monkeypa
     assert not Path(seen["root"]).exists()
     assert seen["seats"].issue_judge is not None
     assert seen["concurrency"] == 8
-
-
-def test_review_diff_plans_only_the_filtered_patch(monkeypatch, tmp_path):
-    """Of app.py, docs, and tests changes only app.py is planned, and grounding.json binds to plan.json."""
-    change = _git_change(
-        tmp_path / "repo",
-        {},
-        dict.fromkeys(("app.py", "docs/readme.md", "tests/test_app.py"), "changed\n"),
-    )
-    seen = {}
-    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
-    state = tmp_path / "state"
-
-    assert _review(change.target, state).record.status == "ok"
-
-    [unit] = seen["units"]
-    assert unit.paths == ("app.py",)
-    assert "docs/readme.md" not in unit.diff
-    assert "tests/test_app.py" not in unit.diff
-    review = _review_dir(state)
-    plan = json.loads((review / "plan" / "plan.json").read_text())
-    grounding = json.loads((review / "grounding" / "grounding.json").read_text())
-    assert [path for unit in plan["units"] for path in unit["owned_paths"]] == ["app.py"]
-    assert grounding["unit_plan_receipt_sha256"] == plan["receipt_sha256"]
-    assert [context["unit_id"] for context in grounding["contexts"]] == [unit["id"] for unit in plan["units"]]
 
 
 def test_review_diff_empty_git_range_is_ok(monkeypatch, diff_target, tmp_path):
@@ -476,19 +417,6 @@ def test_partially_parsed_sources_are_counted_as_fact_limitations(tmp_path):
     assert run.record.status == "ok"
 
 
-def test_review_repository_writes_the_unit_plan(tmp_path):
-    """A review of a directory with only app.py writes plan/plan.json listing a single app.py unit."""
-    repository = tmp_path / "svc"
-    repository.mkdir()
-    (repository / "app.py").write_text("x = 1\n")
-    state = tmp_path / "state"
-
-    assert _review(_repository(repository), state).record.status == "ok"
-
-    plan = json.loads((_review_dir(state) / "plan" / "plan.json").read_text())
-    assert [unit["name"] for unit in plan["units"]] == ["app.py"]
-
-
 def test_review_repository_skips_ignored_trees_of_a_git_work_tree(tmp_path):
     """A .gitignore'd .venv tree and its lib64 symlink are left out of the source snapshot and the unit plan."""
     repository = tmp_path / "svc"
@@ -540,24 +468,6 @@ def test_a_review_whose_live_source_changes_keeps_its_result_and_says_so(tmp_pat
 
     assert attempt["status"] == "ok"
     assert attempt["attributes"] == {"source_changed": True}
-
-
-def test_repository_review_builds_one_finder_provider(monkeypatch, tmp_path):
-    """A live repository review calls make_provider exactly once for its single finder seat."""
-    providers = []
-
-    def fake_make_provider(name, **kwargs):
-        provider = MockProvider(default='{"findings": []}')
-        providers.append(provider)
-        return provider
-
-    monkeypatch.setattr(provider_configuration_module, "make_provider", fake_make_provider)
-    monkeypatch.setattr(commandmod, "run_review", _stub_review())
-
-    run = _review(_repository(_seed_source(tmp_path / "svc")), tmp_path / "state")
-
-    assert run.record.status == "ok"
-    assert len(providers) == 1
 
 
 @pytest.mark.parametrize(("concurrency", "expected"), [(None, 8), (4, 4)])

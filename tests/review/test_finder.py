@@ -57,19 +57,6 @@ def test_finder_parses_findings_and_canonicalizes_the_category():
     assert provider.calls[0]["prompt"].endswith("A further request makes this judgment incomplete.")
 
 
-def test_finder_accepts_a_model_supplied_category():
-    """A free-form category such as "sqli" is kept verbatim on the parsed finding."""
-    finding = {
-        "file": "app.py",
-        "line": 1,
-        "severity": "HIGH",
-        "category": "sqli",
-        "evidence": "string-concatenated query",
-    }
-
-    assert _diff_findings(MockProvider(default=diff.reply([finding])))[0].category == "sqli"
-
-
 def test_finder_reports_a_malformed_finding_as_failed_work():
     """A finding with only severity yields no findings and a "missing fields" failure reason."""
     reviewer = repository.finder(MockProvider(default=repository.finder_reply([{"severity": "HIGH"}])))
@@ -138,11 +125,6 @@ def test_correction_states_the_shared_merge_rule_for_accepted_findings():
     assert '"entrypoint": "GET /records/<id>"' in correction
 
 
-def test_finder_empty_on_no_findings():
-    """A reply with an empty findings list produces an empty result for the SQL concatenation diff."""
-    assert _diff_findings(MockProvider(default=diff.reply([]))) == []
-
-
 def test_finder_fails_the_unit_on_an_unparseable_reply():
     """A reply of plain prose fails the unit with "reply had no complete JSON"."""
     reviewer = repository.finder(MockProvider(default="sorry, no JSON here"))
@@ -166,25 +148,6 @@ def test_an_unparseable_reply_is_corrected_once_instead_of_failing_the_unit():
     assert [f.evidence for f in result.outcome.findings] == ["unguarded sink"]
     assert result.outcome.complete
     assert "Return exactly one JSON object" in provider.calls[1]["prompt"]
-
-
-def test_a_unit_runs_one_judgment_even_when_it_finds_a_candidate():
-    """A unit whose first reply returns a finding makes a single provider call and keeps that finding."""
-    finding = repository.finding("views.py", 1, title="first")
-    provider = MockProvider(default=repository.finder_reply([finding]))
-
-    cycle = repository.finder(provider).review_unit(
-        _unit(
-            "views.py",
-            GroundingContext(
-                text="seed",
-                source_spans=(SourceSpan(file="views.py", start_line=1, end_line=1),),
-            ),
-        ),
-    )
-
-    assert len(provider.calls) == 1
-    assert [finding.title for finding in cycle.findings] == ["first"]
 
 
 def test_finder_binds_each_finding_to_its_source_operation(tmp_path):

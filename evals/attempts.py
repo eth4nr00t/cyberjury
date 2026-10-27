@@ -84,9 +84,7 @@ def load_attempt(path: str | Path) -> Attempt:
 
 
 def _issues(path: Path, data: dict, findings: dict[str, dict]) -> tuple[tuple[str, ...], ...]:
-    if "issues" not in data:
-        return tuple((identity,) for identity in findings)
-    issues = data["issues"]
+    issues = data.get("issues")
     if not isinstance(issues, list) or not all(
         isinstance(issue, dict) and isinstance(issue.get("members"), list) and issue["members"] for issue in issues
     ):
@@ -131,6 +129,7 @@ def recorded_attempt(case: BenchmarkCase, directory: Path, number: int, *, error
             "complete": False,
             "error": reason or error or f"{directory} has no review result",
             "findings": [],
+            "issues": [],
         }
     findings = read_json(findings_path)
     _require_case_source(case, directory, str(read_record(directory / "stages" / "source.json").attributes["snapshot"]))

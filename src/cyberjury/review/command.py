@@ -56,9 +56,9 @@ class ReviewCommand:
     """What the operator asked one review command to do."""
 
     target: TargetInput
-    workspace: str
     fresh: bool | None
     concurrency: int | None
+    state_dir: str
 
 
 @dataclass(kw_only=True)
@@ -112,8 +112,8 @@ def run_review_command(command: ReviewCommand, *, stdout: TextIO, stderr: TextIO
 def _run_stages(command: ReviewCommand, state: _AttemptState, recorder: Recorder, meter: UsageMeter) -> None:
     with contextlib.ExitStack() as stack:
         request, intent, seats = _configure(command, recorder, meter)
-        target = _resolve(intent, command.workspace, recorder)
-        attempt = _open_attempt(command.workspace, intent, request, state, recorder)
+        target = _resolve(intent, command.state_dir, recorder)
+        attempt = _open_attempt(command.state_dir, intent, request, state, recorder)
         snapshot, source = _capture(target, stack, recorder)
         prepared = (
             prepare_diff_review(target.patch.text, source, recorder=recorder)
@@ -160,17 +160,17 @@ def _attempt_request(command: ReviewCommand, configuration: ProviderConfiguratio
     )
 
 
-def _resolve(intent: ReviewIntent, workspace: str, recorder: Recorder) -> ResolvedTarget:
+def _resolve(intent: ReviewIntent, state_dir: str, recorder: Recorder) -> ResolvedTarget:
     with recorder.stage("target") as measure:
         target = (
             resolve_diff_target(intent.target.repository, intent.target.git_range or "")
             if intent.target.kind == "diff"
             else resolve_repository_target(intent.target.repository)
         )
-        state_root = Path(workspace).expanduser().resolve()
+        state_path = Path(state_dir).expanduser().resolve()
         repository_root = Path(target.repository_root)
-        if state_root == repository_root or state_root.is_relative_to(repository_root):
-            raise TargetResolutionError("state root cannot be inside the reviewed repository")
+        if state_path == repository_root or state_path.is_relative_to(repository_root):
+            raise TargetResolutionError("the state directory cannot be inside the reviewed repository")
         measure.attributes.update(
             kind=target.kind,
             repository=target.repository_root,
@@ -181,7 +181,7 @@ def _resolve(intent: ReviewIntent, workspace: str, recorder: Recorder) -> Resolv
 
 
 def _open_attempt(
-    workspace: str,
+    state_dir: str,
     intent: ReviewIntent,
     request: ReviewAttemptRequest,
     state: _AttemptState,
@@ -189,9 +189,9 @@ def _open_attempt(
 ) -> ReviewAttempt:
     with recorder.stage("session") as measure:
         session = (
-            ReviewSession.create(workspace, intent)
+            ReviewSession.create(state_dir, intent)
             if intent.target.kind == "diff"
-            else ReviewSession.select_active(workspace, intent, reuse=request.fresh is not True)
+            else ReviewSession.select_active(state_dir, intent, reuse=request.fresh is not True)
         )
         state.attempt = session.start_attempt(request, attempt_id=state.id, started_at=state.started_at)
         measure.attributes.update(path=str(session.workspace.path))

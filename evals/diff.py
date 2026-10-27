@@ -17,18 +17,18 @@ from evals.benchmarks.targets import ensure_git_target_refs, git_target_root
 type Progress = Callable[[str], None]
 
 
-def case_workspace(workspace: Path, case: BenchmarkCase, number: int) -> Path:
-    """Return the review workspace of one case run."""
+def case_state_dir(state_dir: Path, case: BenchmarkCase, number: int) -> Path:
+    """Return the review state directory of one case run."""
     project, case_id = case.name.split(":", 1)
-    return workspace / project / case_id / f"run-{number:02d}"
+    return state_dir / project / case_id / f"run-{number:02d}"
 
 
 def run(
     cases: list[BenchmarkCase],
     *,
-    workspace: Path,
     runs: int,
     concurrency: int,
+    state_dir: Path,
     progress: Progress,
     on_attempt: Callable[[dict[str, object]], None],
 ) -> list[dict[str, object]]:
@@ -39,7 +39,7 @@ def run(
             prefix = f"{f'run {number}/{runs} ' if runs > 1 else ''}[{index}/{len(cases)}] {case.name}"
             progress(f"{prefix} started")
             started = time.monotonic()
-            record = _review_case(case, number, case_workspace(workspace, case, number), concurrency)
+            record = _review_case(case, number, concurrency, case_state_dir(state_dir, case, number))
             seconds = round(time.monotonic() - started, 3)
             if record["complete"]:
                 progress(f"{prefix} finished in {seconds}s, reports={len(record['findings'])}")
@@ -53,8 +53,8 @@ def run(
 def _review_case(
     case: BenchmarkCase,
     number: int,
-    workspace: Path,
     concurrency: int,
+    state_dir: Path,
 ) -> dict[str, object]:
     root = git_target_root(case.target)
     ensure_git_target_refs(case.target, root)
@@ -62,9 +62,9 @@ def _review_case(
     validate_change_anchors(case, resolve_diff_target(root, git_range).patch.text)
     command = ReviewCommand(
         target=TargetInput(kind="diff", repository=str(root.resolve()), git_range=git_range),
-        workspace=str(workspace),
         fresh=None,
         concurrency=concurrency,
+        state_dir=str(state_dir),
     )
     record = run_review_command(command, stdout=io.StringIO())
     if record.status == "interrupted":
@@ -72,7 +72,7 @@ def _review_case(
     message = record.error.message if record.error is not None else ""
     if record.error is not None and record.error.code == "config":
         raise SystemExit(message)
-    attempts = sorted(workspace.glob("reviews/*/attempts/*/record.json"))
+    attempts = sorted(state_dir.glob("reviews/*/attempts/*/record.json"))
     if len(attempts) != 1:
-        return recorded_attempt(case, workspace, number, error=message or "the review recorded no attempt")
+        return recorded_attempt(case, state_dir, number, error=message or "the review recorded no attempt")
     return recorded_attempt(case, attempts[0].parent, number, error=message)

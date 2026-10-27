@@ -16,7 +16,7 @@ A = "candidate-" + "a" * 20
 def fake_diff_run(monkeypatch):
     """Replace the diff runner with one that records a complete empty attempt per case and run."""
 
-    def run(cases, *, workspace, runs, on_attempt, **kwargs):
+    def run(cases, *, runs, on_attempt, **kwargs):
         records = []
         for number in range(1, runs + 1):
             for case in cases:
@@ -34,7 +34,7 @@ def test_diff_writes_nonoverwriting_attempts_and_summarizes_the_run(tmp_path, ca
     """Two runs write attempt-01 and attempt-02, print the summary and failure, and refuse to rerun over them."""
     runs, reviews = tmp_path / "runs", tmp_path / "reviews"
     args = ["diff", "--benchmark", str(benchmark_project.benchmark), "--runs", "2"]
-    args += ["--attempts-dir", str(runs), "--workspace", str(reviews)]
+    args += ["--attempts-dir", str(runs), "--state-dir", str(reviews)]
 
     assert main(args) == 1
 
@@ -62,7 +62,7 @@ def test_diff_rejects_an_unknown_case_before_running(tmp_path, fake_diff_run, be
                 "demo:missing",
                 "--attempts-dir",
                 "x",
-                "--workspace",
+                "--state-dir",
                 "y",
             ]
         )

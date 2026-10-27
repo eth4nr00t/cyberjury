@@ -40,6 +40,7 @@ def _review_attempt(directory, reviewed_root, *, target=None):
         "findings": [
             {
                 "id": A,
+                "fingerprint": "fingerprint-" + "0" * 20,
                 "title": "Create saves without an owner check",
                 "category": "missing-authorization",
                 "severity": "HIGH",
@@ -51,6 +52,7 @@ def _review_attempt(directory, reviewed_root, *, target=None):
                 "evidence_refs": [],
                 "issue_id": issue_id((A,)),
                 "change_anchor": None,
+                "unit_complete": True,
             }
         ],
         "issues": [{"id": issue_id((A,)), "representative": A, "members": [A], "linked_by": []}],
@@ -135,13 +137,14 @@ def test_recorded_diff_attempt_rejects_a_review_of_another_range(tmp_path, bench
 
 
 def test_an_attempt_without_a_result_is_recorded_incomplete_with_its_failure(tmp_path, case):
-    """An attempt directory with no outputs and error "provider unavailable" records attempt 2 incomplete."""
+    """An attempt directory with no outputs records attempt 2 incomplete with its error and no reports."""
     record = recorded_attempt(case, tmp_path, 2, error="provider unavailable")
 
-    assert (record["attempt"], record["complete"], record["error"], record["findings"]) == (
+    assert (record["attempt"], record["complete"], record["error"], record["findings"], record["issues"]) == (
         2,
         False,
         "provider unavailable",
+        [],
         [],
     )
 

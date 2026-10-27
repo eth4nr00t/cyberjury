@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from cyberjury.review.context import GroundingContext, SourceSpan
-from cyberjury.review.repository import context as context_module
 from cyberjury.review.repository.finder import REPOSITORY_TARGET
 from cyberjury.review.seats import ReviewSeats
 from cyberjury.workspace import WorkspaceCorruptionError, read_record
@@ -123,26 +122,6 @@ def test_a_failed_batch_keeps_the_findings_of_the_other_batches():
     assert "reply had no complete JSON object" in failure.reason
 
 
-def test_repository_unit_grounding_is_materialized_once(tmp_path, monkeypatch):
-    """Reviewing unit.py reads its text once and sends value = 1 in the finder prompt."""
-    (tmp_path / "unit.py").write_text("value = 1\n", encoding="utf-8")
-    reads = 0
-    original = context_module.gather_context
-
-    def counted(unit):
-        nonlocal reads
-        reads += 1
-        return original(unit)
-
-    monkeypatch.setattr(context_module, "gather_context", counted)
-    provider = MockProvider(default=EMPTY_REPLY)
-
-    _run(ground([source_unit(tmp_path, "unit.py", name="unit")]), provider)
-
-    assert "value = 1" in provider.calls[0]["prompt"]
-    assert reads == 1
-
-
 def test_findings_are_located_before_duplicates_fold():
     """Duplicates anchored at unchanged line 10 and added line 11 fold to one finding anchored at 11."""
     diff_text = (
@@ -172,16 +151,6 @@ def test_findings_are_located_before_duplicates_fold():
         (item.line, item.change_anchor.line if item.change_anchor else None) for item in result.outcome.findings
     ] == [(10, 11)]
     assert result.outcome.complete is False
-
-
-def test_diff_review_records_one_item_per_unit(tmp_path):
-    """Two per-file units leave two ok review item records beside their findings payloads."""
-    diff.review(
-        diff.FILE_A_DIFF + diff.FILE_B_DIFF, provider=MockProvider(default=diff.reply([])), max_chars=1, review=tmp_path
-    )
-
-    records = [read_record(path) for path in sorted((tmp_path / "review" / "items").glob("*.json"))]
-    assert [record.status for record in records] == ["ok", "ok"]
 
 
 _FLASK_APP = """

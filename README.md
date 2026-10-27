@@ -23,7 +23,7 @@ are not UTF-8 text, binary, empty, or too large are listed as skipped in `plan/s
 ## Quick Review
 
 ```bash
-cyberjury review diff --repository /path/to/app --git-range origin/main...HEAD
+cyberjury review diff origin/main...HEAD /path/to/app
 cyberjury review repository /path/to/repo
 ```
 
