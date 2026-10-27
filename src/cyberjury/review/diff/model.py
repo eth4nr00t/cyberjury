@@ -1,4 +1,4 @@
-"""Unified diff parsing into bounded, reviewable file batches, and the diff review unit."""
+"""Unified diff parsing into bounded, reviewable file batches, and the diff unit."""
 
 from __future__ import annotations
 

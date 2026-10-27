@@ -1,4 +1,4 @@
-"""The Repository Finder locates each finding by the cited source that covers it."""
+"""The repository finder locates each finding by the cited source that covers it."""
 
 import pytest
 

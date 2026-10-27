@@ -1,4 +1,4 @@
-"""Benchmark diff case runs through the product Diff Review command, recorded as adjudicable attempts."""
+"""Benchmark diff case runs through the product diff review command, recorded as adjudicable attempts."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Source and facts context of repository review units."""
+"""Source and facts context of repository units."""
 
 from __future__ import annotations
 

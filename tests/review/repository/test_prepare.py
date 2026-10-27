@@ -20,7 +20,7 @@ def delete_user(uid):
 
 
 def prepare_target(target):
-    """Prepare a Repository Review of the target's current source."""
+    """Prepare a repository review of the target's current source."""
     return prepare_repository_review(capture_source_snapshot(target), recorder=recorder())
 
 

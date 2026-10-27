@@ -10,13 +10,13 @@ from cyberjury.review.repository.prompts import (
 def test_repository_system_carries_the_review_contract_and_field_meanings():
     """The system prompt embeds the brief, rubric, and navigation, backticks every field, and has no JSON example."""
     system = repository_finder_system(
-        review_brief="# Security Reasoning Kernel\nKERNEL-X",
+        security_kernel="# Security Kernel\nKERNEL-X",
         severity_rubric="# Severity Rubric\nRUBRIC-X",
         navigation=navigation_instructions(),
     )
 
     for text in (
-        "one repository review unit",
+        "one repository unit",
         "attacker-reachable, exploitable violation",
         "KERNEL-X",
         "RUBRIC-X",

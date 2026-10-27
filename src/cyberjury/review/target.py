@@ -29,7 +29,7 @@ class TargetResolutionError(RuntimeError):
 
 @dataclass(frozen=True, kw_only=True)
 class PatchArtifact:
-    """Exact unified diff consumed by one Diff Review."""
+    """Exact unified diff consumed by one diff review."""
 
     text: str
     sha256: str

@@ -50,7 +50,7 @@ def scripted_model(monkeypatch):
 
 @pytest.fixture
 def owner_finding():
-    """Return one complete Finder finding on the benchmark diff's changed line."""
+    """Return one complete finder finding on the benchmark diff's changed line."""
     return SimpleNamespace(
         reply={
             "title": "Create saves without an owner",

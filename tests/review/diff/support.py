@@ -1,4 +1,4 @@
-"""Grounded units and Finder replies for isolated Diff Review tests."""
+"""Grounded units and finder replies for isolated diff review tests."""
 
 import json
 from dataclasses import replace
@@ -53,12 +53,12 @@ def diff_unit(diff: str, grounding: GroundingContext | str = "") -> DiffUnit:
 
 
 def finder(provider) -> UnitFinder[DiffUnit]:
-    """Return the Diff Finder bound to one test provider."""
+    """Return the diff finder bound to one test provider."""
     return UnitFinder(DIFF_TARGET, provider=provider, model="m")
 
 
 def reply(findings: list[dict[str, object]]) -> str:
-    """Complete each finding with the required Finder fields and serialize one reply."""
+    """Complete each finding with the required finder fields and serialize one reply."""
     for finding in findings:
         finding.setdefault("evidence_refs", ["seed"])
         finding.setdefault("title", "unsafe changed operation")

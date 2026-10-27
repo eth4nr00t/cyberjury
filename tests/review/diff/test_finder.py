@@ -1,4 +1,4 @@
-"""The Diff Finder corrects change anchors and locates findings on changed lines or cited source."""
+"""The diff finder corrects change anchors and locates findings on changed lines or cited source."""
 
 from types import SimpleNamespace
 

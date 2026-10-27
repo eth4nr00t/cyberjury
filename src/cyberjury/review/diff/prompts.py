@@ -31,13 +31,13 @@ _CHANGE_ANCHOR_FIELD = (
 )
 
 
-def diff_finder_system(*, review_brief: str, severity_rubric: str, navigation: str) -> str:
+def diff_finder_system(*, security_kernel: str, severity_rubric: str, navigation: str) -> str:
     """Render the diff finder contract shared by every unit of one run."""
     return finder_system(
         target="a code change",
         scope=_DIFF_SCOPE,
         output_fields=finding_fields(_CHANGE_ANCHOR_FIELD),
-        review_brief=review_brief,
+        security_kernel=security_kernel,
         severity_rubric=severity_rubric,
         navigation=navigation,
     )

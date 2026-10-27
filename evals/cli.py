@@ -197,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     repository_parser = sub.add_parser(
         "repository",
         parents=[benchmark],
-        help="record a Repository Review attempt directory as the next attempt of a repository case",
+        help="record a repository review attempt directory as the next attempt of a repository case",
         allow_abbrev=False,
     )
     repository_parser.add_argument("case", help="full <project>:<repository case id> name")

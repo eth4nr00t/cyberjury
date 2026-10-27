@@ -1,4 +1,4 @@
-"""Shared context envelope used by Diff Review and Repository Review."""
+"""Shared context envelope used by diff review and repository review."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Finder contract for repository review units."""
+"""Finder contract for repository units."""
 
 from __future__ import annotations
 
@@ -8,18 +8,18 @@ from cyberjury.review.schemas import finder_response_schema
 REPOSITORY_FINDING_SCHEMA = finding_schema()
 FINDER_RESPONSE_SCHEMA = finder_response_schema("repository_finder_reply", REPOSITORY_FINDING_SCHEMA)
 
-_REPOSITORY_SCOPE = """The user message contains one repository review unit as numbered source, cited as `seed`, \
+_REPOSITORY_SCOPE = """The user message contains one repository unit as numbered source, cited as `seed`, \
 followed by repository context for tracing inputs, controls, and effects: unverified call candidates, delivered \
 source, syntax hints, and an evidence catalog. Review the unit's code."""
 
 
-def repository_finder_system(*, review_brief: str, severity_rubric: str, navigation: str) -> str:
+def repository_finder_system(*, security_kernel: str, severity_rubric: str, navigation: str) -> str:
     """Render the repository finder contract shared by every unit of one run."""
     return finder_system(
-        target="one repository review unit",
+        target="one repository unit",
         scope=_REPOSITORY_SCOPE,
         output_fields=finding_fields(),
-        review_brief=review_brief,
+        security_kernel=security_kernel,
         severity_rubric=severity_rubric,
         navigation=navigation,
     )

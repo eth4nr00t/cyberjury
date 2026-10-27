@@ -5,9 +5,9 @@ from __future__ import annotations
 from cyberjury.review.contract import SECURITY_KERNEL_FILE, SEVERITY_RUBRIC_FILE
 
 
-def load_review_brief() -> str:
+def load_security_kernel() -> str:
     """Load the language-independent security kernel, the only security knowledge given to a model judgment."""
-    return f"# Security Reasoning Kernel\n{SECURITY_KERNEL_FILE.read_text(encoding='utf-8')}"
+    return SECURITY_KERNEL_FILE.read_text(encoding="utf-8")
 
 
 def load_severity_rubric() -> str:

@@ -1,4 +1,4 @@
-"""The language-independent source map and bounded repository review units."""
+"""The language-independent source map and bounded repository units."""
 
 from __future__ import annotations
 

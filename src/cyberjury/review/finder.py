@@ -1,4 +1,4 @@
-"""The Finder judgment of one review unit of any target."""
+"""The finder judgment of one review unit of any target."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from cyberjury.review.exchange import EvidenceJudgment, run_evidence_judgment
 from cyberjury.review.failures import exception_reason
 from cyberjury.review.finding import ChangeAnchor, Finding
 from cyberjury.review.identity import canonical_category
-from cyberjury.review.knowledge import load_review_brief, load_severity_rubric
+from cyberjury.review.knowledge import load_security_kernel, load_severity_rubric
 from cyberjury.review.navigation import SourceNavigationSession, navigation_instructions
 from cyberjury.review.paths import is_unsafe_rel
 from cyberjury.review.replies import CorrectableRoleResponseError, RoleReply, parse_role_response
@@ -87,7 +87,7 @@ def findings_from_reply(reply: RoleReply) -> list[Finding]:
 
 @dataclass(frozen=True, kw_only=True)
 class ReviewTarget[U: ReviewUnit]:
-    """What differs between review targets around the shared Finder judgment."""
+    """What differs between review targets around the shared finder judgment."""
 
     role: str
     response_schema: ResponseSchema
@@ -99,7 +99,7 @@ class ReviewTarget[U: ReviewUnit]:
 
 
 class UnitFinder[U: ReviewUnit]:
-    """One provider backed Finder seat bound to one target contract."""
+    """One provider backed finder seat bound to one target contract."""
 
     def __init__(
         self,
@@ -112,11 +112,11 @@ class UnitFinder[U: ReviewUnit]:
         self._target = target
         self._provider = provider
         self._model = model
-        review_brief = load_review_brief()
+        security_kernel = load_security_kernel()
         rubric = load_severity_rubric()
         self._systems = {
             navigation: target.system(
-                review_brief=review_brief,
+                security_kernel=security_kernel,
                 severity_rubric=rubric,
                 navigation=navigation_instructions() if navigation else "",
             )

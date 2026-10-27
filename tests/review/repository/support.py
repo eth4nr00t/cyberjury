@@ -91,7 +91,7 @@ def ground(units, *, limitations=(), navigator=None) -> list[RepositoryUnit]:
 
 
 def finder(provider, *, model: str = "mock") -> UnitFinder[RepositoryUnit]:
-    """Return the Repository Finder bound to one test provider."""
+    """Return the repository finder bound to one test provider."""
     return UnitFinder(REPOSITORY_TARGET, provider=provider, model=model)
 
 

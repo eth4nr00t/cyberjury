@@ -1,4 +1,4 @@
-"""The shared Finder parses replies, prompts with a cacheable contract, and exchanges evidence for any target."""
+"""The shared finder parses replies, prompts with a cacheable contract, and exchanges evidence for any target."""
 
 import json
 from types import SimpleNamespace
@@ -188,9 +188,9 @@ def test_finder_sends_the_contract_as_a_cacheable_system_prompt():
     prompt = call["prompt"]
     assert prompt.startswith(call["cache_prefix"])
     assert "SELECT * FROM u" in call["cache_prefix"]
-    assert "# Security Reasoning Kernel" in call["system"]
+    assert "# Security Kernel" in call["system"]
     assert "# Severity Rubric" in call["system"]
-    assert "# Security Reasoning Kernel" not in prompt
+    assert "# Security Kernel" not in prompt
 
 
 def test_finder_system_is_identical_across_units():
@@ -240,7 +240,7 @@ def test_published_evidence_ids_enter_the_cache_prefix_without_their_source():
     prompt = provider.calls[0]["prompt"]
     assert evidence.id in provider.calls[0]["cache_prefix"]
     assert "sensitive_operation" not in prompt
-    assert "# Security Reasoning Kernel" in provider.calls[0]["system"]
+    assert "# Security Kernel" in provider.calls[0]["system"]
 
 
 def test_finder_can_request_one_published_source_fragment():
@@ -321,7 +321,7 @@ def test_a_navigation_follow_up_reuses_the_system_prompt_and_cache_prefix(tmp_pa
     assert len(raw_provider.calls) == 2
     first, final = raw_provider.calls
     assert first["system"] == final["system"]
-    assert "# Security Reasoning Kernel" in first["system"]
+    assert "# Security Kernel" in first["system"]
     assert "# Source Navigation" in first["system"]
     assert first["cache_prefix"] == final["cache_prefix"]
     assert first["prompt"].startswith(first["cache_prefix"])

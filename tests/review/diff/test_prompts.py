@@ -7,7 +7,7 @@ from cyberjury.review.repository.prompts import REPOSITORY_FINDING_SCHEMA, repos
 
 def _system(navigation: bool = True) -> str:
     return diff_finder_system(
-        review_brief="# Security Reasoning Kernel\nKERNEL-X",
+        security_kernel="# Security Kernel\nKERNEL-X",
         severity_rubric="# Severity Rubric\nRUBRIC-X",
         navigation=navigation_instructions() if navigation else "",
     )
@@ -51,7 +51,7 @@ def test_diff_seed_keeps_embedded_markdown_fences_inside_the_numbered_diff():
 def test_diff_and_repository_share_one_finding_contract_except_the_change_anchor():
     """Diff and repository output-field sections and schemas match exactly once change_anchor is removed."""
     repository = repository_finder_system(
-        review_brief="# Security Reasoning Kernel\nKERNEL-X",
+        security_kernel="# Security Kernel\nKERNEL-X",
         severity_rubric="# Severity Rubric\nRUBRIC-X",
         navigation=navigation_instructions(),
     )

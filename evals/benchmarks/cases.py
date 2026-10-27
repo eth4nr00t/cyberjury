@@ -76,7 +76,7 @@ def find_case(name: str, benchmarks: Sequence[str | Path] | None = None) -> Benc
 
 
 def case_target(repository: Mapping, case: Mapping) -> dict[str, str]:
-    """Translate a validated repository and case into the pinned whole-repository review target."""
+    """Translate a validated repository and case into the pinned repository review target."""
     target = {"commit": case["commit"] if case["kind"] == "diff" else repository["commit"]}
     if repository.get("url"):
         target["url"] = repository["url"]

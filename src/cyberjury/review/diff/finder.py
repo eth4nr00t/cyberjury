@@ -1,4 +1,4 @@
-"""Diff Review target: the Finder contract over one diff unit and its change location rules."""
+"""Diff review target: the finder contract over one diff unit and its change location rules."""
 
 from __future__ import annotations
 

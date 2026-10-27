@@ -92,7 +92,7 @@
       }
     },
     "repositoryCase": {
-      "description": "A review of the whole repository at repository.commit. Its id is repository-<first 7 hex of repository.commit>.",
+      "description": "A repository review at repository.commit. Its id is repository-<first 7 hex of repository.commit>.",
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "kind", "checks"],

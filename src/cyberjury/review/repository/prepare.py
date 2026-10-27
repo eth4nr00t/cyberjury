@@ -1,4 +1,4 @@
-"""Repository Review preparation: bounded units over every readable production source file."""
+"""Repository review preparation: bounded units over every readable production source file."""
 
 from __future__ import annotations
 

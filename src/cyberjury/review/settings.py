@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DiffReviewSettings:
-    """Patch packing, retrieval, and context settings for Diff Review."""
+    """Patch packing, retrieval, and context settings for diff review."""
 
     target_patch_chars_per_unit: int = 60_000
     target_repository_context_chars_per_unit: int = 24_000
@@ -19,7 +19,7 @@ class DiffReviewSettings:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RepositoryReviewSettings:
-    """Discovery, unit construction, and context settings for Repository Review."""
+    """Discovery, unit construction, and context settings for repository review."""
 
     max_source_chars_per_unit: int = 24_000
     hard_split_overlap_chars: int = 2_000

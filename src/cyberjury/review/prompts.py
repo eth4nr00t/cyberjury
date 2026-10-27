@@ -132,7 +132,7 @@ def finder_system(
     target: str,
     scope: str,
     output_fields: str,
-    review_brief: str,
+    security_kernel: str,
     severity_rubric: str,
     navigation: str,
 ) -> str:
@@ -142,7 +142,7 @@ def finder_system(
         f"vulnerabilities. {UNTRUSTED_SOURCE_RULE}",
         f"# Task Scope\n\n{scope}",
         _DECISION_BOUNDARY,
-        review_brief.strip(),
+        security_kernel.strip(),
         severity_rubric.strip(),
         _EVIDENCE_RULES,
         navigation.strip(),

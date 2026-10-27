@@ -34,7 +34,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     repository = review_subcommands.add_parser(
         "repository",
-        help="review a whole repository, resuming open work when run again",
+        help="review a repository, resuming open work when run again",
         allow_abbrev=False,
     )
     repository.add_argument("path", nargs="?", default=".", help="directory to review, default the current directory")

@@ -1,4 +1,4 @@
-"""Repository Review target: the Finder contract over one repository unit and its location rule."""
+"""Repository review target: the finder contract over one repository unit and its location rule."""
 
 from __future__ import annotations
 
