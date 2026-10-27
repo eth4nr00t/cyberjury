@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from cyberjury.review.context import SourceSpan
 from cyberjury.review.identity import candidate_identity, location_fingerprint
-from cyberjury.severity import SEVERITIES
+from cyberjury.severity import SEVERITIES, index
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -126,3 +126,8 @@ class Finding:
             evidence_refs=tuple(refs),
             cited_spans=tuple(SourceSpan(**span) for span in spans),
         )
+
+
+def report_order(finding: Finding) -> tuple[int, str, int, str]:
+    """Order findings by severity, then file, line, and candidate id, as every review output lists them."""
+    return index(finding.severity), finding.file, finding.line, finding.candidate_id

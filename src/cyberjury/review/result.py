@@ -6,9 +6,9 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from cyberjury.canonical import canonical_sha256
-from cyberjury.review.finding import Finding
+from cyberjury.review.finding import Finding, report_order
 from cyberjury.review.issues import Issue
-from cyberjury.severity import SEVERITIES, index
+from cyberjury.severity import SEVERITIES
 
 FINDINGS_SCHEMA = "cyberjury.findings/v1"
 SKIPPED_FILES_SCHEMA = "cyberjury.skipped-files/v1"
@@ -56,7 +56,7 @@ def findings_artifact(
 ) -> FindingsArtifact:
     """Order the findings by severity and location, mark those only failed units reported, and list each issue."""
     issue_of = {member.candidate_id: issue.id for issue in issues for member in issue.members}
-    ordered = sorted(findings, key=lambda item: (index(item.severity), item.file, item.line, item.candidate_id))
+    ordered = sorted(findings, key=report_order)
     position = {finding.candidate_id: number for number, finding in enumerate(ordered)}
     return FindingsArtifact(
         findings=tuple(

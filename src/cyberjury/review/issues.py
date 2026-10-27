@@ -14,7 +14,7 @@ from cyberjury.providers.base import Message, Provider, ResponseSchema
 from cyberjury.providers.metering import model_call_context, model_call_scope
 from cyberjury.record import Record, RecordError, error_message, utc_timestamp
 from cyberjury.review.failures import exception_reason
-from cyberjury.review.finding import Finding
+from cyberjury.review.finding import Finding, report_order
 from cyberjury.review.items import ItemStore
 from cyberjury.review.paths import normalized_location_path, resolve_source_path
 from cyberjury.review.prompts import CLAIM_FIELDS, UNTRUSTED_SOURCE_RULE, fenced_source, finding_claim
@@ -35,7 +35,7 @@ def issue_id(member_ids: Iterable[str]) -> str:
 
 @dataclass(frozen=True, kw_only=True)
 class Issue:
-    """Findings that one code change fixes, in union order, with the links that joined them."""
+    """Findings that one code change fixes, in report order, with the links that joined them."""
 
     members: tuple[Finding, ...]
     linked_by: tuple[LinkKind, ...] = ()
@@ -47,7 +47,7 @@ class Issue:
 
     @property
     def representative(self) -> Finding:
-        """Return the first member in the deterministic union order."""
+        """Return the first member in report order: the most severe, then the earliest location."""
         return self.members[0]
 
 
@@ -85,7 +85,8 @@ def group_issues(findings: Sequence[Finding], links: Iterable[tuple[str, str]]) 
     for index, kind in joined:
         kinds.setdefault(root(index), set()).add(kind)
     return tuple(
-        Issue(members=tuple(group), linked_by=tuple(sorted(kinds.get(index, ())))) for index, group in members.items()
+        Issue(members=tuple(sorted(group, key=report_order)), linked_by=tuple(sorted(kinds.get(index, ()))))
+        for index, group in members.items()
     )
 
 

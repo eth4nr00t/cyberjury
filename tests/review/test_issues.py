@@ -52,9 +52,19 @@ def test_findings_at_one_line_with_one_category_form_one_issue_and_keep_every_me
 
     issues = group_issues([first, second, other], ())
 
-    assert [issue.members for issue in issues] == [(first, second), (other,)]
-    assert issues[0].representative is first
+    assert [set(issue.members) for issue in issues] == [{first, second}, {other}]
     assert [issue.linked_by for issue in issues] == [("location",), ()]
+
+
+def test_the_representative_is_the_most_severe_member_in_any_union_order():
+    """A LOW line-2 report listed before a HIGH line-9 report it is linked to still yields the HIGH representative."""
+    low = replace(_finding("verbose error", line=2), severity="LOW")
+    high = _finding("owner check missing", line=9)
+    link = [(low.candidate_id, high.candidate_id)]
+
+    for order in ([low, high], [high, low]):
+        (issue,) = group_issues(order, link)
+        assert issue.members == (high, low)
 
 
 def test_findings_on_different_lines_of_one_function_are_separate_issues():
@@ -165,7 +175,7 @@ def test_a_judgment_links_two_issues_only_when_one_change_fixes_both(tmp_path):
     assert len(judge.pairs) == 2
     assert links.links == (tuple(sorted((view.candidate_id, model.candidate_id))),)
     assert [len(issue.members) for issue in issues] == [2, 1]
-    assert issues[0].members == (view, model)
+    assert set(issues[0].members) == {view, model}
     assert issues[0].linked_by == ("judgment",)
 
 
