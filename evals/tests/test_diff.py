@@ -9,9 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from cyberjury import cli as climod
 from cyberjury.providers import configuration as configuration_module
 from cyberjury.providers.mock import MockProvider
+from cyberjury.record import Record
 from cyberjury.review import command as commandmod
 from evals import diff
 from evals.benchmarks.contract import ChangeAnchor
@@ -155,9 +155,16 @@ def test_run_aborts_on_missing_provider_credentials(tmp_path, case, scripted_mod
 
 
 def test_an_interrupted_review_stops_the_run(tmp_path, case, scripted_model, monkeypatch):
-    """A review that exits 130 raises KeyboardInterrupt instead of recording the case and moving on."""
+    """An interrupted review raises KeyboardInterrupt instead of recording the case and moving on."""
     scripted_model()
-    monkeypatch.setattr(climod, "main", lambda argv: climod.INTERRUPTED_EXIT)
+    interrupted = Record(
+        id="attempt-20260101-000000-11111111",
+        status="interrupted",
+        started_at="2026-01-01T00:00:00Z",
+        duration_seconds=1.0,
+        attributes={"reason": "operator interrupted the command"},
+    )
+    monkeypatch.setattr(diff, "run_review_command", lambda _command, **_streams: interrupted)
     records = []
 
     with pytest.raises(KeyboardInterrupt):

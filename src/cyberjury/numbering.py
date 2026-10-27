@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$")
 
 
@@ -35,7 +35,7 @@ def _span(count: str | None) -> int:
 def _width(lines: list[str]) -> int:
     highest = 0
     for line in lines:
-        m = _HUNK.match(line)
+        m = HUNK_HEADER.match(line)
         if m:
             highest = max(
                 highest,
@@ -59,7 +59,7 @@ def numbered_diff(diff: str) -> str:
     old_line = new_line = 0
     new_remaining = old_remaining = 0
     for line in lines:
-        m = _HUNK.match(line)
+        m = HUNK_HEADER.match(line)
         if m:
             old_line = int(m.group(1))
             new_line = int(m.group(3))

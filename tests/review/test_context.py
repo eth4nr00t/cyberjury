@@ -9,6 +9,7 @@ from cyberjury.review.context import (
     GroundingCoverage,
     SourceEvidence,
     SourceSpan,
+    UnknownEvidenceRequest,
     evidence_index,
     evidence_request_ids,
     merge_grounding_coverage,
@@ -248,10 +249,19 @@ def test_one_oversized_definition_remains_indivisible_evidence():
     assert selected.coverage.included == (evidence.identity,)
 
 
-@pytest.mark.parametrize("requested", [[""], [" ev-one"], ["ev-one", "ev-one"]])
-def test_evidence_selection_rejects_repaired_or_duplicate_ids(requested):
-    """Empty, whitespace-padded, or duplicated ids raise EvidenceRequestError instead of being normalized."""
+def test_evidence_selection_delivers_a_repeated_id_once():
+    """Requesting one published id twice delivers its source a single time."""
     evidence = EvidenceItem.create(identity="one.py:1", label="one", text="source")
 
-    with pytest.raises(EvidenceRequestError):
-        select_evidence((evidence,), requested, target_chars=100)
+    selected = select_evidence((evidence,), [evidence.id, evidence.id], target_chars=100)
+
+    assert selected.text.count("source") == 1
+    assert selected.coverage.included == (evidence.identity,)
+
+
+def test_evidence_selection_does_not_repair_a_padded_id():
+    """A published id with a leading space raises UnknownEvidenceRequest instead of being trimmed."""
+    evidence = EvidenceItem.create(identity="one.py:1", label="one", text="source")
+
+    with pytest.raises(UnknownEvidenceRequest):
+        select_evidence((evidence,), [f" {evidence.id}"], target_chars=100)

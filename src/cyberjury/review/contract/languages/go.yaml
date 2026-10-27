@@ -18,7 +18,6 @@ syntax:
       arguments: (argument_list) @arguments) @call
   receivers: |
     (method_declaration receiver: (parameter_list (_) @receiver)) @def
-  imports: []
   namespace_imports:
   - |
     (import_spec !name path: (interpreted_string_literal) @module) @statement

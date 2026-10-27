@@ -16,7 +16,7 @@ def closed_object(properties: dict[str, object]) -> dict[str, object]:
 
 
 def string_array() -> dict[str, object]:
-    """Build a shared array of string identifiers or questions."""
+    """Build the schema of an array of string ids."""
     return {"type": "array", "items": {"type": "string"}}
 
 

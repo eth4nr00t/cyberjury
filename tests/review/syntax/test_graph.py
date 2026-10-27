@@ -44,7 +44,7 @@ def test_relationship_evidence_preserves_calls_but_does_not_assign_targets(tmp_p
         "from service import load\n\ndef route(x):\n    first = load(x)\n    return load(x + 1)\n"
     )
 
-    evidence = syntax_facts(tmp_path).relationships.to_data()
+    evidence = syntax_facts(tmp_path).relationships.to_dict()
 
     assert [item["expression"] for item in evidence["callsites"]] == ["load(x)", "load(x + 1)"]
     assert all(item["candidate_target_ids"] == [] for item in evidence["observations"] if item["kind"] == "syntax_call")
@@ -63,7 +63,7 @@ def test_same_name_definitions_remain_visible_as_ambiguous_call_candidates(tmp_p
     (tmp_path / "two.py").write_text("def load(value):\n    return value + 1\n")
     (tmp_path / "route.py").write_text("def route(value):\n    return load(value)\n")
 
-    evidence = syntax_facts(tmp_path).relationships.to_data()
+    evidence = syntax_facts(tmp_path).relationships.to_dict()
     candidates = {item["id"] for item in evidence["definitions"] if item["name"] == "load"}
     relationship = syntax_facts(tmp_path).relationships.call_relationships[0]
 
@@ -89,7 +89,7 @@ def test_import_alias_remains_unresolved_with_its_declaration_clue(tmp_path):
         "from one import load as selected_load\n\ndef route(value):\n    return selected_load(value)\n"
     )
 
-    evidence = syntax_facts(tmp_path).relationships.to_data()
+    evidence = syntax_facts(tmp_path).relationships.to_dict()
     callsite = next(item for item in evidence["callsites"] if item["callee_spelling"] == "selected_load")
     relationship = next(
         item for item in syntax_facts(tmp_path).relationships.call_relationships if item.callsite_id == callsite["id"]
@@ -112,7 +112,7 @@ def test_namespace_declaration_and_concrete_use_are_distinct_relationship_questi
         'import * as service from "./service";\nexport function route() { return service.load(); }\n'
     )
 
-    evidence = syntax_facts(tmp_path).relationships.to_data()
+    evidence = syntax_facts(tmp_path).relationships.to_dict()
 
     assert any(item["kind"] == "namespace_declaration" for item in evidence["observations"])
     assert [(item["kind"], item["reference"]) for item in evidence["structural_relationships"]] == [
@@ -137,7 +137,7 @@ def test_class_inheritance_uses_one_cross_language_structural_contract(tmp_path,
     """Child extending Base in Python, JS, TS, TSX, and Solidity gives the same Base inheritance candidate."""
     (tmp_path / name).write_text(source)
 
-    evidence = syntax_facts(tmp_path).relationships.to_data()
+    evidence = syntax_facts(tmp_path).relationships.to_dict()
     child = next(item for item in evidence["definitions"] if item["name"] == "Child")
     base = next(item for item in evidence["definitions"] if item["name"] == "Base")
     relationship = next(item for item in evidence["structural_relationships"] if item["kind"] == "inheritance")
@@ -160,7 +160,7 @@ def test_inheritance_candidates_include_types_only_and_keep_a_decorated_owner(tm
     )
     (tmp_path / "models.py").write_text(source)
 
-    evidence = syntax_facts(tmp_path).relationships.to_data()
+    evidence = syntax_facts(tmp_path).relationships.to_dict()
     definitions = {item["id"]: item for item in evidence["definitions"]}
     child = next(item for item in definitions.values() if item["name"] == "Child")
     relationship = next(item for item in evidence["structural_relationships"] if item["kind"] == "inheritance")
@@ -181,7 +181,7 @@ def test_an_outer_local_import_is_a_declaration_clue_for_a_nested_caller(tmp_pat
         "    return nested\n"
     )
 
-    evidence = syntax_facts(tmp_path).relationships.to_data()
+    evidence = syntax_facts(tmp_path).relationships.to_dict()
     nested = next(item for item in evidence["definitions"] if item["name"] == "nested")
     callsite = next(item for item in evidence["callsites"] if item["caller_definition_id"] == nested["id"])
     observations = [item for item in evidence["observations"] if callsite["id"] in item["subject_ids"]]
@@ -196,7 +196,7 @@ def test_an_imported_receiver_is_a_declaration_clue_for_its_member_call(tmp_path
         "from views import GlobalSearchView\n\ndef route():\n    return GlobalSearchView.as_view()\n"
     )
 
-    evidence = syntax_facts(tmp_path).relationships.to_data()
+    evidence = syntax_facts(tmp_path).relationships.to_dict()
     callsite = next(item for item in evidence["callsites"] if item["expression"] == "GlobalSearchView.as_view()")
     observations = [item for item in evidence["observations"] if callsite["id"] in item["subject_ids"]]
 
@@ -209,7 +209,7 @@ def test_a_reexport_subject_range_is_the_exact_export_statement(tmp_path):
     (tmp_path / "index.ts").write_text(source)
     (tmp_path / "service.ts").write_text("export function load() { return 1; }\n")
 
-    subject = syntax_facts(tmp_path).relationships.to_data()["structural_relationships"][0]
+    subject = syntax_facts(tmp_path).relationships.to_dict()["structural_relationships"][0]
     start, end = subject["source"]["range"]
 
     assert source[start:end] == "export { load } from './service';"
@@ -219,7 +219,7 @@ def test_a_top_level_registration_call_uses_an_explicit_file_scope_caller(tmp_pa
     """A module-level register(handler) call is attributed to a <file> definition of kind file."""
     (tmp_path / "app.py").write_text("register(handler)\n\ndef handler(value):\n    return value\n")
 
-    evidence = syntax_facts(tmp_path).relationships.to_data()
+    evidence = syntax_facts(tmp_path).relationships.to_dict()
     file_scope = next(item for item in evidence["definitions"] if item["name"] == "<file>")
     callsite = next(item for item in evidence["callsites"] if item["expression"] == "register(handler)")
 
@@ -233,7 +233,7 @@ def test_decorator_calls_belong_to_the_decorated_definition(tmp_path):
         "def require_admin(handler):\n    return handler\n\n@require_admin\ndef protected(value):\n    return value\n"
     )
 
-    evidence = syntax_facts(tmp_path).relationships.to_data()
+    evidence = syntax_facts(tmp_path).relationships.to_dict()
     protected = next(item for item in evidence["definitions"] if item["name"] == "protected")
     callsite = next(item for item in evidence["callsites"] if item["expression"] == "@require_admin")
 
@@ -269,7 +269,7 @@ def test_solidity_named_import_is_a_declaration_clue_for_its_alias(tmp_path):
         "}\n"
     )
 
-    evidence = syntax_facts(tmp_path).relationships.to_data()
+    evidence = syntax_facts(tmp_path).relationships.to_dict()
     callsite = next(item for item in evidence["callsites"] if item["callee_spelling"] == "Auth")
     declaration = next(
         item
@@ -285,7 +285,7 @@ def test_unaliased_go_import_is_a_raw_clue_for_a_receiver_call(tmp_path):
     source = 'package app\nimport "example.com/app/client-go"\nfunc Route() { client.Target() }\n'
     (tmp_path / "route.go").write_text(source)
 
-    evidence = syntax_facts(tmp_path).relationships.to_data()
+    evidence = syntax_facts(tmp_path).relationships.to_dict()
     callsite = next(item for item in evidence["callsites"] if item["expression"] == "client.Target()")
     observation = next(
         item
@@ -303,7 +303,7 @@ def test_relationship_definition_records_its_type_owner(tmp_path):
     """Service.load is recorded as a method whose owner_id is the Service class."""
     (tmp_path / "service.py").write_text("class Service:\n    def load(self, x):\n        return x\n")
 
-    definitions = syntax_facts(tmp_path).relationships.to_data()["definitions"]
+    definitions = syntax_facts(tmp_path).relationships.to_dict()["definitions"]
     owner = next(item for item in definitions if item["name"] == "Service")
     method = next(item for item in definitions if item["name"] == "load")
 
@@ -315,7 +315,7 @@ def test_relationship_evidence_keeps_a_recursive_callsite(tmp_path):
     """The walk(node.parent) call inside walk() is kept as a callsite."""
     (tmp_path / "walk.py").write_text("def walk(node):\n    if node:\n        return walk(node.parent)\n")
 
-    evidence = syntax_facts(tmp_path).relationships.to_data()
+    evidence = syntax_facts(tmp_path).relationships.to_dict()
 
     assert [item["expression"] for item in evidence["callsites"]] == ["walk(node.parent)"]
 

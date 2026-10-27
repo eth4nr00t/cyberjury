@@ -53,13 +53,13 @@ def test_relationship_evidence_has_stable_ids_and_explicit_source_hashes():
     bundle = _bundle()
 
     assert bundle == _bundle()
-    data = bundle.to_data()
+    data = bundle.to_dict()
     assert bundle.call_relationships[0].target_status == "candidate"
     assert bundle.call_relationships[0].candidate_callee_definition_ids == (
         next(item.id for item in bundle.definitions if item.name == "load"),
     )
     assert len(data["definitions"][0]["source"]["content_sha256"]) == 64
-    assert bundle.canonical().to_data() == data
+    assert bundle.canonical().to_dict() == data
 
 
 def test_relationship_evidence_rejects_conflicting_content_at_one_coordinate():

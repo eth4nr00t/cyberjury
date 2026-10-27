@@ -114,7 +114,6 @@ def shared_grounding(
 class _GroundedWork:
     shared: SharedGrounding
     units: tuple
-    skipped_files: tuple = ()
 
 
 def prepared_units(units, root: Path, *, facts: Facts | None = None) -> _GroundedWork:

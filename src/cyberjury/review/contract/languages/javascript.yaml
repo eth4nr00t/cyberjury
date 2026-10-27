@@ -41,16 +41,16 @@ syntax:
     (call_expression function: (member_expression object: (_) @receiver property: (property_identifier) @member)
       arguments: (arguments) @arguments) @call
   imports:
-  - |
-    (import_statement
-      (import_clause (named_imports (import_specifier name: (identifier) @imported !alias)))
-      source: (string) @module) @statement
-  - |
-    (import_statement
-      (import_clause
-        (named_imports
-          (import_specifier name: (identifier) @imported alias: (identifier) @alias)))
-      source: (string) @module) @statement
+  - query: |
+      (import_statement
+        (import_clause (named_imports (import_specifier name: (identifier) @imported !alias)))
+        source: (string) @module) @statement
+  - query: |
+      (import_statement
+        (import_clause
+          (named_imports
+            (import_specifier name: (identifier) @imported alias: (identifier) @alias)))
+        source: (string) @module) @statement
   - query: |
       (import_statement (import_clause (identifier) @alias) source: (string) @module) @statement
     imported: default
@@ -65,21 +65,21 @@ syntax:
   - query: |
       (export_statement "*" source: (string) @module) @statement
     imported: '*'
-  - |
-    (variable_declarator
-      name: (object_pattern (shorthand_property_identifier_pattern) @imported)
-      value: (call_expression
-        function: (identifier) @require
-        arguments: (arguments (string) @module))
-      (#eq? @require "require")) @statement
-  - |
-    (variable_declarator
-      name: (object_pattern
-        (pair_pattern key: (property_identifier) @imported value: (identifier) @alias))
-      value: (call_expression
-        function: (identifier) @require
-        arguments: (arguments (string) @module))
-      (#eq? @require "require")) @statement
+  - query: |
+      (variable_declarator
+        name: (object_pattern (shorthand_property_identifier_pattern) @imported)
+        value: (call_expression
+          function: (identifier) @require
+          arguments: (arguments (string) @module))
+        (#eq? @require "require")) @statement
+  - query: |
+      (variable_declarator
+        name: (object_pattern
+          (pair_pattern key: (property_identifier) @imported value: (identifier) @alias))
+        value: (call_expression
+          function: (identifier) @require
+          arguments: (arguments (string) @module))
+        (#eq? @require "require")) @statement
   namespace_imports:
   - |
     (import_statement (import_clause (namespace_import (identifier) @alias))

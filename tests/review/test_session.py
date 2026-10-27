@@ -25,6 +25,8 @@ from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.sources.snapshot import SourceSnapshot
 from cyberjury.workspace import SessionConflictError
 
+_FACTS = FactsReceipt.create(backend_id="test", facts=Facts())
+
 
 def _request() -> ReviewAttemptRequest:
     seat = ProviderSeatRecord(
@@ -63,9 +65,6 @@ def _bind_source(attempt, root) -> None:
         GroundingReceipt.create(unit_plan=unit_plan, contexts=()),
     ):
         attempt.bind(value)
-
-
-_FACTS = FactsReceipt.create(backend_id="test", facts=Facts())
 
 
 def test_same_review_intent_reuses_session_with_distinct_attempts(tmp_path):

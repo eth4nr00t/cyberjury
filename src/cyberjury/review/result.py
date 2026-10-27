@@ -30,17 +30,6 @@ SKIP_REASONS = (
 )
 
 
-def _digest(value: object, label: str) -> str:
-    invalid = (
-        not isinstance(value, str)
-        or len(value) != 64
-        or any(character not in "0123456789abcdef" for character in value)
-    )
-    if invalid:
-        raise ValueError(f"{label} must be a SHA-256 digest")
-    return value
-
-
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SkippedFile:
     """One target file a review did not send to model review, and why."""
@@ -58,13 +47,6 @@ class SkippedFile:
     def to_dict(self) -> dict[str, object]:
         """Return the strict JSON representation."""
         return {"path": self.path, "reason": self.reason}
-
-    @classmethod
-    def from_dict(cls, value: object) -> SkippedFile:
-        """Parse one strict skipped file record."""
-        if not isinstance(value, dict) or set(value) != {"path", "reason"}:
-            raise ValueError("skipped file record has an invalid shape")
-        return cls(path=value["path"], reason=value["reason"])
 
 
 @dataclass(frozen=True, slots=True)

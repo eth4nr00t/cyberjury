@@ -14,7 +14,7 @@ from cyberjury.review.diff.model import DiffUnit
 from cyberjury.review.finder import findings_from_reply
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.replies import CorrectableRoleResponseError
-from cyberjury.review.repository.context import Unit
+from cyberjury.review.repository.model import RepositoryUnit
 from cyberjury.review.union import MERGE_RULE
 from tests.review.diff import support as diff
 from tests.review.repository import support as repository
@@ -22,7 +22,7 @@ from tests.review.support import definition, navigator_from_callgraph
 
 
 def _unit(name, grounding, root="."):
-    return Unit(name=name, root=str(root), file=name, span=(0, 0), grounding=grounding)
+    return RepositoryUnit(name=name, root=str(root), file=name, span=(0, 0), grounding=grounding)
 
 
 def _diff_findings(provider, diff_text=diff.SQL_DIFF, *, context=""):
@@ -324,7 +324,7 @@ def test_reviewing_one_unit_again_reuses_its_cache_prefix(tmp_path):
     assert second["system"] == first["system"]
 
 
-def test_published_evidence_does_not_change_the_profile_brief():
+def test_published_evidence_ids_enter_the_cache_prefix_without_their_source():
     """Published evidence ids enter the cache prefix while their source text stays out of the prompt."""
     provider = MockProvider(default=diff.reply([]))
     evidence = EvidenceItem.create(
@@ -405,7 +405,7 @@ def test_model_call_after_exact_evidence_delivery_is_a_followup():
     assert [call["trigger"] for call in calls] == ["initial_judgment", "evidence_followup"]
 
 
-def test_navigation_keeps_profile_coverage_and_runs_a_final_evidence_sweep(tmp_path):
+def test_a_navigation_follow_up_reuses_the_system_prompt_and_cache_prefix(tmp_path):
     """A search_symbols query triggers a follow-up call sharing system and prefix that shows the source."""
     navigator = _model_navigator(tmp_path)
     raw_provider = MockProvider(

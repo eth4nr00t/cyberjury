@@ -135,7 +135,7 @@ class MeteringProvider(Provider):
         cache_segments: tuple[str, ...] = (),
         response_schema: ResponseSchema | None = None,
     ) -> CompletionResult:
-        """Return one provider completion with optional usage accounting."""
+        """Delegate one completion and record its call, including a failed one, in the shared meter."""
         started = perf_counter()
         context = _CURRENT_CALL.get()
         record: dict[str, object] = {

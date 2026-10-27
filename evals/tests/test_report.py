@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
 from cyberjury.providers.metering import (
@@ -57,12 +58,12 @@ def test_report_counts_recall_per_run_and_check_precision(
     summary = summarize(cases, runs)
 
     check = f"{benchmark_project.diff_case}:create-missing-owner"
-    assert summary["recall"] == {"found": 1, "total": 2}
-    assert summary["recall_by_run"] == {1: {"found": 1, "total": 1}, 2: {"found": 0, "total": 1}}
-    assert summary["checks"] == {check: {"found": 1, "attempts": 2}}
-    assert summary["verdicts"] == {"duplicate": 1, "needs_review": 0, "not_actionable": 1, "supported": 1}
-    assert summary["precision"] == 0.5
-    assert summary["failed"] == [f"{benchmark_project.diff_case} attempt 3: finder failed"]
+    assert summary.recall == {"found": 1, "total": 2}
+    assert summary.recall_by_run == {1: {"found": 1, "total": 1}, 2: {"found": 0, "total": 1}}
+    assert summary.checks == {check: {"found": 1, "attempts": 2}}
+    assert summary.verdicts == {"duplicate": 1, "needs_review": 0, "not_actionable": 1, "supported": 1}
+    assert summary.precision == 0.5
+    assert summary.failed == [f"{benchmark_project.diff_case} attempt 3: finder failed"]
     text = format_summary(summary)
     assert f"{check} 1/2" in text
     assert "report precision 50.0% = supported 1 / (supported 1 + not_actionable 1), over 3 reports" in text
@@ -78,8 +79,8 @@ def test_report_sums_cost_from_model_call_receipts(tmp_path, cases, write_attemp
 
     summary = summarize(cases, runs, [tmp_path / "calls"])
 
-    assert summary["cost"]["total"]["requests"] == 1
-    assert summary["cost"]["stages"]["initial_judgment finder"]["cache_read_tokens"] == 5
+    assert summary.cost["total"]["requests"] == 1
+    assert summary.cost["stages"]["initial_judgment finder"]["cache_read_tokens"] == 5
     assert "requests 1, failed 0, input tokens 12 (cache read 5), output tokens 3" in format_summary(summary)
 
 
@@ -103,22 +104,21 @@ def test_report_withholds_precision_and_fails_while_work_is_open(tmp_path, cases
 
     summary = summarize(cases, runs)
 
-    assert summary["precision"] is None
-    assert len(summary["unadjudicated"]) == 1
+    assert summary.precision is None
+    assert len(summary.unadjudicated) == 1
     assert failures(summary, precision_floor=0.9) == [
         "1 attempts without a ledger",
         "1 reports still needing source assessment",
     ]
 
 
-def test_report_fails_a_run_that_mixes_rubrics():
+def test_report_fails_a_run_that_mixes_rubrics(tmp_path, cases, write_attempt, write_ledger):
     """Two ledger rounds with different rubric hashes fail with run mixes ledgers under different rubrics."""
-    summary = {
-        "failed": [],
-        "unadjudicated": [],
-        "verdicts": {"needs_review": 0},
-        "precision": 1.0,
-        "ledger_rounds": [("round-" + "0" * 16, "e" * 64), ("round-" + "1" * 16, "f" * 64)],
-    }
+    runs = tmp_path / "runs"
+    write_ledger(write_attempt(runs, 1, (A,)), {A: _CREDIT})
+    summary = replace(
+        summarize(cases, runs),
+        ledger_rounds=[("round-" + "0" * 16, "e" * 64), ("round-" + "1" * 16, "f" * 64)],
+    )
 
     assert failures(summary, precision_floor=0) == ["run mixes ledgers adjudicated under different rubrics"]

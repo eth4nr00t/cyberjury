@@ -7,9 +7,9 @@ import pytest
 
 from cyberjury.review.context import GroundingContext, delivered_source_block
 from cyberjury.review.definitions import DefinitionUnitPlan
-from cyberjury.review.diff.context import changed_file_sources, ground_diff_unit, plan_diff_units
+from cyberjury.review.diff.context import changed_file_sources, ground_diff_unit
 from cyberjury.review.diff.model import DiffUnit
-from cyberjury.review.diff.prepare import prepare_diff_review
+from cyberjury.review.diff.prepare import plan_diff_units, prepare_diff_review
 from cyberjury.review.facts import FactLimitation, Facts
 from cyberjury.review.prepare import SharedGrounding
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
@@ -276,13 +276,13 @@ def test_diff_units_share_one_facts_context_for_batch_context(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("path", "source"),
+    ("path", "source", "expected"),
     [
-        ("app.py", "def route():\n    allowed = policy()\n    return sensitive() if allowed else None\n"),
-        ("policy.yaml", "require_approval: true\nrole: admin\n"),
+        ("app.py", "def route():\n    allowed = policy()\n    return sensitive() if allowed else None\n", "sensitive"),
+        ("policy.yaml", "require_approval: true\nrole: admin\n", "role: admin"),
     ],
 )
-def test_prepared_fallback_units_keep_current_repository_context(tmp_path, path, source):
+def test_prepared_fallback_units_keep_current_repository_context(tmp_path, path, source, expected):
     """Unseeded app.py or policy.yaml changes deliver one window starting at line 1 with current content."""
     (tmp_path / path).write_text(source)
     collector = shared_grounding(tmp_path)
@@ -293,7 +293,7 @@ def test_prepared_fallback_units_keep_current_repository_context(tmp_path, path,
     assert unit.grounding is not None
     [window] = unit.grounding.source_evidence
     assert window.text.startswith(f"# file: {path} lines 1-")
-    assert "admin" in window.text or "sensitive" in window.text
+    assert expected in window.text
 
 
 def test_changed_file_windows_center_on_every_changed_region_of_any_text_file(tmp_path):

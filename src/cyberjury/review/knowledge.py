@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,11 +18,6 @@ class ReviewBrief:
         """Reject an empty judgment contract."""
         if not isinstance(self.kernel, str) or not self.kernel.strip():
             raise ValueError("security kernel must be nonempty")
-
-    @property
-    def content_sha256(self) -> str:
-        """Identify the exact prompt content."""
-        return hashlib.sha256(self.render().encode("utf-8")).hexdigest()
 
     def render(self) -> str:
         """Give every judgment the complete, compact kernel."""

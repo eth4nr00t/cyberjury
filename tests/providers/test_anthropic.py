@@ -233,7 +233,7 @@ def test_non_temperature_bad_request_still_fails_loud():
 
 
 def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch):
-    """One retry owner keeps configured attempts from multiplying."""
+    """A client built with key k and a gateway base gets max_retries=0, leaving retries to the outer provider."""
     captured = {}
 
     class _Anthropic:

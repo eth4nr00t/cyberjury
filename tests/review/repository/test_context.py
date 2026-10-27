@@ -14,11 +14,11 @@ from cyberjury.review.relationships import (
     SourceReference,
 )
 from cyberjury.review.repository.context import (
-    Unit,
     UnitSourceError,
     gather_context,
     ground_repository_unit,
 )
+from cyberjury.review.repository.model import RepositoryUnit
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
 from tests.review.repository.support import EMPTY_REPLY, finder, review, source_unit
@@ -256,7 +256,9 @@ def test_grounding_uses_only_the_exact_facts_path_when_basenames_repeat(tmp_path
 def test_gather_reads_only_the_span_window_of_a_chunked_unit(tmp_path):
     """A unit spanning the last 8 characters of a 30 KB file sees the ZZZZ tail but not the AAAA head."""
     (tmp_path / "big.py").write_text("AAAA" + "B" * 30_000 + "ZZZZ")
-    tail = gather_context(Unit(name="big.py#2", root=str(tmp_path), file="big.py", span=(30_000, 30_008))).seed
+    tail = gather_context(
+        RepositoryUnit(name="big.py#2", root=str(tmp_path), file="big.py", span=(30_000, 30_008))
+    ).seed
     assert "ZZZZ" in tail
     assert "AAAA" not in tail
 
@@ -266,7 +268,9 @@ def test_gather_numbers_a_span_window_from_its_real_first_line(tmp_path):
     text = "".join(f"line{i}\n" for i in range(1, 501))
     (tmp_path / "big.py").write_text(text)
     start = text.index("line300")
-    content = gather_context(Unit(name="big.py#2", root=str(tmp_path), file="big.py", span=(start, start + 8))).seed
+    content = gather_context(
+        RepositoryUnit(name="big.py#2", root=str(tmp_path), file="big.py", span=(start, start + 8))
+    ).seed
     assert "300 | line300" in content
     assert "# file: big.py lines 300-300" in content
 
@@ -274,4 +278,4 @@ def test_gather_numbers_a_span_window_from_its_real_first_line(tmp_path):
 def test_gather_fails_when_a_unit_source_file_is_missing(tmp_path):
     """A unit pointing at a nonexistent missing.py raises UnitSourceError naming that file."""
     with pytest.raises(UnitSourceError, match=r"missing\.py"):
-        gather_context(Unit(name="u", root=str(tmp_path), file="missing.py", span=(0, 1)))
+        gather_context(RepositoryUnit(name="u", root=str(tmp_path), file="missing.py", span=(0, 1)))

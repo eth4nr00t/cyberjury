@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 from collections import Counter, defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 from cyberjury.providers.metering import validate_model_calls_document
-from evals.adjudication import VERDICTS, adjudicate
+from evals.adjudication import VERDICTS, Adjudication, adjudicate
 from evals.attempts import find_attempts, read_json
 from evals.benchmarks.cases import BenchmarkCase
 
@@ -19,7 +20,29 @@ PRECISION_DEFINITION = (
 _TOKENS = ("input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens")
 
 
-def summarize(cases: dict[str, BenchmarkCase], runs: Path, calls: Sequence[Path] = ()) -> dict[str, object]:
+@dataclass(frozen=True, kw_only=True)
+class RunSummary:
+    """Reviewed recall, report verdicts, issue counts, and model call cost of one runs directory."""
+
+    runs: str
+    cases: int
+    attempts: int
+    failed: list[str]
+    unadjudicated: list[str]
+    recall: dict[str, int]
+    recall_by_run: dict[int, dict[str, int]]
+    checks: dict[str, dict[str, int]]
+    verdicts: dict[str, int]
+    reports: int
+    issues: dict[str, int]
+    precision: float | None
+    precision_definition: str
+    ledger_rounds: list[tuple[str, str]]
+    cost: dict[str, object]
+    adjudications: list[Adjudication]
+
+
+def summarize(cases: dict[str, BenchmarkCase], runs: Path, calls: Sequence[Path] = ()) -> RunSummary:
     """Summarize every attempt under one runs directory and the model call receipts of the same runs."""
     failed, unadjudicated, adjudicated = [], [], []
     for attempt in find_attempts(runs):
@@ -44,33 +67,33 @@ def summarize(cases: dict[str, BenchmarkCase], runs: Path, calls: Sequence[Path]
     reports = sum(counts.values())
     pending = counts["needs_review"]
     judged = counts["supported"] + counts["not_actionable"]
-    return {
-        "runs": str(runs),
-        "cases": len({item.case for item in adjudicated}),
-        "attempts": len(adjudicated),
-        "failed": failed,
-        "unadjudicated": unadjudicated,
-        "recall": {
+    return RunSummary(
+        runs=str(runs),
+        cases=len({item.case for item in adjudicated}),
+        attempts=len(adjudicated),
+        failed=failed,
+        unadjudicated=unadjudicated,
+        recall={
             "found": sum(run["found"] for run in by_run.values()),
             "total": sum(run["total"] for run in by_run.values()),
         },
-        "recall_by_run": {number: dict(by_run[number]) for number in sorted(by_run)},
-        "checks": {
+        recall_by_run={number: dict(by_run[number]) for number in sorted(by_run)},
+        checks={
             name: {"found": count["found"], "attempts": count["attempts"]} for name, count in sorted(checks.items())
         },
-        "verdicts": {verdict: counts[verdict] for verdict in VERDICTS},
-        "reports": reports,
-        "issues": {
+        verdicts={verdict: counts[verdict] for verdict in VERDICTS},
+        reports=reports,
+        issues={
             "issues": sum(item.issues for item in adjudicated),
             "duplicate_issues": sum(item.duplicate_issues for item in adjudicated),
             "mixed_issues": sum(item.mixed_issues for item in adjudicated),
         },
-        "precision": round(counts["supported"] / judged, 4) if judged and not pending else None,
-        "precision_definition": PRECISION_DEFINITION,
-        "ledger_rounds": sorted({(item.round_id, item.rubric_sha256) for item in adjudicated}),
-        "cost": _cost(calls),
-        "adjudications": adjudicated,
-    }
+        precision=round(counts["supported"] / judged, 4) if judged and not pending else None,
+        precision_definition=PRECISION_DEFINITION,
+        ledger_rounds=sorted({(item.round_id, item.rubric_sha256) for item in adjudicated}),
+        cost=_cost(calls),
+        adjudications=adjudicated,
+    )
 
 
 def _receipts(paths: Sequence[Path]) -> list[Path]:
@@ -100,57 +123,57 @@ def _cost(paths: Sequence[Path]) -> dict[str, object]:
     }
 
 
-def failures(summary: dict[str, object], *, precision_floor: float) -> list[str]:
+def failures(summary: RunSummary, *, precision_floor: float) -> list[str]:
     """Return the failures that block a run: incomplete work, mixed rubrics, a precision floor."""
     fails = []
-    if summary["failed"]:
-        fails.append(f"{len(summary['failed'])} failed attempts")
-    if summary["unadjudicated"]:
-        fails.append(f"{len(summary['unadjudicated'])} attempts without a ledger")
-    if pending := summary["verdicts"]["needs_review"]:
+    if summary.failed:
+        fails.append(f"{len(summary.failed)} failed attempts")
+    if summary.unadjudicated:
+        fails.append(f"{len(summary.unadjudicated)} attempts without a ledger")
+    if pending := summary.verdicts["needs_review"]:
         fails.append(f"{pending} reports still needing source assessment")
-    if len({rubric for _round, rubric in summary["ledger_rounds"]}) > 1:
+    if len({rubric for _round, rubric in summary.ledger_rounds}) > 1:
         fails.append("run mixes ledgers adjudicated under different rubrics")
-    precision = summary["precision"]
+    precision = summary.precision
     if precision_floor and precision is not None and precision < precision_floor:
         fails.append(f"report precision {precision:.0%} is below the floor {precision_floor:.0%}")
     return fails
 
 
-def format_summary(summary: dict[str, object]) -> str:
+def format_summary(summary: RunSummary) -> str:
     """Render one run for the terminal."""
-    recall = summary["recall"]
-    precision = "unknown" if summary["precision"] is None else f"{summary['precision']:.1%}"
-    verdicts = ", ".join(f"{name} {count}" for name, count in summary["verdicts"].items())
+    recall = summary.recall
+    precision = "unknown" if summary.precision is None else f"{summary.precision:.1%}"
+    verdicts = ", ".join(f"{name} {count}" for name, count in summary.verdicts.items())
     lines = [
-        f"=== run: {summary['runs']} ===",
-        f"  cases {summary['cases']}, adjudicated attempts {summary['attempts']}, "
-        f"failed {len(summary['failed'])}, without ledger {len(summary['unadjudicated'])}",
+        f"=== run: {summary.runs} ===",
+        f"  cases {summary.cases}, adjudicated attempts {summary.attempts}, "
+        f"failed {len(summary.failed)}, without ledger {len(summary.unadjudicated)}",
         f"  reviewed recall {recall['found']}/{recall['total']}",
     ]
-    lines += [f"    run {number}: {run['found']}/{run['total']}" for number, run in summary["recall_by_run"].items()]
+    lines += [f"    run {number}: {run['found']}/{run['total']}" for number, run in summary.recall_by_run.items()]
     partial = [
         f"{name} {count['found']}/{count['attempts']}"
-        for name, count in summary["checks"].items()
+        for name, count in summary.checks.items()
         if count["found"] < count["attempts"]
     ]
     if partial:
         lines.append("  checks not found in every attempt:")
         lines += [f"    {item}" for item in partial]
-    counts = summary["verdicts"]
+    counts = summary.verdicts
     lines += [
         f"  report precision {precision} = supported {counts['supported']} / (supported {counts['supported']} "
-        f"+ not_actionable {counts['not_actionable']}), over {summary['reports']} reports",
+        f"+ not_actionable {counts['not_actionable']}), over {summary.reports} reports",
         f"    excluded from precision: duplicate {counts['duplicate']}, needs_review {counts['needs_review']}",
-        f"    {summary['precision_definition']}",
+        f"    {summary.precision_definition}",
         f"  verdicts: {verdicts}",
-        f"  issues {summary['issues']['issues']}: duplicate issues {summary['issues']['duplicate_issues']}, "
-        f"mixed issues {summary['issues']['mixed_issues']}",
+        f"  issues {summary.issues['issues']}: duplicate issues {summary.issues['duplicate_issues']}, "
+        f"mixed issues {summary.issues['mixed_issues']}",
     ]
-    lines += [f"  ledger round {round_id}, rubric sha256 {rubric}" for round_id, rubric in summary["ledger_rounds"]]
-    lines += [f"  failed: {item}" for item in summary["failed"]]
-    lines += [f"  without ledger: {item}" for item in summary["unadjudicated"]]
-    cost = summary["cost"]
+    lines += [f"  ledger round {round_id}, rubric sha256 {rubric}" for round_id, rubric in summary.ledger_rounds]
+    lines += [f"  failed: {item}" for item in summary.failed]
+    lines += [f"  without ledger: {item}" for item in summary.unadjudicated]
+    cost = summary.cost
     if cost["receipts"]:
         lines.append(f"  model calls from {cost['receipts']} receipts: {_format_cost(cost['total'])}")
         lines += [f"    {name}: {_format_cost(stage)}" for name, stage in cost["stages"].items()]
@@ -165,11 +188,11 @@ def _format_cost(stage: dict[str, int]) -> str:
     )
 
 
-def to_json(summary: dict[str, object]) -> dict[str, object]:
+def to_json(summary: RunSummary) -> dict[str, object]:
     """Return the JSON form of one run."""
-    return {key: value for key, value in summary.items() if key != "adjudications"} | {
+    return {field.name: getattr(summary, field.name) for field in fields(summary) if field.name != "adjudications"} | {
         "ledger_rounds": [
-            {"round_id": round_id, "rubric_sha256": rubric} for round_id, rubric in summary["ledger_rounds"]
+            {"round_id": round_id, "rubric_sha256": rubric} for round_id, rubric in summary.ledger_rounds
         ],
         "adjudications": [
             {
@@ -184,12 +207,12 @@ def to_json(summary: dict[str, object]) -> dict[str, object]:
                 "mixed_issues": item.mixed_issues,
                 "round_id": item.round_id,
             }
-            for item in summary["adjudications"]
+            for item in summary.adjudications
         ],
     }
 
 
-def write_json(path: str, summary: dict[str, object], fails: list[str]) -> None:
+def write_json(path: str, summary: RunSummary, fails: list[str]) -> None:
     """Write the run summary and its failures."""
     document = {"run": to_json(summary), "failures": fails}
     Path(path).write_text(json.dumps(document, indent=2), encoding="utf-8")

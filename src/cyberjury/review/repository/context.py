@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from dataclasses import replace
 
 from cyberjury.review.context import (
     GroundingContext,
@@ -13,42 +12,22 @@ from cyberjury.review.context import (
     syntax_hints,
     with_scoped_fact_limitations,
 )
-from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.paths import safe_repository_path
+from cyberjury.review.prepare import SharedGrounding
 from cyberjury.review.prompts import fenced_source
+from cyberjury.review.repository.model import RepositoryUnit
 from cyberjury.review.seed_sources import candidate_call_context
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
-if TYPE_CHECKING:
-    from cyberjury.review.prepare import SharedGrounding
-
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
 _EXECUTION = DEFAULT_REVIEW_SETTINGS.execution
-
-
-@dataclass(frozen=True, kw_only=True)
-class Unit:
-    """One unit of the worklist: one source file, or one char span of it."""
-
-    name: str
-    root: str
-    file: str
-    id: str = ""
-    span: tuple[int, int] | None = None
-    definition_plan: DefinitionUnitPlan | None = None
-    grounding: GroundingContext | None = None
-
-    @property
-    def paths(self) -> tuple[str, ...]:
-        """Return the one source path this unit reviews."""
-        return (self.file,)
 
 
 class UnitSourceError(RuntimeError):
     """A unit source file could not be read, so the unit review must fail loud."""
 
 
-def _read_unit_text(unit: Unit, rel: str) -> str:
+def _read_unit_text(unit: RepositoryUnit, rel: str) -> str:
     path = safe_repository_path(unit.root, rel)
     if path is None:
         raise UnitSourceError(f"unit {unit.name} references unsafe source path {rel!r}")
@@ -58,7 +37,7 @@ def _read_unit_text(unit: Unit, rel: str) -> str:
         raise UnitSourceError(f"unit {unit.name} could not read source file {rel}: {exc}") from exc
 
 
-def gather_context(unit: Unit) -> GroundingContext:
+def gather_context(unit: RepositoryUnit) -> GroundingContext:
     """Number the unit's source file, or its planned span, at its original line numbers."""
     rel = unit.file
     text = _read_unit_text(unit, rel)
@@ -74,7 +53,7 @@ def gather_context(unit: Unit) -> GroundingContext:
     )
 
 
-def ground_repository_unit(unit: Unit, shared: SharedGrounding) -> GroundingContext:
+def ground_repository_unit(unit: RepositoryUnit, shared: SharedGrounding) -> GroundingContext:
     """Bind one planned unit to its complete initial evidence envelope."""
     context = gather_context(unit)
     navigator = shared.navigator

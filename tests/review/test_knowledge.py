@@ -6,14 +6,14 @@ from cyberjury.review.knowledge import ReviewBrief, load_review_brief
 
 
 def test_brief_loads_only_the_kernel(tmp_path):
-    """A brief built from one kernel file renders its text once and carries a 64-character content hash."""
+    """A brief built from one kernel file renders its text once under the kernel heading."""
     kernel = tmp_path / "security-kernel.md"
     kernel.write_text("Trace actor, input, boundary, effect, and control.\n", encoding="utf-8")
 
     brief = load_review_brief(kernel_file=kernel)
 
     assert brief.render().count("Trace actor") == 1
-    assert len(brief.content_sha256) == 64
+    assert brief.render().startswith("# Security Reasoning Kernel\n")
 
 
 def test_brief_rejects_missing_or_empty_kernel(tmp_path):

@@ -63,7 +63,7 @@ class SourceReference:
             raise ValueError("source reference content length must match its normalized character range")
         return reference
 
-    def to_data(self) -> dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         """Serialize the reference without embedding source text."""
         return {
             "id": self.id,
@@ -111,11 +111,11 @@ class DefinitionEvidence:
             owner_id=owner_id,
         )
 
-    def to_data(self) -> dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         """Serialize one definition and its exact source reference."""
         return {
             "id": self.id,
-            "source": self.source.to_data(),
+            "source": self.source.to_dict(),
             "kind": self.kind,
             "name": self.name,
             "signature": self.signature,
@@ -158,12 +158,12 @@ class CallsiteEvidence:
             receiver_expression=receiver_expression,
         )
 
-    def to_data(self) -> dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         """Serialize one call occurrence and its syntax endpoints."""
         return {
             "id": self.id,
             "caller_definition_id": self.caller_definition_id,
-            "source": self.source.to_data(),
+            "source": self.source.to_dict(),
             "expression": self.expression,
             "callee_spelling": self.callee_spelling,
             "receiver_expression": self.receiver_expression,
@@ -198,7 +198,7 @@ class CallRelationshipEvidence:
             candidate_callee_definition_ids=candidates,
         )
 
-    def to_data(self) -> dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         """Serialize one explicit call target state."""
         return {
             "id": self.id,
@@ -249,7 +249,7 @@ class AnalysisObservation:
             label=label,
         )
 
-    def to_data(self) -> dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         """Serialize one producer observation with explicit provenance."""
         return {
             "id": self.id,
@@ -309,12 +309,12 @@ class StructuralRelationshipEvidence:
             candidate_target_definition_ids=candidates,
         )
 
-    def to_data(self) -> dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         """Serialize one structural relation question and producer candidates."""
         return {
             "id": self.id,
             "kind": self.kind,
-            "source": self.source.to_data(),
+            "source": self.source.to_dict(),
             "reference": self.reference,
             "target_status": self.target_status,
             "source_definition_id": self.source_definition_id,
@@ -456,15 +456,15 @@ class RelationshipEvidenceBundle:
             ),
         )
 
-    def to_data(self) -> dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         """Serialize deterministic evidence in stable order."""
         canonical = self.canonical()
         return {
-            "sources": [source.to_data() for source in canonical.sources],
-            "definitions": [definition.to_data() for definition in canonical.definitions],
-            "callsites": [callsite.to_data() for callsite in canonical.callsites],
-            "observations": [observation.to_data() for observation in canonical.observations],
-            "structural_relationships": [relationship.to_data() for relationship in canonical.structural_relationships],
+            "sources": [source.to_dict() for source in canonical.sources],
+            "definitions": [definition.to_dict() for definition in canonical.definitions],
+            "callsites": [callsite.to_dict() for callsite in canonical.callsites],
+            "observations": [observation.to_dict() for observation in canonical.observations],
+            "structural_relationships": [relationship.to_dict() for relationship in canonical.structural_relationships],
         }
 
 

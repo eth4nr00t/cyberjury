@@ -75,7 +75,7 @@ def test_a_file_that_breaks_the_relationship_graph_is_excluded_as_a_limitation(t
 
     facts = syntax_facts(tmp_path)
 
-    assert [item["name"] for item in facts.relationships.to_data()["definitions"]] == ["ok"]
+    assert [item["name"] for item in facts.relationships.to_dict()["definitions"]] == ["ok"]
     assert [(item.source, item.analyzer, item.reason) for item in facts.limitations] == [
         ("bad.py", "syntax graph", "analysis failed (ValueError)")
     ]

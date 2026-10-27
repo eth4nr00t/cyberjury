@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from functools import cache, cached_property
 from typing import Literal
 
-from cyberjury.numbering import split_lines
+from cyberjury.numbering import HUNK_HEADER, split_lines
 from cyberjury.review.context import GroundingContext
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.detection import Detection, load_detection
@@ -20,7 +20,6 @@ from cyberjury.review.unit_plans import UnitPlanRecord, UnitSourceSlice
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
 _QUOTED_GIT_HEADER_RE = re.compile(r'^diff --git "(?:\\.|[^"])*" ("(?:\\.|[^"])*")$')
-_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 type ChangedLineRanges = dict[str, tuple[tuple[int, int], ...]]
 
@@ -91,7 +90,7 @@ def _parsed_hunks(chunk: str) -> tuple[ParsedHunk, ...]:
     lines: list[HunkLine] | None = None
     old_start = new_start = old_line = new_line = 0
     for raw in split_lines(chunk):
-        header = _HUNK_RE.match(raw)
+        header = HUNK_HEADER.match(raw)
         if raw.startswith("@@") and header is None:
             raise ValueError("diff review contains a malformed unified diff hunk header")
         if header:

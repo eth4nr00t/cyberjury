@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import contextlib
 import io
-import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury import cli
+from cyberjury.review.command import ReviewCommand, run_review_command
+from cyberjury.review.request import TargetInput
 from cyberjury.review.target import resolve_diff_target
 from evals.attempts import recorded_attempt
 from evals.benchmarks.cases import BenchmarkCase, validate_change_anchors
@@ -37,16 +36,6 @@ class _CaseProgress:
 
     def _elapsed(self) -> float:
         return round(time.monotonic() - self.started, 3)
-
-
-def _final_error(output: str) -> dict[str, str]:
-    decoder, position, last = json.JSONDecoder(), 0, None
-    while position < len(output.rstrip()):
-        last, position = decoder.raw_decode(output, position)
-        while position < len(output) and output[position].isspace():
-            position += 1
-    error = last.get("error") if isinstance(last, dict) else None
-    return error if isinstance(error, dict) else {"code": "", "message": ""}
 
 
 def case_workspace(workspace: Path, case: BenchmarkCase, number: int) -> Path:
@@ -100,18 +89,20 @@ def _review_case(
     ensure_git_target_refs(case.target, root)
     git_range = f"{case.target['base']}..{case.target['commit']}"
     validate_change_anchors(case, resolve_diff_target(root, git_range).patch.text)
-    argv = ["review", "diff", "--repository", str(root), "--git-range", git_range, "--workspace", str(workspace)]
-    if concurrency:
-        argv += ["--concurrency", str(concurrency)]
-    output = io.StringIO()
-    with contextlib.redirect_stdout(output):
-        code = cli.main(argv)
-    if code == cli.INTERRUPTED_EXIT:
+    command = ReviewCommand(
+        target=TargetInput(kind="diff", repository=str(root.resolve()), git_range=git_range),
+        workspace=str(workspace),
+        dry_run=False,
+        fresh=None,
+        concurrency=concurrency,
+    )
+    record = run_review_command(command, stdout=io.StringIO())
+    if record.status == "interrupted":
         raise KeyboardInterrupt
-    error = _final_error(output.getvalue())
-    if error["code"] == "config":
-        raise SystemExit(error["message"])
+    message = record.error.message if record.error is not None else ""
+    if record.error is not None and record.error.code == "config":
+        raise SystemExit(message)
     attempts = sorted(workspace.glob("reviews/*/attempts/*/record.json"))
     if len(attempts) != 1:
-        return recorded_attempt(case, workspace, number, error=error["message"] or "the review recorded no attempt")
-    return recorded_attempt(case, attempts[0].parent, number, error=error["message"])
+        return recorded_attempt(case, workspace, number, error=message or "the review recorded no attempt")
+    return recorded_attempt(case, attempts[0].parent, number, error=message)

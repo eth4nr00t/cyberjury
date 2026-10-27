@@ -13,6 +13,7 @@ from cyberjury.numbering import numbered_source, split_lines
 from cyberjury.providers.base import Message, Provider, ResponseSchema
 from cyberjury.providers.metering import model_call_context, model_call_scope
 from cyberjury.record import Record, RecordError, error_message, utc_timestamp
+from cyberjury.review.failures import exception_reason
 from cyberjury.review.finding import Finding
 from cyberjury.review.items import ItemStore
 from cyberjury.review.paths import normalized_location_path, resolve_source_path
@@ -298,7 +299,7 @@ def link_issues(
             with model_call_scope(unit_id=name):
                 decision = judge.judge(prompt, pair=ids)
         except Exception as exc:
-            error = f"issue link {ids[0]} {ids[1]}: {type(exc).__name__}: {exc}"
+            error = f"issue link {ids[0]} {ids[1]}: {exception_reason(exc)}"
         item = Record(
             id=f"link/{name}",
             status="ok" if decision is not None else "failed",

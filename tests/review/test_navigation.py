@@ -4,6 +4,7 @@ import re
 
 import pytest
 
+from cyberjury.review import navigation as navigation_module
 from cyberjury.review.context import SourceEvidence, SourceSpan
 from cyberjury.review.navigation import SourceNavigationError, SourceNavigator, navigation_instructions
 from cyberjury.review.relationships import (
@@ -304,7 +305,7 @@ def test_navigation_cannot_read_a_target_that_was_not_published_on_the_requested
                 end=index * 10 + 9,
                 content=source[index * 10 : index * 10 + 9],
             ),
-            kind="assignment",
+            kind="function",
             name="Repeated",
         )
         for index in range(21)
@@ -898,3 +899,31 @@ def test_caller_search_returns_the_go_function_calling_a_definition(tmp_path):
     assert "ApplyPolicy" in candidates.text
     assert "CheckPolicy(value)" in candidates.text
     assert "page 0" in candidates.text
+
+
+def test_text_search_builds_only_the_requested_page_and_one_look_ahead(tmp_path, monkeypatch):
+    """A query matching 500 lines builds 21 targets for page 0 and still reports that a next page exists."""
+    (tmp_path / "big.py").write_text("".join(f"value_{index} = self.x\n" for index in range(500)), encoding="utf-8")
+    navigator = SourceNavigator.from_facts(tmp_path, source_files=("big.py",))
+    assert navigator is not None
+    created = []
+    create = navigation_module.SourceTarget.create
+
+    def counted(**fields):
+        created.append(fields["name"])
+        return create(**fields)
+
+    monkeypatch.setattr(navigation_module.SourceTarget, "create", counted)
+
+    result = navigator.session().execute([{"kind": "search_text", "query": "self", "page": 0}], target_chars=50_000)
+
+    assert len(created) == 21
+    assert "more results are available on page 1" in result.text
+
+
+def test_an_unknown_source_query_kind_is_rejected(tmp_path):
+    """A source query of kind search_everything raises SourceNavigationError naming the unknown kind."""
+    navigator = _record_navigator(tmp_path, "class Record:\n    pass\n")
+
+    with pytest.raises(SourceNavigationError, match="source query 1 has unknown kind 'search_everything'"):
+        navigator.session().execute([{"kind": "search_everything", "query": "x", "page": 0}], target_chars=10_000)

@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from cyberjury.json_parse import parse_json_object
 from cyberjury.providers.base import ResponseSchema
-from cyberjury.providers.metering import (
-    record_model_parse,
-)
+from cyberjury.providers.metering import record_model_parse
 from cyberjury.review.schemas import validate_response_object
 
 
@@ -41,11 +39,6 @@ def parse_role_response(
 ) -> RoleReply:
     """Require the role contract so malformed output cannot become a clean result."""
     parsed = parse_json_object(text)
-
-    def fail(message: str) -> None:
-        record_model_parse(message)
-        raise RoleResponseError(message)
-
     if parsed is None:
         message = f"{role} reply had no complete JSON object"
         record_model_parse(message)
@@ -55,6 +48,8 @@ def parse_role_response(
     try:
         obj = validate_response_object(parsed, response_schema)
     except ValueError as exc:
-        fail(f"{role} reply violates {response_schema.name}: {exc}")
+        message = f"{role} reply violates {response_schema.name}: {exc}"
+        record_model_parse(message)
+        raise RoleResponseError(message) from exc
     record_model_parse()
     return obj

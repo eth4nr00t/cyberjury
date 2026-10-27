@@ -136,7 +136,7 @@ class ReviewAttemptRequest:
         return canonical_sha256(semantic)
 
     def semantic_dict(self) -> dict[str, object]:
-        """Return the stable command semantics consumed by target adapters."""
+        """Return the command fields that request_sha256 covers."""
         semantic = {
             "engine_version": self.engine_version,
             "concurrency": self.concurrency.to_dict(),

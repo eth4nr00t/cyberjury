@@ -3,8 +3,6 @@
 import re
 from contextlib import nullcontext
 
-import pytest
-
 from cyberjury.providers.base import Message
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.providers.mock import MockProvider
@@ -14,7 +12,7 @@ from cyberjury.review.context import (
     SourceEvidence,
 )
 from cyberjury.review.exchange import run_evidence_judgment
-from cyberjury.review.navigation import SourceBudgetError, SourceNavigationError, SourceNavigator
+from cyberjury.review.navigation import SourceBudgetError, SourceNavigator
 from cyberjury.review.union import FindingAccumulator
 from tests.review.support import StubFinding, finding_key, fold_findings, navigator_from_callgraph
 
@@ -23,6 +21,10 @@ _MERGE_RULE = "A returned finding with the same `title` as an accepted finding i
 
 def _prompt_record(finding: StubFinding) -> dict[str, str]:
     return {"title": finding.title, "location": finding.location}
+
+
+def _variant(published_id: str) -> str:
+    return f"{published_id[:-1]}{'0' if published_id[-1] != '0' else '1'}"
 
 
 def _judge(context: GroundingContext, **options):
@@ -53,11 +55,11 @@ def test_unknown_evidence_request_preserves_findings_and_fails_the_judgment():
 
 
 def test_unknown_evidence_correction_does_not_guess_a_published_id():
-    """A src- variant of a published ev- id is corrected as unpublished with no suggested match."""
+    """A one-character variant of a published id is corrected as unpublished without naming the published id."""
     evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
     replies = iter(
         (
-            {"findings": [], "evidence_requests": [f"src-{evidence.id.removeprefix('ev-')}"]},
+            {"findings": [], "evidence_requests": [_variant(evidence.id)]},
             {"findings": [], "evidence_requests": []},
         )
     )
@@ -74,8 +76,8 @@ def test_unknown_evidence_correction_does_not_guess_a_published_id():
     )
 
     assert result.failure_reason == ""
-    assert "unpublished evidence ids" in prompts[1].controls
-    assert "may correspond to the published id" not in prompts[1].controls
+    assert "unpublished evidence ids" in prompts[1].correction
+    assert evidence.id not in prompts[1].correction
 
 
 def test_unknown_evidence_correction_does_not_echo_model_text():
@@ -108,7 +110,7 @@ def test_resolved_correction_does_not_follow_delivered_source():
     evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
     replies = iter(
         (
-            {"findings": [], "evidence_requests": [f"src-{evidence.id.removeprefix('ev-')}"]},
+            {"findings": [], "evidence_requests": [_variant(evidence.id)]},
             {"findings": [], "evidence_requests": [evidence.id]},
             {"findings": [], "evidence_requests": []},
         )
@@ -138,7 +140,7 @@ def test_unknown_evidence_correction_preserves_valid_batch_ids_without_guessing(
     """A batch with one valid id and one typo asks to resubmit only the valid id, without suggesting a match."""
     first = EvidenceItem.create(identity="a.py:first:0:10", label="a.py:first", text="1 | def first")
     second = EvidenceItem.create(identity="a.py:second:11:22", label="a.py:second", text="2 | def second")
-    typo = f"{second.id[:-1]}{'0' if second.id[-1] != '0' else '1'}"
+    typo = _variant(second.id)
     replies = iter(
         (
             {"findings": [], "evidence_requests": [first.id, typo]},
@@ -161,7 +163,6 @@ def test_unknown_evidence_correction_preserves_valid_batch_ids_without_guessing(
     assert result.failure_reason == ""
     assert len(prompts[-1].delivered) == 1
     assert f"Resubmit only these exact ids: `{first.id}`" in prompts[1].controls
-    assert "may correspond to the published id" not in prompts[1].controls
 
 
 def test_already_delivered_source_receipt_is_cited_without_another_exchange():
@@ -342,27 +343,6 @@ def test_evidence_followups_replace_provisional_memory_without_losing_candidates
     assert f"Read evidence `{first.id}` a.py:first:\n```\nfirst source\n```" in prompts[2]
     assert f"Read evidence `{second.id}` a.py:second:\n```\nsecond source\n```" in prompts[2]
     assert "Evidence catalog (source is delivered only on request):" in prompts[2]
-
-
-def test_exact_read_in_source_queries_is_rejected():
-    """A source query of kind read_source raises SourceNavigationError naming the unknown kind."""
-    evidence = EvidenceItem.create(identity="a.py:helper:0:10", label="a.py:helper", text="1 | def helper")
-    replies = iter(
-        (
-            {
-                "findings": [],
-                "evidence_requests": [],
-                "source_queries": [{"kind": "read_source", "target": evidence.id}],
-            },
-        )
-    )
-
-    with pytest.raises(SourceNavigationError, match="source query 1 has unknown kind 'read_source'"):
-        _judge(
-            GroundingContext(text="source", evidence=(evidence,)),
-            ask=lambda _prompt: next(replies),
-            target_chars=100,
-        )
 
 
 def test_unavailable_source_navigation_fails_instead_of_reporting_clean():

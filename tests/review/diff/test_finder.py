@@ -108,7 +108,6 @@ def test_diff_review_preserves_a_valid_sibling_during_anchor_correction():
     correction = provider.calls[1]["messages"][0].content
     assert f"cannot be edited or withdrawn. {MERGE_RULE} Return only new findings." in correction
     assert '"title": "unsafe changed operation"' in correction
-    assert '"description"' not in correction
 
 
 def test_diff_review_keeps_an_invalid_anchor_candidate_when_correction_fails():

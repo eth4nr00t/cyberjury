@@ -9,9 +9,7 @@ from threading import Lock
 from time import perf_counter
 from typing import Protocol
 
-from cyberjury.providers.metering import (
-    model_call_scope,
-)
+from cyberjury.providers.metering import model_call_scope
 from cyberjury.review.context import (
     GroundingContext,
     GroundingCoverage,
@@ -21,9 +19,7 @@ from cyberjury.review.context import (
 )
 from cyberjury.review.exchange import EvidenceJudgment
 from cyberjury.review.failures import ReviewUnitFailure, exception_reason
-from cyberjury.review.navigation import (
-    SourceNavigationSession,
-)
+from cyberjury.review.navigation import SourceNavigationSession
 from cyberjury.review.provenance import tag_found_by
 from cyberjury.review.union import FindingAccumulator
 

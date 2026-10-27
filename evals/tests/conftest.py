@@ -1,11 +1,14 @@
 """Evaluation fixtures build real git benchmark projects and recorded attempts."""
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from evals.attempts import attempt_path
+from evals.benchmarks.cases import checks_sha256, find_case, load_cases
 from tests.support import git
 
 
@@ -51,24 +54,18 @@ def benchmark_project(tmp_path):
 @pytest.fixture
 def case(benchmark_project):
     """Return the benchmark project's diff case."""
-    from evals.benchmarks.cases import find_case
-
     return find_case(benchmark_project.diff_case, [benchmark_project.benchmark])
 
 
 @pytest.fixture
 def cases(benchmark_project):
     """Load every case of the benchmark project."""
-    from evals.benchmarks.cases import load_cases
-
     return load_cases([benchmark_project.benchmark])
 
 
 @pytest.fixture
 def write_attempt(benchmark_project):
     """Record an attempt of the diff case with one finding per candidate id, each its own issue unless given."""
-    from evals.attempts import attempt_path
-    from evals.benchmarks.cases import find_case
 
     def write(
         runs: Path,
@@ -112,9 +109,6 @@ def write_attempt(benchmark_project):
 @pytest.fixture
 def write_ledger(benchmark_project):
     """Write the ledger beside an attempt with one record per given verdict."""
-    import hashlib
-
-    from evals.benchmarks.cases import checks_sha256, find_case
 
     def write(attempt: Path, verdicts: dict[str, tuple[str, tuple[str, ...]]], **overrides) -> Path:
         data = json.loads(attempt.read_text(encoding="utf-8"))

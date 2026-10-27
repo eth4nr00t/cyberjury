@@ -547,15 +547,24 @@ class SourceNavigationSession:
         query: str,
         page: int,
     ) -> tuple[tuple[SourceTarget, ...], int, bool]:
+        wanted = (page + 1) * _MAX_RESULTS_PER_PAGE + 1
         targets: list[SourceTarget] = []
         for file in self._navigator.files:
             source = self._source(file)
-            for line_no, line in enumerate(split_lines(source, keepends=True), start=1):
-                if query in line:
-                    match = _line_offset(source, line_no) + line.index(query)
-                    start = max(_line_offset(source, max(1, line_no - 3)), match - _MAX_SOURCE_TARGET_CHARS // 2)
-                    end = min(_line_offset(source, line_no + 4), start + _MAX_SOURCE_TARGET_CHARS)
-                    target = SourceTarget.create(
+            if query not in source:
+                continue
+            lines = split_lines(source, keepends=True)
+            offsets = [0]
+            for line in lines:
+                offsets.append(offsets[-1] + len(line))
+            for line_no, line in enumerate(lines, start=1):
+                if query not in line:
+                    continue
+                match = offsets[line_no - 1] + line.index(query)
+                start = max(offsets[max(1, line_no - 3) - 1], match - _MAX_SOURCE_TARGET_CHARS // 2)
+                end = min(offsets[min(line_no + 4, len(lines) + 1) - 1], start + _MAX_SOURCE_TARGET_CHARS)
+                targets.append(
+                    SourceTarget.create(
                         file=file,
                         name=f"text line {line_no}",
                         start=start,
@@ -563,7 +572,11 @@ class SourceNavigationSession:
                         preview=line.strip()[:240],
                         source_kind=self._source_kind(file),
                     )
-                    targets.append(target)
+                )
+                if len(targets) == wanted:
+                    break
+            if len(targets) == wanted:
+                break
         selected, selected_page, more = _page(tuple(targets), page)
         return tuple(self._register_target(target) for target in selected), selected_page, more
 

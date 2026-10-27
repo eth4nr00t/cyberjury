@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+from cyberjury.review.detection import Detection
 from cyberjury.review.facts import FactLimitation
 from cyberjury.review.syntax.analyzer import (
     AnalyzableSource,
@@ -14,9 +14,6 @@ from cyberjury.review.syntax.analyzer import (
     LangSpec,
     spec_for,
 )
-
-if TYPE_CHECKING:
-    from cyberjury.review.detection import Detection
 
 
 @dataclass(frozen=True, kw_only=True)

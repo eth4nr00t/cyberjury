@@ -22,7 +22,7 @@ from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS, DiffReviewSetting
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
 
 
-def prepare_diff_units(
+def build_diff_units(
     diff: str,
     *,
     root: Path,

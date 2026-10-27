@@ -9,8 +9,9 @@ from pathlib import Path
 from cyberjury.providers.mock import MockProvider
 from cyberjury.review.facts import Facts
 from cyberjury.review.finder import UnitFinder
-from cyberjury.review.repository.context import Unit, ground_repository_unit
+from cyberjury.review.repository.context import ground_repository_unit
 from cyberjury.review.repository.finder import REPOSITORY_TARGET
+from cyberjury.review.repository.model import RepositoryUnit
 from cyberjury.review.repository.prepare import prepare_repository_review
 from cyberjury.review.run import ReviewRun, run_review
 from cyberjury.review.seats import ReviewSeats
@@ -24,11 +25,11 @@ _SEED_FILE = re.compile(r"cited as `seed`:\n[`~]{3,}\n# file: (.+?) lines \d+-\d
 type UnitReply = list[dict] | BaseException
 
 
-def source_unit(root, file: str, *, name: str = "", **fields: object) -> Unit:
+def source_unit(root, file: str, *, name: str = "", **fields: object) -> RepositoryUnit:
     """Return one ungrounded unit that reviews a whole source file."""
     size = len((Path(root) / file).read_text(encoding="utf-8"))
     name = name or file
-    return Unit(name=name, root=str(root), file=file, span=(0, size), **{"id": f"unit-{name}", **fields})
+    return RepositoryUnit(name=name, root=str(root), file=file, span=(0, size), **{"id": f"unit-{name}", **fields})
 
 
 def finding(file: str, line: int, title: str = "finding", **fields: object) -> dict:
@@ -83,13 +84,13 @@ def unit_provider(reply_for: Callable[[str], UnitReply]) -> MockProvider:
     return MockProvider(responder=respond)
 
 
-def ground(units, *, limitations=(), navigator=None) -> list[Unit]:
+def ground(units, *, limitations=(), navigator=None) -> list[RepositoryUnit]:
     """Ground ungrounded units against one shared context with explicit limitations and navigation."""
     shared = shared_grounding(Path(units[0].root), facts=Facts(limitations=tuple(limitations)), navigator=navigator)
     return [replace(unit, grounding=ground_repository_unit(unit, shared)) for unit in units]
 
 
-def finder(provider, *, model: str = "mock") -> UnitFinder[Unit]:
+def finder(provider, *, model: str = "mock") -> UnitFinder[RepositoryUnit]:
     """Return the Repository Finder bound to one test provider."""
     return UnitFinder(REPOSITORY_TARGET, provider=provider, model=model, label=model)
 

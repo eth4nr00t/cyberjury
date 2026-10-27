@@ -33,7 +33,7 @@ class FactLimitation:
         location = f" at {self.line}:{self.column}" if self.line is not None and self.column is not None else ""
         return f"{self.source}{location}: {self.analyzer} {self.reason}"
 
-    def to_data(self) -> dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         """Return the stable JSON record bound by the facts receipt."""
         data: dict[str, object] = {
             "source": self.source,
@@ -70,9 +70,9 @@ class FactsReceipt:
         """Bind extracted facts and their source limitations to the backend that produced them."""
         evidence = {
             "by_file": dict(facts.by_file),
-            "relationship_evidence": facts.relationships.to_data(),
+            "relationship_evidence": facts.relationships.to_dict(),
             "import_files": list(facts.import_files),
-            "limitations": [limitation.to_data() for limitation in facts.limitations],
+            "limitations": [limitation.to_dict() for limitation in facts.limitations],
         }
         semantic = {"backend_id": backend_id, "evidence_sha256": canonical_sha256(evidence)}
         return cls(**semantic, receipt_sha256=canonical_sha256(semantic))

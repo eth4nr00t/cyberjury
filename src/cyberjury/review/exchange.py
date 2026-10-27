@@ -48,6 +48,11 @@ _CORRECTION_BUDGET = {
     "unknown_definition": 1,
     "unknown_evidence": 2,
 }
+_CORRECTED_RESPONSE = "Return the corrected response. Previously accepted findings are kept."
+_REPEATED_QUERY_CORRECTION = (
+    "The previous response repeated an already executed source query. "
+    "Do not repeat it. Use the evidence already delivered and return the final judgment."
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -427,9 +432,6 @@ def _exchange_record(turn: _Turn, result: EvidenceJudgment[object] | None) -> di
     }
 
 
-_CORRECTED_RESPONSE = "Return the corrected response. Previously accepted findings are kept."
-
-
 def _malformed_request_correction(failure: str, valid_ids: tuple[str, ...]) -> str:
     resubmit = (
         " These requested ids are published and may be requested again: "
@@ -444,12 +446,6 @@ def _malformed_request_correction(failure: str, valid_ids: tuple[str, ...]) -> s
         "transform ids. File paths, module names, and descriptions are not evidence ids, and source outside the "
         f"reviewed repository cannot be requested. {_CORRECTED_RESPONSE}"
     )
-
-
-_REPEATED_QUERY_CORRECTION = (
-    "The previous response repeated an already executed source query. "
-    "Do not repeat it. Use the evidence already delivered and return the final judgment."
-)
 
 
 def _delivery_rejection(

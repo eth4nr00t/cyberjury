@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
+from cyberjury.review.detection import load_detection
+from cyberjury.review.diff.model import diff_line_ranges
 from evals.benchmarks.contract import Check, case_checks
 from evals.benchmarks.validate import benchmark_path, validate_benchmark
 
@@ -89,9 +91,6 @@ def validate_change_anchors(case: BenchmarkCase, diff: str) -> None:
     """Reject change anchors absent from the patch the review reads."""
     if not any(check.change_anchors for check in case.checks):
         return
-    from cyberjury.review.detection import load_detection
-    from cyberjury.review.diff.model import diff_line_ranges
-
     ranges = diff_line_ranges(diff, load_detection())
     sides = {"old": ranges.old, "new": ranges.new}
     for check in case.checks:

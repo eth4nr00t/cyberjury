@@ -3,18 +3,36 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from cyberjury.numbering import split_lines
+from cyberjury.review.context import GroundingContext
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.paths import safe_repository_path
 from cyberjury.review.relationships import DefinitionEvidence
-from cyberjury.review.repository.context import Unit
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.unit_plans import UnitPlanRecord, UnitSourceSlice
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.repository
+
+
+@dataclass(frozen=True, kw_only=True)
+class RepositoryUnit:
+    """One unit of the worklist: one source file, or one char span of it."""
+
+    name: str
+    root: str
+    file: str
+    id: str = ""
+    span: tuple[int, int] | None = None
+    definition_plan: DefinitionUnitPlan | None = None
+    grounding: GroundingContext | None = None
+
+    @property
+    def paths(self) -> tuple[str, ...]:
+        """Return the one source path this unit reviews."""
+        return (self.file,)
 
 
 class RepositorySourceError(RuntimeError):
@@ -83,14 +101,14 @@ def build_units(
     root: str | Path,
     candidate_files: Sequence[str],
     definitions: tuple[DefinitionEvidence, ...],
-) -> list[Unit]:
+) -> list[RepositoryUnit]:
     """Cover every repository source file with windows bound to its exact definitions."""
     root = str(root)
-    units: list[Unit] = []
+    units: list[RepositoryUnit] = []
     for source_file in dict.fromkeys(candidate_files):
         spans = char_spans(_unit_source_text(root, source_file))
         units.extend(
-            Unit(
+            RepositoryUnit(
                 name=source_file if len(spans) == 1 else f"{source_file}#{index}",
                 root=root,
                 file=source_file,
@@ -101,7 +119,9 @@ def build_units(
     return _bind_source_definition_plans(units, definitions)
 
 
-def _bind_source_definition_plans(units: list[Unit], definitions: tuple[DefinitionEvidence, ...]) -> list[Unit]:
+def _bind_source_definition_plans(
+    units: list[RepositoryUnit], definitions: tuple[DefinitionEvidence, ...]
+) -> list[RepositoryUnit]:
     by_file: dict[str, list[DefinitionEvidence]] = {}
     for definition in definitions:
         if definition.kind != "file":
@@ -131,12 +151,12 @@ def _bind_source_definition_plans(units: list[Unit], definitions: tuple[Definiti
     return bound
 
 
-def _source_unit_overlap(unit: Unit, definition: DefinitionEvidence) -> int:
+def _source_unit_overlap(unit: RepositoryUnit, definition: DefinitionEvidence) -> int:
     start, end = unit.span
     return max(0, min(end, definition.source.end) - max(start, definition.source.start))
 
 
-def repository_unit_plan_record(unit: Unit) -> UnitPlanRecord:
+def repository_unit_plan_record(unit: RepositoryUnit) -> UnitPlanRecord:
     """Project one repository unit into the shared observable planning schema."""
     return UnitPlanRecord.create(
         kind="source",

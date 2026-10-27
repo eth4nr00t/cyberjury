@@ -118,8 +118,8 @@ def test_strip_unreviewable_files_drops_docs_and_lockfiles_keeps_source():
     assert {item.path for item in skipped} == {"README.md", "package-lock.json"}
 
 
-def test_strip_unreviewable_files_uses_the_profile_patch_boundary():
-    """The profile skips .xlf and .scss changes but keeps .html templates and .sql files."""
+def test_strip_unreviewable_files_skips_asset_changes_but_keeps_templates_and_queries():
+    """The noise boundary skips .xlf and .scss changes but keeps .html templates and .sql files."""
     translation = "diff --git a/messages.xlf b/messages.xlf\n@@ -0,0 +1 @@\n+<trans-unit/>\n"
     style = "diff --git a/theme.scss b/theme.scss\n@@ -0,0 +1 @@\n+.secret { color: red; }\n"
     template = "diff --git a/view.html b/view.html\n@@ -0,0 +1 @@\n+{{ unsafe }}\n"

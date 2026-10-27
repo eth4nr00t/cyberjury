@@ -108,7 +108,7 @@ def test_a_syntax_error_placeholder_never_becomes_an_empty_name(tmp_path):
     facts = syntax_facts(tmp_path)
 
     assert [(item.source, item.reason) for item in facts.limitations] == [("app.py", "partially parsed")]
-    assert [item["name"] for item in facts.relationships.to_data()["definitions"]] == ["run"]
+    assert [item["name"] for item in facts.relationships.to_dict()["definitions"]] == ["run"]
 
 
 def test_a_three_edge_call_chain_is_recovered_edge_by_edge(tmp_path):
@@ -356,7 +356,7 @@ def test_an_untyped_member_call_remains_unresolved_syntax(tmp_path):
         "def view(client):\n    return client.get()\n"
     )
 
-    observations = syntax_facts(tmp_path).relationships.to_data()["observations"]
+    observations = syntax_facts(tmp_path).relationships.to_dict()["observations"]
 
     assert callgraph(tmp_path)["views.py"]["view"][0]["calls"] == ["get"]
     assert all(item["candidate_target_ids"] == [] for item in observations)
@@ -371,7 +371,7 @@ def test_a_local_receiver_call_remains_a_syntax_observation(tmp_path):
     facts = syntax_facts(tmp_path)
 
     assert callgraph(tmp_path)["service.py"]["outer"][0]["calls"] == ["inner"]
-    assert all(item["candidate_target_ids"] == [] for item in facts.relationships.to_data()["observations"])
+    assert all(item["candidate_target_ids"] == [] for item in facts.relationships.to_dict()["observations"])
 
 
 def test_python_recursion_is_preserved_as_an_unresolved_call_clue(tmp_path):
@@ -543,7 +543,7 @@ def test_go_receiver_function_is_a_method(tmp_path):
         "package service\ntype Store struct{}\nfunc (store *Store) Load(value int) int { return value }\n"
     )
 
-    definitions = syntax_facts(tmp_path).relationships.to_data()["definitions"]
+    definitions = syntax_facts(tmp_path).relationships.to_dict()["definitions"]
     method = next(item for item in definitions if item["name"] == "Load")
 
     assert method["kind"] == "method"

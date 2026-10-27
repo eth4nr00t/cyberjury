@@ -221,7 +221,7 @@ def create_transfer():
 
 @pytest.fixture
 def custody_repository(tmp_path):
-    """A tiny Flask app seeds a stable workspace path for run tests."""
+    """Write a two-file Flask repository and return its root."""
     d = tmp_path / "custody"
     (d / "app" / "services").mkdir(parents=True)
     (d / "app" / "routes.py").write_text(_FLASK_APP)

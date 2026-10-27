@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+import evals.cli as evals_cli
 from evals.cli import main
 
 A = "candidate-" + "a" * 20
@@ -14,7 +15,6 @@ A = "candidate-" + "a" * 20
 @pytest.fixture
 def fake_diff_run(monkeypatch):
     """Replace the diff runner with one that records a complete empty attempt per case and run."""
-    from evals import diff
 
     def run(cases, *, workspace, runs, on_attempt, **kwargs):
         records = []
@@ -27,7 +27,7 @@ def fake_diff_run(monkeypatch):
                 on_attempt(record)
         return records
 
-    monkeypatch.setattr(diff, "run", run)
+    monkeypatch.setattr(evals_cli, "run", run)
 
 
 def test_diff_writes_nonoverwriting_attempts_and_summarizes_the_run(tmp_path, capsys, fake_diff_run, benchmark_project):
@@ -118,12 +118,11 @@ def test_packets_say_when_references_hold_no_earlier_verdicts(tmp_path, capsys, 
 
 def test_repository_records_the_next_attempt_of_a_repository_case(tmp_path, monkeypatch, capsys, benchmark_project):
     """A second repository run records attempt 2."""
-    from evals import attempts
 
     def record(case, directory, number):
         return {"case": case.name, "attempt": number, "complete": True, "findings": []}
 
-    monkeypatch.setattr(attempts, "recorded_attempt", record)
+    monkeypatch.setattr(evals_cli, "recorded_attempt", record)
     args = ["repository", benchmark_project.repository_case, str(tmp_path), "--attempts-dir", str(tmp_path / "runs")]
     args += ["--benchmark", str(benchmark_project.benchmark)]
 

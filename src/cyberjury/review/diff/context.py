@@ -1,4 +1,4 @@
-"""Plan diff units and ground each one in repository source and facts."""
+"""Ground each planned diff unit in repository source and facts."""
 
 from __future__ import annotations
 
@@ -22,40 +22,19 @@ from cyberjury.review.diff.model import (
     ChangedLineRanges,
     DiffUnit,
     changed_line_ranges,
-    diff_paths,
-    diff_unit_plan_record,
     reviewable_changed_paths,
 )
-from cyberjury.review.diff.planning import prepare_diff_units
 from cyberjury.review.diff.prompts import diff_seed
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.paths import read_repository_source
-from cyberjury.review.prepare import ReviewPlan, SharedGrounding
+from cyberjury.review.prepare import SharedGrounding
 from cyberjury.review.prompts import one_line_source
 from cyberjury.review.relationships import RelationshipEvidenceBundle
-from cyberjury.review.result import SkippedFile
 from cyberjury.review.seed_sources import CandidateCallContext, candidate_call_context, definition_evidence
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS, ReviewExecutionSettings
 
 _SETTINGS = DEFAULT_REVIEW_SETTINGS.diff
 _EXECUTION = DEFAULT_REVIEW_SETTINGS.execution
-
-
-def plan_diff_units(diff: str, shared: SharedGrounding, skipped: tuple[SkippedFile, ...]) -> ReviewPlan[DiffUnit]:
-    """Plan deterministic diff units that together own every reviewable changed path."""
-    units = prepare_diff_units(
-        diff,
-        root=shared.root,
-        detection=shared.detection,
-        definitions=shared.facts.relationships.definitions,
-        settings=_SETTINGS,
-    )
-    return ReviewPlan(
-        units=units,
-        records=tuple(diff_unit_plan_record(unit) for unit in units),
-        expected_owned_paths=diff_paths(diff),
-        skipped_files=skipped,
-    )
 
 
 def ground_diff_unit(

@@ -8,12 +8,12 @@ from cyberjury.review.context import SourceEvidence, SourceSpan, source_location
 from cyberjury.review.finder import ReviewTarget, findings_from_reply
 from cyberjury.review.finding import Finding
 from cyberjury.review.replies import RoleReply
-from cyberjury.review.repository.context import Unit
+from cyberjury.review.repository.model import RepositoryUnit
 from cyberjury.review.repository.prompts import FINDER_RESPONSE_SCHEMA, repository_finder_system
 
 
 def locate(
-    _unit: Unit,
+    _unit: RepositoryUnit,
     finding: Finding,
     source_evidence: tuple[SourceEvidence, ...],
     seed_spans: tuple[SourceSpan, ...],
@@ -29,11 +29,11 @@ def locate(
     return replace(finding, file=receipt.file) if receipt is not None else None
 
 
-def _findings_from_reply(_unit: Unit, reply: RoleReply) -> list[Finding]:
+def _findings_from_reply(_unit: RepositoryUnit, reply: RoleReply) -> list[Finding]:
     return findings_from_reply(reply)
 
 
-REPOSITORY_TARGET = ReviewTarget[Unit](
+REPOSITORY_TARGET = ReviewTarget[RepositoryUnit](
     kind="repository",
     role="unit finder",
     response_schema=FINDER_RESPONSE_SCHEMA,

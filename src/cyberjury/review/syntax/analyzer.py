@@ -1,4 +1,4 @@
-"""Parse one source file into language-neutral graph inputs."""
+"""Load each language's grammar queries and parse every reviewable source into language-neutral graph inputs."""
 
 from __future__ import annotations
 
@@ -397,7 +397,7 @@ def _definition_calls(
     source: bytes,
     node: Node,
     definition_index: _DefinitionIndex,
-    call_query: object,
+    call_query: Query,
     offsets: dict[int, int] | None,
     *,
     file_scope: bool = False,

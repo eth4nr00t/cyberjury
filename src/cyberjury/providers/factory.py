@@ -1,4 +1,4 @@
-"""Build a provider from a name, credentials, and client policy."""
+"""Build a provider from a name and client policy."""
 
 from __future__ import annotations
 
@@ -18,16 +18,15 @@ def default_model_for_provider(provider: str) -> str:
 def make_provider(
     name: str,
     *,
-    api_key: str | None = None,
     api_base: str | None = None,
     retries: int = 0,
     timeout: float = REQUEST_TIMEOUT_SECONDS,
 ) -> Provider:
     """Build the named provider and wrap it with retries when requested."""
     if name == "openai":
-        provider: Provider = OpenAIProvider(api_key=api_key, api_base=api_base, timeout=timeout)
+        provider: Provider = OpenAIProvider(api_base=api_base, timeout=timeout)
     elif name == "anthropic":
-        provider = AnthropicProvider(api_key=api_key, api_base=api_base, timeout=timeout)
+        provider = AnthropicProvider(api_base=api_base, timeout=timeout)
     else:
         raise ValueError(f"unknown provider: {name}")
     if retries > 0:

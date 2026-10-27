@@ -6,7 +6,7 @@ import pytest
 
 from cyberjury.review.detection import load_detection
 from cyberjury.review.diff.model import changed_line_ranges
-from cyberjury.review.diff.planning import changed_definitions, plan_definition_units, prepare_diff_units
+from cyberjury.review.diff.planning import build_diff_units, changed_definitions, plan_definition_units
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from tests.review.support import definition
@@ -16,7 +16,7 @@ _DETECTION = load_detection()
 
 def test_diff_unit_planners_return_an_empty_worklist_for_empty_input(tmp_path):
     """An empty diff string with no definitions plans no units."""
-    assert prepare_diff_units("", root=tmp_path, detection=_DETECTION, definitions=()) == []
+    assert build_diff_units("", root=tmp_path, detection=_DETECTION, definitions=()) == []
 
 
 def test_diff_unit_planning_rejects_repeated_file_sections_before_losing_a_hunk(tmp_path):
@@ -26,13 +26,13 @@ def test_diff_unit_planning_rejects_repeated_file_sections_before_losing_a_hunk(
     second = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -2 +2 @@\n+y = 2\n"
 
     with pytest.raises(ValueError, match=r"repeated file sections for a\.py"):
-        prepare_diff_units(first + second, root=tmp_path, detection=_DETECTION, definitions=())
+        build_diff_units(first + second, root=tmp_path, detection=_DETECTION, definitions=())
 
 
 def test_diff_unit_planning_rejects_an_unidentified_file_section(tmp_path):
     """A bare hunk with no diff --git header raises "without a source path"."""
     with pytest.raises(ValueError, match="without a source path"):
-        prepare_diff_units("@@ -1 +1 @@\n+unbound source\n", root=tmp_path, detection=_DETECTION, definitions=())
+        build_diff_units("@@ -1 +1 @@\n+unbound source\n", root=tmp_path, detection=_DETECTION, definitions=())
 
 
 def test_diff_unit_planning_rejects_a_malformed_hunk_after_a_valid_one(tmp_path):
@@ -41,7 +41,7 @@ def test_diff_unit_planning_rejects_a_malformed_hunk_after_a_valid_one(tmp_path)
     diff = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -0,0 +1 @@\n+x = 1\n@@ corrupted @@\n+hidden = 2\n"
 
     with pytest.raises(ValueError, match="malformed unified diff hunk header"):
-        prepare_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=())
+        build_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=())
 
 
 def test_diff_unit_planning_rejects_an_unprefixed_line_inside_a_hunk(tmp_path):
@@ -50,7 +50,7 @@ def test_diff_unit_planning_rejects_an_unprefixed_line_inside_a_hunk(tmp_path):
     diff = "diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -0,0 +1,2 @@\n+x = 1\nnot a diff line\n+hidden = 2\n"
 
     with pytest.raises(ValueError, match="malformed unified diff hunk body"):
-        prepare_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=())
+        build_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=())
 
 
 def test_changed_definition_mapping_keeps_deletion_and_enclosing_definitions(tmp_path):
@@ -119,7 +119,7 @@ def test_diff_surface_packing_does_not_charge_lazy_seed_definitions_to_context_b
     diff, definitions = _two_changed_files(tmp_path, 100_000)
     settings = replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1_000)
 
-    units = prepare_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=definitions, settings=settings)
+    units = build_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=definitions, settings=settings)
 
     assert [unit.definition_plan.seeds for unit in units] == [definitions]
 
@@ -129,7 +129,7 @@ def test_diff_surface_packing_bounds_the_lazy_definition_catalog(tmp_path):
     diff, definitions = _two_changed_files(tmp_path, 100)
     settings = replace(DEFAULT_REVIEW_SETTINGS.diff, max_definition_evidence_items_per_unit=1)
 
-    units = prepare_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=definitions, settings=settings)
+    units = build_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=definitions, settings=settings)
 
     assert [unit.definition_plan.seeds for unit in units] == [(definitions[0],), (definitions[1],)]
 
