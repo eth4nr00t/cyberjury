@@ -1,1 +1,1 @@
-"""Adapt shared review orchestration to repository workspaces."""
+"""The shared review orchestration adapted to repository workspaces."""

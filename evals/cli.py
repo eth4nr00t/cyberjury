@@ -1,4 +1,4 @@
-"""Measure review quality on benchmark cases by source-reviewed adjudication."""
+"""Review quality measurement on benchmark cases by source-reviewed adjudication."""
 
 from __future__ import annotations
 
@@ -82,7 +82,8 @@ def _cmd_repository(args) -> int:
         number += 1
     record = recorded_attempt(case, Path(args.review_attempt), number)
     _write_new(attempt_path(attempts, case.name, number), record)
-    print(f"recorded {case.name} attempt {number}: {len(record['findings'])} reports, complete {record['complete']}")
+    state = "complete" if record["complete"] else "incomplete"
+    print(f"recorded {case.name} attempt {number}: {state}, reports {len(record['findings'])}")
     return 0 if record["complete"] else 1
 
 
@@ -97,8 +98,8 @@ def _cmd_packets(args) -> int:
         references=[Path(path) for path in args.references],
     )
     print(
-        f"packets {args.out}: {counts['cases']} cases, {counts['attempts']} complete attempts, "
-        f"{counts['reports']} reports, skipped {counts['skipped']} incomplete attempts"
+        f"packets {args.out}: cases {counts['cases']}, complete attempts {counts['attempts']}, "
+        f"reports {counts['reports']}, skipped incomplete attempts {counts['skipped']}"
     )
     print(f"round {counts['round_id']}, private mapping {counts['mapping']} (do not give it to adjudicators)")
     references = counts["references"]
@@ -106,9 +107,9 @@ def _cmd_packets(args) -> int:
         if not any(references.values()):
             print("references: no earlier verdicts were found for any case, so adjudicators will see empty references")
         for name, count in references.items():
-            print(f"  references {name}: {count} earlier verdicts")
+            print(f"  references {name}: earlier verdicts {count}")
         if counts["reference_attempts_without_ledger"]:
-            print(f"  {counts['reference_attempts_without_ledger']} reference attempts have no ledger beside them")
+            print(f"  reference attempts without a ledger {counts['reference_attempts_without_ledger']}")
     return 0
 
 
@@ -139,7 +140,7 @@ def _cmd_report(args) -> int:
 
 def _cmd_list(args) -> int:
     for case in load_cases(args.benchmark).values():
-        print(f"{case.name:40} {case.kind:10} checks={len(case.checks)}")
+        print(f"{case.name:40} {case.kind:10} checks {len(case.checks)}")
     return 0
 
 
@@ -161,25 +162,31 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     benchmark = argparse.ArgumentParser(add_help=False)
     benchmark.add_argument(
-        "--benchmark", action="append", default=None, help="benchmark.yaml or project directory, repeatable"
+        "--benchmark",
+        metavar="PATH",
+        action="append",
+        default=None,
+        help="benchmark.yaml or project directory, repeatable",
     )
 
     diff_parser = sub.add_parser(
         "diff", parents=[benchmark], help="run diff cases and record one attempt per case and run", allow_abbrev=False
     )
-    diff_parser.add_argument("--case", default=None, help="run one exact case name")
-    diff_parser.add_argument("--runs", type=positive_int, default=1, help="independent runs of every case")
+    diff_parser.add_argument("--case", metavar="NAME", default=None, help="exact name of the one case to run")
+    diff_parser.add_argument("--runs", metavar="N", type=positive_int, default=1, help="independent runs of every case")
     diff_parser.add_argument(
         "--concurrency",
+        metavar="N",
         type=positive_int,
         default=DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
-        help="diff unit reviews or issue link calls to run in parallel",
+        help="review units or issue link judgments of each case to run in parallel",
     )
     diff_parser.add_argument(
-        "--attempts-dir", required=True, help="runs directory for <project>/<case>/attempt-NN.json"
+        "--attempts-dir", metavar="DIR", required=True, help="runs directory for <project>/<case>/attempt-NN.json"
     )
     diff_parser.add_argument(
         "--state-dir",
+        metavar="DIR",
         required=True,
         help="review state directory for <project>/<case>/run-NN, holding each attempt and its model-calls.json",
     )
@@ -196,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
         "review_attempt", help="review attempt directory holding record.json and findings.json"
     )
     repository_parser.add_argument(
-        "--attempts-dir", required=True, help="runs directory for <project>/<case>/attempt-NN.json"
+        "--attempts-dir", metavar="DIR", required=True, help="runs directory for <project>/<case>/attempt-NN.json"
     )
     repository_parser.set_defaults(func=_cmd_repository)
 
@@ -204,21 +211,28 @@ def main(argv: list[str] | None = None) -> int:
         "packets", parents=[benchmark], help="build blind adjudication packets from runs", allow_abbrev=False
     )
     packets_parser.add_argument("runs", nargs="+", help="runs directories whose attempts are packaged into one round")
-    packets_parser.add_argument("--out", required=True, help="directory adjudicators receive: packets and rubric only")
     packets_parser.add_argument(
-        "--mapping", default=None, help="new private mapping path outside --out, default <out>.private/mapping.json"
+        "--out", metavar="DIR", required=True, help="directory adjudicators receive: packets and rubric only"
     )
     packets_parser.add_argument(
-        "--groups", type=positive_int, default=1, help="number of packets to split the cases into"
+        "--mapping",
+        metavar="FILE",
+        default=None,
+        help="new private mapping path outside --out, default <out>.private/mapping.json",
+    )
+    packets_parser.add_argument(
+        "--groups", metavar="N", type=positive_int, default=1, help="number of packets to split the cases into"
     )
     packets_parser.add_argument(
         "--max-reports",
+        metavar="N",
         type=positive_int,
         default=None,
-        help="split a case with more reports into entries of at most this many, each listing the others",
+        help="most reports in one packet entry, a larger case is split into entries that list each other",
     )
     packets_parser.add_argument(
         "--references",
+        metavar="PATH",
         action="append",
         default=[],
         help="adjudicated runs directory, or the private mapping.json of an earlier round, whose ledger verdicts "
@@ -234,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     ledger_parser.add_argument("packets", help="packets directory holding result-N.json")
     ledger_parser.add_argument(
-        "--mapping", default=None, help="private mapping path, default <packets>.private/mapping.json"
+        "--mapping", metavar="FILE", default=None, help="private mapping path, default <packets>.private/mapping.json"
     )
     ledger_parser.add_argument(
         "--supersede",
@@ -246,20 +260,23 @@ def main(argv: list[str] | None = None) -> int:
     report_parser = sub.add_parser(
         "report",
         parents=[benchmark],
-        help="reviewed recall, report precision, verdicts, and model call cost",
+        help="report reviewed recall, report precision, verdicts, and model call cost",
         allow_abbrev=False,
     )
     report_parser.add_argument("runs", help="adjudicated runs directory")
     report_parser.add_argument(
-        "--calls", action="append", default=[], help="model call receipt or directory, repeatable"
+        "--calls", metavar="PATH", action="append", default=[], help="model call receipt or directory, repeatable"
     )
     report_parser.add_argument(
         "--precision-floor",
+        metavar="RATIO",
         type=float,
         default=0.0,
-        help="fail below this report precision, supported / (supported + not_actionable)",
+        help="report precision below which the run fails, supported / (supported + not_actionable)",
     )
-    report_parser.add_argument("--json", default=None, help="write the run summary and its failures")
+    report_parser.add_argument(
+        "--json", metavar="FILE", default=None, help="JSON file to write the run summary and its failures to"
+    )
     report_parser.set_defaults(func=_cmd_report)
 
     sub.add_parser("list", parents=[benchmark], help="list benchmark cases", allow_abbrev=False).set_defaults(
@@ -269,7 +286,10 @@ def main(argv: list[str] | None = None) -> int:
     validate_parser = sub.add_parser("validate", help="validate a benchmark definition", allow_abbrev=False)
     validate_parser.add_argument("path", help="benchmark directory or benchmark.yaml")
     validate_parser.add_argument(
-        "--source-root", default=None, help="checkout of repository.commit that repository case locations must exist in"
+        "--source-root",
+        metavar="DIR",
+        default=None,
+        help="checkout of repository.commit that repository case locations must exist in",
     )
     validate_parser.set_defaults(func=_cmd_validate)
 

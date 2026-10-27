@@ -51,7 +51,7 @@ def test_diff_writes_nonoverwriting_attempts_and_summarizes_the_run(tmp_path, ca
 
 
 def test_diff_rejects_an_unknown_case_before_running(tmp_path, fake_diff_run, benchmark_project):
-    """--case demo:missing raises ValueError about an unknown diff case."""
+    """Passing --case demo:missing raises ValueError about an unknown diff case."""
     with pytest.raises(ValueError, match="unknown diff case"):
         main(
             [
@@ -92,7 +92,7 @@ def test_packets_ledger_and_report_measure_one_adjudicated_run(tmp_path, capsys,
     output = capsys.readouterr().out
     assert "ledgers written 1, rejected 0" in output
     assert "reviewed recall 1/1" in output
-    assert "report precision 100.0% = supported 1 / (supported 1 + not_actionable 0), over 1 reports" in output
+    assert "report precision 100.0% = supported 1 / (supported 1 + not_actionable 0), reports 1" in output
     assert "do not give it to adjudicators" in output
     assert "report PASS" in output
     assert json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))["run"]["recall"] == {
@@ -112,8 +112,8 @@ def test_packets_say_when_references_hold_no_earlier_verdicts(tmp_path, capsys, 
 
     output = capsys.readouterr().out
     assert "references: no earlier verdicts were found for any case" in output
-    assert f"references {benchmark_project.diff_case}: 0 earlier verdicts" in output
-    assert "1 reference attempts have no ledger beside them" in output
+    assert f"references {benchmark_project.diff_case}: earlier verdicts 0" in output
+    assert "reference attempts without a ledger 1" in output
 
 
 def test_repository_records_the_next_attempt_of_a_repository_case(tmp_path, monkeypatch, capsys, benchmark_project):
@@ -131,7 +131,7 @@ def test_repository_records_the_next_attempt_of_a_repository_case(tmp_path, monk
 
     assert (
         capsys.readouterr().out.splitlines()[-1]
-        == f"recorded {benchmark_project.repository_case} attempt 2: 0 reports, complete True"
+        == f"recorded {benchmark_project.repository_case} attempt 2: complete, reports 0"
     )
 
 

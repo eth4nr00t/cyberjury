@@ -1,4 +1,4 @@
-"""Select readable production source without a language or framework allowlist."""
+"""Readable production source selection without a language or framework allowlist."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Measure each stage of a review attempt, write its record, and print the record line."""
+"""Measurement of each stage of a review attempt, its written record, and its printed record line."""
 
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ class Measure:
 
 
 class Recorder:
-    """Turn stages and items into records: each is written first, then printed as one line."""
+    """The writer of stage and item records, each written first and then printed as one line."""
 
     def __init__(
         self,

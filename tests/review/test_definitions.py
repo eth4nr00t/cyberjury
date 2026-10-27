@@ -1,4 +1,4 @@
-"""Definition ordering by first seen name in source order."""
+"""Definitions are ordered by first seen name, in source order."""
 
 from cyberjury.review.definitions import definitions_by_name
 from tests.review.support import definition

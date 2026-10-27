@@ -140,7 +140,7 @@ def run_prepared(
 
 
 class StubIssueJudge:
-    """Answer every issue link question from a pair predicate, or raise `error`, recording each pair."""
+    """An issue judge that answers every link question from a pair predicate, or raises `error`, recording each pair."""
 
     fingerprint = "stub-issue-judge"
 

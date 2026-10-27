@@ -1,4 +1,4 @@
-"""Load the per-language contract: extensions, grammar, file conventions, and syntax queries."""
+"""The per-language contract: extensions, grammar, file conventions, and syntax queries."""
 
 from __future__ import annotations
 

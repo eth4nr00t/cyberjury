@@ -1,4 +1,4 @@
-"""Build grounded units and Finder replies for isolated Diff Review tests."""
+"""Grounded units and Finder replies for isolated Diff Review tests."""
 
 import json
 from dataclasses import replace

@@ -1,4 +1,4 @@
-"""Record and load review attempts of benchmark cases."""
+"""Recorded review attempts of benchmark cases."""
 
 from __future__ import annotations
 
@@ -173,8 +173,8 @@ def _require_case_source(case: BenchmarkCase, directory: Path, source_revision: 
     examples = ", ".join([*changed[:2], *missing[:2], *extra[:2]])
     raise ValueError(
         f"{directory} did not review the source of {case.name}: the case is commit {case.target['commit']}, "
-        f"but the review read {_describe_root(str(target.get('repository_root')))}. "
-        f"Its source differs in {len(changed)} changed, {len(missing)} missing, and {len(extra)} extra files"
+        f"but the review read {_describe_root(str(target.get('repository_root')))}, "
+        f"and that source differs in {len(changed)} changed, {len(missing)} missing, and {len(extra)} extra files"
         + (f", for example {examples}" if examples else "")
     )
 

@@ -1,4 +1,4 @@
-"""Run benchmark diff cases through the product Diff Review command and record adjudicable attempts."""
+"""Benchmark diff case runs through the product Diff Review command, recorded as adjudicable attempts."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def run(
             record = _review_case(case, number, concurrency, case_state_dir(state_dir, case, number))
             seconds = round(time.monotonic() - started, 3)
             if record["complete"]:
-                progress(f"{prefix} finished in {seconds}s, reports={len(record['findings'])}")
+                progress(f"{prefix} finished in {seconds}s, reports {len(record['findings'])}")
             else:
                 progress(f"{prefix} failed after {seconds}s: {record['error']}")
             records.append(record)

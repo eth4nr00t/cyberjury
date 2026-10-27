@@ -1,4 +1,4 @@
-"""Build stable candidate identities from reportable source anchors."""
+"""Stable candidate identities built from reportable source anchors."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Seat identities and the seats every review entry calls."""
+"""Seat identities hide endpoints, and every review calls one finder seat for issue links too."""
 
 from cyberjury.providers import configuration as configuration_module
 from cyberjury.providers.configuration import ProviderConfiguration, ProviderSeat

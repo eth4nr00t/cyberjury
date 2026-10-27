@@ -1,4 +1,4 @@
-"""Build a provider from a name and client policy."""
+"""Provider construction from a name and client policy."""
 
 from __future__ import annotations
 

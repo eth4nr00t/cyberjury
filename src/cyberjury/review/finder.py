@@ -1,4 +1,4 @@
-"""Run the Finder over one review unit of any target."""
+"""The Finder judgment of one review unit of any target."""
 
 from __future__ import annotations
 

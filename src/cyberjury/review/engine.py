@@ -1,4 +1,4 @@
-"""Schedule review units, fold their findings into one union, and summarize the outcome."""
+"""The review unit scheduler, the finding union it folds, and the review outcome."""
 
 from __future__ import annotations
 
@@ -26,15 +26,15 @@ class ReviewUnit(Protocol):
 
     @property
     def id(self) -> str:
-        """The content bound unit plan id."""
+        """Return the content bound unit plan id."""
 
     @property
     def paths(self) -> tuple[str, ...]:
-        """The source paths the unit reviews."""
+        """Return the source paths the unit reviews."""
 
     @property
     def grounding(self) -> GroundingContext | None:
-        """The unit's initial evidence envelope, once grounded."""
+        """Return the unit's initial evidence envelope, once grounded."""
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -1,1 +1,1 @@
-"""Coordinate shared review orchestration and target adapters."""
+"""Shared review orchestration and its target adapters."""

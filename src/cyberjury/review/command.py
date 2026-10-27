@@ -1,4 +1,4 @@
-"""Run one review command: each stage record, the attempt record, and the text the command prints."""
+"""One review command run: each stage record, the attempt record, and the text the command prints."""
 
 from __future__ import annotations
 

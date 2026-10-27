@@ -35,7 +35,7 @@ class ItemStore:
             return parse(record, payload)
         except (LookupError, TypeError, ValueError, WorkspaceCorruptionError) as exc:
             raise WorkspaceCorruptionError(
-                f"resume record {path} is unreadable or corrupt: {exc}. Start a new session with --fresh"
+                f"resume record {path} is unreadable or corrupt: {exc}, start again with --fresh"
             ) from exc
 
     def save(self, record: Record, payload: dict[str, object] | None = None) -> None:

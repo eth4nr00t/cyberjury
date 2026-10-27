@@ -260,7 +260,7 @@ def test_symbol_search_without_a_definition_lists_the_aliased_import_that_binds_
 
 
 def test_dotted_symbol_search_without_a_definition_lists_the_module_import_of_its_first_segment(tmp_path):
-    """np.array with numpy imported as np names the import statement that binds np."""
+    """Searching np.array with numpy imported as np names the import statement that binds np."""
     navigator = _extracted_navigator(
         tmp_path, {"calc.py": "import numpy as np\n\ndef total(values):\n    return np.array(values).sum()\n"}
     )

@@ -4,7 +4,7 @@ from cyberjury.review.detection import MAX_SOURCE_BYTES, detection_for, load_det
 
 
 def test_detection_ignores_tool_directories_and_marks_dependency_directories():
-    """.venv and node_modules paths are ignored, while vendor and third_party paths are dependencies."""
+    """Paths under .venv and node_modules are ignored, while vendor and third_party paths are dependencies."""
     d = load_detection()
     assert d.is_ignored(".venv/lib/site.py")
     assert d.is_ignored("web/node_modules/left-pad/index.js")
@@ -145,7 +145,7 @@ def test_gitattributes_linguist_vendored_rules_follow_git_pattern_semantics(tmp_
 
 
 def test_project_declarations_override_the_contract_defaults(tmp_path):
-    """vendor/** -linguist-vendored keeps vendor code reviewable, and README.md -linguist-documentation is source."""
+    """A vendor/** -linguist-vendored rule keeps vendor code reviewable, and an unset README.md is source."""
     files = _write(
         tmp_path,
         {".gitattributes": "vendor/** -linguist-vendored\nREADME.md -linguist-documentation\n"},

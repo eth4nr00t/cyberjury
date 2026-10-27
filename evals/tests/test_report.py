@@ -60,7 +60,7 @@ def test_report_counts_recall_per_run_and_check_precision(
     assert summary.failed == [f"{benchmark_project.diff_case} attempt 3: finder failed"]
     text = format_summary(summary)
     assert f"{check} 1/2" in text
-    assert "report precision 50.0% = supported 1 / (supported 1 + not_actionable 1), over 3 reports" in text
+    assert "report precision 50.0% = supported 1 / (supported 1 + not_actionable 1), reports 3" in text
     assert "excluded from precision: duplicate 1, needs_review 0" in text
 
 
@@ -74,7 +74,9 @@ def test_report_sums_cost_from_model_call_receipts(tmp_path, cases, write_attemp
 
     assert summary.cost["total"]["requests"] == 1
     assert summary.cost["stages"]["initial_judgment finder"]["cache_read_tokens"] == 5
-    assert "requests 1, failed 0, input tokens 12 (cache read 5), output tokens 3" in format_summary(summary)
+    text = format_summary(summary)
+    assert "  model calls, receipts 1: requests 1, failed 0, input tokens 12 (cache read 5, cache write 0)" in text
+    assert "    initial_judgment finder: requests 1, failed 0, input tokens 12" in text
 
 
 def test_report_fails_failed_attempts_and_precision_below_the_floor(tmp_path, cases, write_attempt, write_ledger):

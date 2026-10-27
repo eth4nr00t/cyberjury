@@ -1,4 +1,4 @@
-"""Plan diff units from changed definitions and pack them into bounded review surfaces."""
+"""Diff unit planning from changed definitions, packed into bounded review surfaces."""
 
 from __future__ import annotations
 
@@ -69,7 +69,6 @@ def _merge_definition_unit_plans(
     left: DefinitionUnitPlan,
     right: DefinitionUnitPlan,
 ) -> DefinitionUnitPlan:
-    """Merge independent review surfaces without losing seed or receipt identity."""
     return DefinitionUnitPlan(
         seeds=tuple(dict.fromkeys((*left.seeds, *right.seeds))),
         seed_files=tuple(dict.fromkeys((*left.seed_files, *right.seed_files))),

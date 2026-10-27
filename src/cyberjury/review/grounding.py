@@ -1,4 +1,4 @@
-"""Persist strict receipts for initial grounding envelopes."""
+"""Strict receipts for initial grounding envelopes."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def _context_record(unit_id: str, context: GroundingContext) -> dict[str, object
 
 @dataclass(frozen=True, kw_only=True)
 class GroundingReceipt:
-    """Bind every planned unit to one initial evidence envelope."""
+    """The binding of every planned unit to one initial evidence envelope."""
 
     unit_plan_receipt_sha256: str
     contexts: tuple[dict[str, object], ...]

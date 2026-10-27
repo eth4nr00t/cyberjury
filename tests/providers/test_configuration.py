@@ -39,8 +39,8 @@ def test_environment_sets_the_model_and_endpoint(monkeypatch):
 
 
 def test_a_seat_without_its_sdk_key_is_rejected_before_review_work(monkeypatch):
-    """An anthropic seat raises "Set ANTHROPIC_API_KEY" until that variable is present."""
-    with pytest.raises(ProviderCredentialsError, match="Set ANTHROPIC_API_KEY"):
+    """An anthropic seat raises "set ANTHROPIC_API_KEY" until that variable is present."""
+    with pytest.raises(ProviderCredentialsError, match="has no API key, set ANTHROPIC_API_KEY"):
         require_provider_key(ProviderSeat(provider="anthropic", model="m"))
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")

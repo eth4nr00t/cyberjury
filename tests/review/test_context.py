@@ -1,4 +1,4 @@
-"""Test the shared grounding context, evidence catalog, and source receipts."""
+"""The shared grounding context renders its evidence catalog and resolves source receipts."""
 
 import pytest
 
@@ -92,7 +92,7 @@ def test_evidence_request_ids_collapse_repeated_identical_requests():
 
 
 def test_evidence_request_ids_reject_oversized_model_batches():
-    """65 ids, a 129-character id, and an id containing a newline each raise EvidenceRequestError."""
+    """A batch of 65 ids, a 129-character id, and an id containing a newline each raise EvidenceRequestError."""
     with pytest.raises(EvidenceRequestError, match="more than 64 ids"):
         evidence_request_ids([f"ev-{index}" for index in range(65)])
     with pytest.raises(EvidenceRequestError, match="oversized evidence id"):

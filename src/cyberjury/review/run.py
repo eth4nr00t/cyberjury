@@ -1,4 +1,4 @@
-"""Review prepared units, group their union into issues, and build the result artifacts."""
+"""The run that reviews prepared units, groups their union into issues, and builds the result artifacts."""
 
 from __future__ import annotations
 

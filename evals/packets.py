@@ -1,4 +1,4 @@
-"""Build blind adjudication packets from attempts and turn adjudicator results into ledgers."""
+"""Blind adjudication packets built from attempts, and the ledgers made from adjudicator results."""
 
 from __future__ import annotations
 
@@ -201,8 +201,8 @@ def write_ledgers(
     ]
     if stale and not supersede:
         raise ValueError(
-            f"{len(stale)} attempts already have a ledger from another adjudication round, for example {stale[0]}. "
-            "Pass --supersede to replace every ledger of this round's attempts"
+            f"{len(stale)} attempts already have a ledger from another adjudication round, for example {stale[0]}, "
+            "pass --supersede to replace every ledger of this round's attempts"
         )
     for path in stale:
         path.unlink()

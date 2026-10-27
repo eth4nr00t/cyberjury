@@ -1,4 +1,4 @@
-"""Resolve and read repository source paths without leaving the reviewed repository."""
+"""Repository source path resolution and reads that never leave the reviewed repository."""
 
 from __future__ import annotations
 

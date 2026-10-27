@@ -56,7 +56,7 @@ def require_provider_key(seat: ProviderSeat) -> None:
     """Reject a seat before review work when its provider SDK has no key."""
     key_name = _SDK_KEYS[seat.provider]
     if not _setting(key_name):
-        raise ProviderCredentialsError(f"the {seat.provider} seat has no reachable API key. Set {key_name}.")
+        raise ProviderCredentialsError(f"the {seat.provider} provider has no API key, set {key_name}")
 
 
 def provider_for_seat(configuration: ProviderConfiguration, *, meter: UsageMeter) -> Provider:

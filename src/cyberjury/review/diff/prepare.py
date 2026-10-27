@@ -1,4 +1,4 @@
-"""Prepare a Diff Review over the source snapshot of its head revision."""
+"""Diff Review preparation over the source snapshot of its head revision."""
 
 from __future__ import annotations
 

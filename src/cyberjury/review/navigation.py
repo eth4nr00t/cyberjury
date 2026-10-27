@@ -121,7 +121,7 @@ class SourceNavigationResult:
 
 @dataclass(frozen=True, kw_only=True)
 class SourceNavigator:
-    """Search verified source identities without inferring language bindings."""
+    """A search over verified source identities that infers no language bindings."""
 
     root: Path
     definitions: tuple[DefinitionEvidence, ...]
@@ -169,7 +169,7 @@ class SourceNavigator:
 
 
 class SourceNavigationSession:
-    """Execute model queries while retaining only targets this judgment discovered."""
+    """One judgment's query execution, retaining only the targets that judgment discovered."""
 
     def __init__(self, navigator: SourceNavigator) -> None:
         """Bind one immutable navigator to an isolated discovered target set."""
@@ -377,10 +377,7 @@ class SourceNavigationSession:
         for index, target_id in enumerate(targets, start=1):
             target = self._targets.get(target_id)
             if target is None:
-                raise SourceNavigationError(
-                    f"evidence request {index} references unknown target {target_id!r}. "
-                    "Read only target ids returned by an earlier search."
-                )
+                raise SourceNavigationError(f"evidence request {index} references unknown target {target_id!r}")
             delivered_as = self._delivered_as(target)
             receipt = self._receipt(target)
             label = _SOURCE_LABELS[target.source_kind]

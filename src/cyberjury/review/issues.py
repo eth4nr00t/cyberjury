@@ -1,4 +1,4 @@
-"""Group reported findings into issues: findings that one code change fixes."""
+"""Issues of reported findings: findings that one code change fixes."""
 
 from __future__ import annotations
 

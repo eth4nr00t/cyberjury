@@ -1,4 +1,4 @@
-"""Bind one language-independent security kernel to every review unit."""
+"""The one language-independent security kernel bound to every review unit."""
 
 from __future__ import annotations
 

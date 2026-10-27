@@ -9,7 +9,8 @@ def test_error_messages_redact_credentials_and_stay_bounded():
     """Bearer headers, api key, token, and sk- values are redacted, other words are kept, and length stays 2000."""
     message = error_message(
         "Authorization: Bearer super-secret headers={'Authorization': 'Bearer dict-secret'} "
-        "api key loose-secret token token-secret sk-abcdefghijkl, no reachable API key. Set ANTHROPIC_API_KEY. "
+        "api key loose-secret token token-secret sk-abcdefghijkl, "
+        "the anthropic provider has no API key, set ANTHROPIC_API_KEY. "
         "tokens=abcdefghij OPENAI_API_KEY=abcdefghijklmnop tokenization_failed "
         f"{'x' * 3000}"
     )
@@ -17,8 +18,8 @@ def test_error_messages_redact_credentials_and_stay_bounded():
     assert "secret" not in message
     assert "abcdefghij" not in message
     assert (
-        "no reachable API key. Set ANTHROPIC_API_KEY. tokens=[redacted] OPENAI_API_KEY=[redacted] tokenization_failed"
-        in message
+        "the anthropic provider has no API key, set ANTHROPIC_API_KEY. "
+        "tokens=[redacted] OPENAI_API_KEY=[redacted] tokenization_failed" in message
     )
     assert len(message) == 2000
 

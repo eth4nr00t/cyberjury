@@ -1,4 +1,4 @@
-"""Resolve provider seat identities and the seats every review entry calls."""
+"""Provider seat identities and the seats every review entry calls."""
 
 from __future__ import annotations
 

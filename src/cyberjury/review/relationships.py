@@ -26,7 +26,7 @@ def _candidate_name(value: str) -> str:
 
 @dataclass(frozen=True, order=True, kw_only=True)
 class SourceReference:
-    """Identify exact normalized source content within one repository snapshot."""
+    """The identity of exact normalized source content within one repository snapshot."""
 
     id: str
     path: str
@@ -54,7 +54,7 @@ class SourceReference:
 
 @dataclass(frozen=True, order=True, kw_only=True)
 class DefinitionEvidence:
-    """Describe one repository definition that can become a relationship endpoint."""
+    """One repository definition that can become a relationship endpoint."""
 
     id: str
     source: SourceReference
@@ -102,7 +102,7 @@ class DefinitionEvidence:
 
 @dataclass(frozen=True, order=True, kw_only=True)
 class CallsiteEvidence:
-    """Identify one concrete call occurrence inside one caller definition."""
+    """One concrete call occurrence inside one caller definition."""
 
     id: str
     caller_definition_id: str
@@ -145,7 +145,7 @@ class CallsiteEvidence:
 
 @dataclass(frozen=True, order=True, kw_only=True)
 class AnalysisObservation:
-    """Record one producer clue without promoting it to a relationship."""
+    """One producer clue that is not promoted to a relationship."""
 
     id: str
     producer: str
@@ -193,7 +193,7 @@ class AnalysisObservation:
 
 @dataclass(frozen=True, order=True, kw_only=True)
 class StructuralRelationshipEvidence:
-    """Identify one non-call relationship question without claiming its target."""
+    """One non-call relationship question that claims no target."""
 
     id: str
     kind: StructuralRelationKind
@@ -248,7 +248,7 @@ class StructuralRelationshipEvidence:
 
 @dataclass(frozen=True, kw_only=True)
 class RelationshipEvidenceBundle:
-    """Collect deterministic evidence before any model establishes relationships."""
+    """The deterministic evidence collected before any model establishes relationships."""
 
     sources: tuple[SourceReference, ...] = ()
     definitions: tuple[DefinitionEvidence, ...] = ()

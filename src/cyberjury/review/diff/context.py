@@ -1,4 +1,4 @@
-"""Ground each planned diff unit in repository source and facts."""
+"""Grounding of each planned diff unit in repository source and facts."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Render bounded diff evidence and the diff finder contract."""
+"""Bounded diff evidence rendering and the diff finder contract."""
 
 from __future__ import annotations
 

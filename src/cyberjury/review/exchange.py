@@ -1,4 +1,4 @@
-"""Run one bounded evidence exchange: model replies, evidence and source deliveries, and corrections."""
+"""One bounded evidence exchange: model replies, evidence and source deliveries, and corrections."""
 
 from __future__ import annotations
 
@@ -269,13 +269,13 @@ class _EvidenceExchange:
         if self.evidence_exchanges >= self.followup_budget and cited_only == requested and not source_queries:
             return self.finish(
                 tuple(cited_only),
-                "findings cite evidence that did not fit in the evidence budget before the follow ups ran out",
+                "findings cite evidence that did not fit in the evidence budget before the follow-ups ran out",
             )
         if self.evidence_exchanges >= self.followup_budget:
             return self.finish(
                 ("source navigation round limit reached",),
                 self.unknown_evidence_failure_reason
-                or f"finder requested evidence after {self.followup_budget} follow ups",
+                or f"finder requested evidence after {self.followup_budget} follow-ups",
             )
         return self._deliver(requested, source_queries)
 

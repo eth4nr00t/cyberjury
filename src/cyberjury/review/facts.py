@@ -58,7 +58,7 @@ class Facts:
 
 @dataclass(frozen=True, kw_only=True)
 class FactsReceipt:
-    """Identify one exact facts extraction by its backend and its extracted evidence."""
+    """The identity of one exact facts extraction by its backend and its extracted evidence."""
 
     backend_id: str
     evidence_sha256: str

@@ -1,4 +1,4 @@
-"""Coordinate syntax analysis into the shared Facts contract."""
+"""Syntax analysis coordinated into the shared Facts contract."""
 
 from __future__ import annotations
 

@@ -126,7 +126,7 @@ def _safe_directory(path: Path) -> None:
     created = not path.exists()
     path.mkdir(parents=True, mode=0o700, exist_ok=True)
     if not path.is_dir() or path.is_symlink():
-        raise ValueError(f"session path is not a safe directory: {path}")
+        raise ValueError(f"session path is not a plain directory: {path}")
     if created:
         os.chmod(path, 0o700)
     elif path.stat().st_mode & 0o077:
@@ -136,11 +136,11 @@ def _safe_directory(path: Path) -> None:
 def _state_directory(root: str | Path, *parts: str) -> Path:
     raw_root = Path(root).expanduser()
     if raw_root.is_symlink():
-        raise ValueError("state root cannot be a symlink")
+        raise ValueError("state directory cannot be a symlink")
     root_created = not raw_root.exists()
     raw_root.mkdir(parents=True, mode=0o700, exist_ok=True)
     if not raw_root.is_dir() or raw_root.is_symlink():
-        raise ValueError("state root is not a safe directory")
+        raise ValueError("state directory path is not a plain directory")
     if root_created:
         os.chmod(raw_root, 0o700)
     current = raw_root.resolve()
@@ -152,13 +152,13 @@ def _state_directory(root: str | Path, *parts: str) -> Path:
 
 @dataclass(frozen=True, kw_only=True)
 class SessionLocator:
-    """Map one stable review intent key to its current unique session."""
+    """The map from one stable review intent key to its current unique session."""
 
     path: Path
 
     @classmethod
     def open(cls, root: str | Path) -> SessionLocator:
-        """Open the atomic session locators of one state root."""
+        """Open the atomic session locators of one state directory."""
         return cls(path=_state_directory(root, "locators", "reviews"))
 
     def select_with_state(self, key: str, *, reuse: bool) -> tuple[str, bool]:

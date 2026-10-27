@@ -96,7 +96,7 @@ def test_a_syntax_error_placeholder_never_becomes_an_empty_name(tmp_path):
 
 
 def test_a_three_edge_call_chain_is_recovered_edge_by_edge(tmp_path):
-    """get_order calls handle_request, handle_request calls load_order, and load_order calls run_query."""
+    """Each edge of get_order to handle_request to load_order to run_query is recovered as a call."""
     graph = callgraph(write_call_chain(tmp_path))
     assert graph["app/routes.py"]["get_order"][0]["calls"] == ["handle_request"]
     assert graph["app/handler.py"]["handle_request"][0]["calls"] == ["load_order"]

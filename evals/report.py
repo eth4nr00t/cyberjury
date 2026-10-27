@@ -1,4 +1,4 @@
-"""Report reviewed recall, report precision, and model call cost of adjudicated runs."""
+"""Reviewed recall, report precision, and model call cost of adjudicated runs."""
 
 from __future__ import annotations
 
@@ -104,7 +104,7 @@ def _cost(paths: Sequence[Path]) -> dict[str, object]:
         for call in validate_model_calls_document(read_json(path))["calls"]:
             stage = stages[f"{call['trigger']} {call['role']}"]
             stage.update(
-                requests=1, failed=call["status"] == "failed", **{field: call.get(field, 0) for field in _TOKENS}
+                requests=1, failed=int(call["status"] == "failed"), **{field: call.get(field, 0) for field in _TOKENS}
             )
     total = sum(stages.values(), Counter())
     return {
@@ -156,7 +156,7 @@ def format_summary(summary: RunSummary) -> str:
     counts = summary.verdicts
     lines += [
         f"  report precision {precision} = supported {counts['supported']} / (supported {counts['supported']} "
-        f"+ not_actionable {counts['not_actionable']}), over {summary.reports} reports",
+        f"+ not_actionable {counts['not_actionable']}), reports {summary.reports}",
         f"    excluded from precision: duplicate {counts['duplicate']}, needs_review {counts['needs_review']}",
         f"  issues {summary.issues['issues']}: duplicate issues {summary.issues['duplicate_issues']}, "
         f"mixed issues {summary.issues['mixed_issues']}",
@@ -166,7 +166,7 @@ def format_summary(summary: RunSummary) -> str:
     lines += [f"  without ledger: {item}" for item in summary.unadjudicated]
     cost = summary.cost
     if cost["receipts"]:
-        lines.append(f"  model calls from {cost['receipts']} receipts: {_format_cost(cost['total'])}")
+        lines.append(f"  model calls, receipts {cost['receipts']}: {_format_cost(cost['total'])}")
         lines += [f"    {name}: {_format_cost(stage)}" for name, stage in cost["stages"].items()]
     return "\n".join(lines)
 
@@ -175,7 +175,8 @@ def _format_cost(stage: dict[str, int]) -> str:
     total_input = stage["input_tokens"] + stage["cache_read_tokens"] + stage["cache_write_tokens"]
     return (
         f"requests {stage['requests']}, failed {stage['failed']}, input tokens {total_input} "
-        f"(cache read {stage['cache_read_tokens']}), output tokens {stage['output_tokens']}"
+        f"(cache read {stage['cache_read_tokens']}, cache write {stage['cache_write_tokens']}), "
+        f"output tokens {stage['output_tokens']}"
     )
 
 

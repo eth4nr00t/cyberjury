@@ -20,7 +20,7 @@ def _gutter(number: int | None, width: int) -> str:
 
 
 def numbered_source(rel: str, text: str, first_line: int) -> str:
-    """One labeled block whose every line carries its real line number in the file."""
+    """Return one labeled block whose every line carries its real line number in the file."""
     lines = split_lines(text)
     last = first_line + max(len(lines), 1) - 1
     width = len(str(last))
@@ -52,7 +52,7 @@ def _diff_gutter(old: int | None, new: int | None, width: int) -> str:
 
 
 def numbered_diff(diff: str) -> str:
-    """A unified diff whose gutter carries old and new side line numbers."""
+    """Return the unified diff with a gutter that carries old and new side line numbers."""
     lines = split_lines(diff)
     width = _width(lines)
     out: list[str] = []

@@ -1,4 +1,4 @@
-"""The working-directory .env loader the CLI runs at startup."""
+"""The CLI loads only the working directory .env, without replacing exported values."""
 
 import ast
 import os

@@ -1,4 +1,4 @@
-"""Classify noise files without limiting review to known languages."""
+"""Noise file classification that does not limit review to known languages."""
 
 from __future__ import annotations
 

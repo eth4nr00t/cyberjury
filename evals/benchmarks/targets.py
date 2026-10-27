@@ -1,4 +1,4 @@
-"""Materialize the pinned git targets of benchmark cases."""
+"""Materialized pinned git targets of benchmark cases."""
 
 from __future__ import annotations
 

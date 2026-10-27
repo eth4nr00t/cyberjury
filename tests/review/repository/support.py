@@ -1,4 +1,4 @@
-"""Drive repository review through the model reviewer with scripted provider replies."""
+"""Repository review driven through the model reviewer with scripted provider replies."""
 
 import json
 import re

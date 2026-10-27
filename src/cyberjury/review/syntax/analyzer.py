@@ -1,4 +1,4 @@
-"""Load each language's grammar queries and parse every reviewable source into language-neutral graph inputs."""
+"""Grammar queries of each language and the language-neutral graph inputs parsed from every reviewable source."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ class AnalyzedDefinition:
 
 @dataclass(frozen=True, order=True, kw_only=True)
 class AnalyzedCallsite:
-    """Preserve one concrete syntax call occurrence inside its caller."""
+    """One concrete syntax call occurrence inside its caller."""
 
     start: int
     end: int
@@ -70,7 +70,7 @@ class AnalyzedCallsite:
 
 @dataclass(frozen=True)
 class AnalyzedOwner:
-    """Identify the nearest lexical definition that owns another definition."""
+    """The nearest lexical definition that owns another definition."""
 
     name: str
     start: int
@@ -79,7 +79,7 @@ class AnalyzedOwner:
 
 @dataclass(frozen=True)
 class LangSpec:
-    """Define one language grammar and its graph queries."""
+    """One language grammar and its graph queries."""
 
     name: str
     extensions: tuple[str, ...]
@@ -96,7 +96,7 @@ class LangSpec:
 
 @dataclass(frozen=True)
 class ImportQuery:
-    """Define one declarative import query and its optional remote literal."""
+    """One declarative import query and its optional remote literal."""
 
     query: str
     imported: str = ""
@@ -104,7 +104,7 @@ class ImportQuery:
 
 @dataclass(frozen=True)
 class StructuralQuery:
-    """Define one declarative non-call relationship query."""
+    """One declarative non-call relationship query."""
 
     kind: StructuralRelationKind
     query: str
@@ -112,7 +112,7 @@ class StructuralQuery:
 
 @dataclass(frozen=True)
 class AnalyzedImport:
-    """Preserve one import binding with its lexical owner."""
+    """One import binding with its lexical owner."""
 
     imported: str
     local: str
@@ -124,7 +124,7 @@ class AnalyzedImport:
 
 @dataclass(frozen=True, order=True, kw_only=True)
 class AnalyzedNamespace:
-    """Preserve one namespace binding and its exact import statement."""
+    """One namespace binding and its exact import statement."""
 
     local: str
     specifier: str
@@ -135,7 +135,7 @@ class AnalyzedNamespace:
 
 @dataclass(frozen=True, order=True, kw_only=True)
 class AnalyzedQualifiedUse:
-    """Preserve one qualified name use and its exact syntax range."""
+    """One qualified name use and its exact syntax range."""
 
     qualifier: str
     name: str
@@ -146,7 +146,7 @@ class AnalyzedQualifiedUse:
 
 @dataclass(frozen=True, order=True, kw_only=True)
 class AnalyzedStructuralRelationship:
-    """Preserve one exact structural relationship spelling."""
+    """One exact structural relationship spelling."""
 
     kind: StructuralRelationKind
     reference: str

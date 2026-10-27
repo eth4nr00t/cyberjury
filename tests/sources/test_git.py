@@ -75,7 +75,7 @@ def test_operator_git_diff_configuration_does_not_change_the_patch(tmp_path):
 
 @pytest.mark.parametrize("source", ["repository config", "parent git -c"])
 def test_suppress_blank_empty_never_drops_the_space_of_a_blank_context_line(monkeypatch, tmp_path, source):
-    """diff.suppressBlankEmpty from the repository config or a parent git -c keeps the blank context line marker."""
+    """A diff.suppressBlankEmpty set by the repository or a parent git -c keeps the blank context line marker."""
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "--quiet")

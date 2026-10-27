@@ -15,7 +15,7 @@ type UnitKind = Literal["diff", "source"]
 
 @dataclass(frozen=True, order=True, kw_only=True)
 class UnitSourceSlice:
-    """Identify one normalized source range owned or requested by a unit."""
+    """One normalized source range owned or requested by a unit."""
 
     path: str
     start: int
@@ -28,7 +28,7 @@ class UnitSourceSlice:
 
 @dataclass(frozen=True, kw_only=True)
 class UnitPlanRecord:
-    """Describe one deterministic model work item."""
+    """One deterministic model work item."""
 
     id: str
     kind: UnitKind
@@ -75,7 +75,7 @@ class UnitPlanRecord:
 
 @dataclass(frozen=True, kw_only=True)
 class UnitPlanReceipt:
-    """Bind one complete deterministic unit worklist to its extracted facts."""
+    """The binding of one complete deterministic unit worklist to its extracted facts."""
 
     facts_receipt_sha256: str
     units: tuple[UnitPlanRecord, ...]

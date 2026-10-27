@@ -14,7 +14,7 @@ from tests.support import git
 
 @pytest.fixture
 def benchmark_project(tmp_path):
-    """A local git repository with one repository case and one diff case over it."""
+    """Return a local git repository with one repository case and one diff case over it."""
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init")

@@ -1,4 +1,4 @@
-"""Extract syntax facts the way the shared prepare stage does."""
+"""Syntax facts extracted the way the shared prepare stage does."""
 
 from cyberjury.review.detection import load_detection
 from cyberjury.review.facts import Facts

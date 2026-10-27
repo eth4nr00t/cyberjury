@@ -114,7 +114,7 @@ class UsageMeter:
 
 
 class MeteringProvider(Provider):
-    """Record each wrapped call's usage into the shared meter."""
+    """A provider wrapper that records each call's usage into the shared meter."""
 
     def __init__(self, inner: Provider, meter: UsageMeter) -> None:
         """Wrap one provider and share its usage totals with the run meter."""

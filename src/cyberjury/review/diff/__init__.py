@@ -1,1 +1,1 @@
-"""Adapt shared review orchestration to patched source input."""
+"""The shared review orchestration adapted to patched source input."""

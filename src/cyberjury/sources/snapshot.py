@@ -1,4 +1,4 @@
-"""Capture and revalidate one source-only repository file manifest."""
+"""One captured and revalidated source-only repository file manifest."""
 
 from __future__ import annotations
 
@@ -167,7 +167,7 @@ def _source_file(root: Path, relative: str, sink: BinaryIO | None = None) -> Sou
     except SourceSnapshotError:
         raise
     except (OSError, ValueError) as exc:
-        raise SourceSnapshotError(f"cannot snapshot source file {relative!r}: {exc}") from exc
+        raise SourceSnapshotError(f"cannot snapshot source file {relative}: {exc}") from exc
 
 
 def _stable_stat(value: os.stat_result) -> tuple[int, int, int, int, int, int]:

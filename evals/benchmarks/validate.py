@@ -1,4 +1,4 @@
-"""Validate benchmark definitions against their versioned contract."""
+"""Benchmark definition validation against the versioned contract."""
 
 from __future__ import annotations
 

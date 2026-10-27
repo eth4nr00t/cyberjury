@@ -1,4 +1,4 @@
-"""Build and render language neutral syntax evidence."""
+"""Language neutral syntax evidence and its rendering."""
 
 from __future__ import annotations
 

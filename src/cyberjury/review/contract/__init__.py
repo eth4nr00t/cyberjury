@@ -1,4 +1,4 @@
-"""Locate the one review contract shipped with the package and identify its exact content."""
+"""The one review contract shipped with the package, and the identity of its exact content."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ _CONTRACT_FILES = (SECURITY_KERNEL_FILE, SEVERITY_RUBRIC_FILE, DETECTION_FILE, *
 
 @dataclass(frozen=True, kw_only=True)
 class ContractReceipt:
-    """Identify the kernel, rubric, file classification, and language contracts one review used."""
+    """The identity of the kernel, rubric, file classification, and language contracts one review used."""
 
     files: tuple[tuple[str, str], ...]
     contract_sha256: str

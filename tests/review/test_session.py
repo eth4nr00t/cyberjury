@@ -167,7 +167,7 @@ def test_each_stage_writes_its_artifacts_under_its_own_directory(tmp_path):
 
 
 def test_an_attempt_runs_until_its_terminal_record_is_written(tmp_path):
-    """record.json reads running after start and ok after finish."""
+    """The attempt record reads running after start and ok after finish."""
     intent = ReviewIntent(target=TargetInput(kind="repository", repository=str(tmp_path)))
     state = tmp_path.parent / f"{tmp_path.name}-state"
     attempt = _start(ReviewSession.select_active(state, intent, reuse=True), _request())

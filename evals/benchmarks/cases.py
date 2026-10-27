@@ -1,4 +1,4 @@
-"""Load the cases of benchmark definitions as review cases."""
+"""Review cases loaded from benchmark definitions."""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ def find_case(name: str, benchmarks: Sequence[str | Path] | None = None) -> Benc
     """Resolve one case and fail loud with the known names."""
     cases = load_cases(benchmarks)
     if name not in cases:
-        raise ValueError(f"unknown benchmark case {name!r}. Known: {', '.join(cases) or 'none'}")
+        raise ValueError(f"unknown benchmark case {name!r}, known cases: {', '.join(cases) or 'none'}")
     return cases[name]
 
 

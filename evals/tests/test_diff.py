@@ -50,7 +50,7 @@ def scripted_model(monkeypatch):
 
 @pytest.fixture
 def owner_finding():
-    """One complete Finder finding on the benchmark diff's changed line."""
+    """Return one complete Finder finding on the benchmark diff's changed line."""
     return SimpleNamespace(
         reply={
             "title": "Create saves without an owner",
@@ -104,7 +104,7 @@ def test_run_forwards_its_concurrency_to_the_review(tmp_path, case, scripted_mod
 
 
 def test_run_reports_each_case_start_and_finish(tmp_path, case, scripted_model, owner_finding):
-    """One case with one scripted finding emits a started event and a finished event with reports=1."""
+    """One case with one scripted finding emits a started event and a finished event with reports 1."""
     scripted_model([owner_finding.reply])
     events = []
 
@@ -112,7 +112,7 @@ def test_run_reports_each_case_start_and_finish(tmp_path, case, scripted_model, 
 
     assert events[0] == f"[1/1] {case.name} started"
     assert events[-1].startswith(f"[1/1] {case.name} finished in ")
-    assert events[-1].endswith("s, reports=1")
+    assert events[-1].endswith("s, reports 1")
 
 
 def test_run_records_a_failed_review_with_its_reason(tmp_path, case, scripted_model):

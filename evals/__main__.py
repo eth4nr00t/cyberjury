@@ -1,4 +1,4 @@
-"""Run the eval command line interface."""
+"""Module entry point of the eval command line interface."""
 
 from evals.cli import main
 

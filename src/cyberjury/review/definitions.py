@@ -1,4 +1,4 @@
-"""Order repository definitions and describe the seed definitions of one review unit."""
+"""Repository definition order and the seed definitions of one review unit."""
 
 from __future__ import annotations
 

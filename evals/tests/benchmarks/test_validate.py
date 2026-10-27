@@ -1,4 +1,4 @@
-"""Tests for the versioned benchmark validation contract."""
+"""Benchmark validation enforces the versioned contract and its semantic checks."""
 
 from __future__ import annotations
 

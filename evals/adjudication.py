@@ -1,4 +1,4 @@
-"""Bind source assessment ledgers to recorded review attempts."""
+"""Source assessment ledgers bound to recorded review attempts."""
 
 from __future__ import annotations
 

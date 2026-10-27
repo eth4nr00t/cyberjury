@@ -1,4 +1,4 @@
-"""Prepare one review target: facts, navigation, bounded units, and their receipts."""
+"""One review target's preparation: facts, navigation, bounded units, and their receipts."""
 
 from __future__ import annotations
 

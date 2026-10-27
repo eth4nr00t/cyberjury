@@ -1,4 +1,4 @@
-"""Load the working directory environment file for CLI commands."""
+"""The working directory environment file that CLI commands load."""
 
 from pathlib import Path
 

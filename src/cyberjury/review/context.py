@@ -58,7 +58,7 @@ class GroundingCoverage:
 
 @dataclass(frozen=True, kw_only=True)
 class SourceSpan:
-    """Record the source lines covered by one delivered fragment."""
+    """The source lines covered by one delivered fragment."""
 
     file: str
     start_line: int

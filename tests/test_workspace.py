@@ -127,7 +127,7 @@ def test_locator_session_id_must_name_a_review_session(tmp_path):
 
 
 def test_existing_state_root_permissions_are_not_changed(tmp_path):
-    """A pre-existing 0755 state root keeps its mode while the created reviews namespace is 0700."""
+    """A pre-existing 0755 state directory keeps its mode while the created reviews namespace is 0700."""
     root = tmp_path / "shared"
     root.mkdir(mode=0o755)
 
@@ -137,7 +137,7 @@ def test_existing_state_root_permissions_are_not_changed(tmp_path):
     assert stat.S_IMODE((root / "reviews").stat().st_mode) == 0o700
 
 
-def _symlinked_state_root(tmp_path):
+def _symlinked_state_dir(tmp_path):
     real = tmp_path / "real"
     real.mkdir()
     link = tmp_path / "link"
@@ -154,9 +154,9 @@ def _symlinked_namespace(tmp_path):
     return root
 
 
-@pytest.mark.parametrize("layout", [_symlinked_state_root, _symlinked_namespace])
+@pytest.mark.parametrize("layout", [_symlinked_state_dir, _symlinked_namespace])
 def test_symlinked_state_directories_are_rejected(tmp_path, layout):
-    """A state root or reviews namespace that is a symlink to another directory raises ValueError naming symlink."""
+    """A state directory or reviews namespace that is a symlink to another directory raises a symlink ValueError."""
     with pytest.raises(ValueError, match="symlink"):
         SessionWorkspace.open_or_create(layout(tmp_path), session_id="review-20260101-000000-" + "5" * 8)
 

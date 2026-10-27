@@ -1,4 +1,4 @@
-"""Acquire deterministic source and patch bytes from committed Git objects."""
+"""Deterministic source and patch bytes acquired from committed Git objects."""
 
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ def resolve_root(repository: str | Path) -> Path:
     """Resolve one operator path to the canonical Git top level."""
     requested = Path(repository).expanduser()
     if requested.is_symlink():
-        raise GitSourceError("diff repository cannot be a symlink")
+        raise GitSourceError("Git repository path cannot be a symlink")
     return Path(_git(requested, "rev-parse", "--show-toplevel").strip()).resolve()
 
 

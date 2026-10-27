@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from cyberjury import __version__
+import cyberjury
 from cyberjury.record import Record
 from cyberjury.review.command import ReviewCommand, run_review_command
 from cyberjury.review.recorder import TERMINATED
@@ -35,13 +35,13 @@ def _default_state_dir() -> str:
     return str(Path.home() / ".cyberjury")
 
 
-def _add_execution_args(target) -> None:
+def _add_shared_options(target) -> None:
     target.add_argument(
         "--concurrency",
         type=positive_int,
         metavar="N",
         default=None,
-        help="unit reviews or issue link calls to run in parallel, default "
+        help="review units or issue link judgments to run in parallel, default "
         f"{DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency}",
     )
     target.add_argument(
@@ -53,19 +53,21 @@ def _add_execution_args(target) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="cyberjury", allow_abbrev=False)
-    parser.add_argument("--version", action="version", version=f"cyberjury {__version__}")
+    parser = argparse.ArgumentParser(prog="cyberjury", description=cyberjury.__doc__, allow_abbrev=False)
+    parser.add_argument("--version", action="version", version=f"cyberjury {cyberjury.__version__}")
     sub = parser.add_subparsers(dest="command")
     review = sub.add_parser("review", help="review code for security findings", allow_abbrev=False)
     review_subcommands = review.add_subparsers(dest="scope", metavar="{diff,repository}", required=True)
-    diff = review_subcommands.add_parser("diff", help="review a git range against its repository", allow_abbrev=False)
+    diff = review_subcommands.add_parser(
+        "diff", help="review the changes in a git range, with its repository as context", allow_abbrev=False
+    )
     diff.add_argument("range", help="git range to review, A..B or A...B, e.g. origin/main...HEAD")
     diff.add_argument(
         "path", nargs="?", default=".", help="path inside the git repository, default the current directory"
     )
     repository = review_subcommands.add_parser(
         "repository",
-        help="review a whole repository and resume open work when re-run",
+        help="review a whole repository, resuming open work when run again",
         allow_abbrev=False,
     )
     repository.add_argument("path", nargs="?", default=".", help="directory to review, default the current directory")
@@ -73,7 +75,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--fresh", action="store_true", help="start a new review session instead of resuming the active one"
     )
     for scope in (diff, repository):
-        _add_execution_args(scope)
+        _add_shared_options(scope)
     return parser
 
 

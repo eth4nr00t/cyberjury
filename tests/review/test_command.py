@@ -257,7 +257,7 @@ def test_a_missing_api_key_fails_the_config_stage_before_any_state_directory_exi
     assert records[0]["id"] == "config"
     assert records[-1]["error"] == records[0]["error"]
     assert records[0]["error"]["code"] == "config"
-    assert "no reachable API key" in records[0]["error"]["message"]
+    assert records[0]["error"]["message"] == "the anthropic provider has no API key, set ANTHROPIC_API_KEY"
     assert not state.exists()
 
 

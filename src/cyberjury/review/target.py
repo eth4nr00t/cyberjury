@@ -1,4 +1,4 @@
-"""Resolve operator target input into immutable repository and diff identities."""
+"""Operator target input resolved into immutable repository and diff identities."""
 
 from __future__ import annotations
 

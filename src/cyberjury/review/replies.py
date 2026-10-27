@@ -1,4 +1,4 @@
-"""Parse one role reply against its closed response schema."""
+"""Role reply parsing against its closed response schema."""
 
 from __future__ import annotations
 

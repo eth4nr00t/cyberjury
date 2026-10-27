@@ -351,7 +351,7 @@ def test_unavailable_source_navigation_fails_instead_of_reporting_clean():
     )
 
     assert result.findings == []
-    assert result.failure_reason == "finder requested evidence after 0 follow ups"
+    assert result.failure_reason == "finder requested evidence after 0 follow-ups"
     assert result.grounding.complete is False
 
 
@@ -943,7 +943,7 @@ def test_cited_evidence_is_delivered_before_other_requested_evidence():
 
 
 def test_cited_evidence_that_cannot_be_delivered_on_the_last_round_is_reported_as_such():
-    """A held citation with no follow up left ends with that id unresolved and a budget reason, not a request limit."""
+    """A held citation with no follow-up left ends with that id unresolved and a budget reason, not a request limit."""
     first = EvidenceItem.create(identity="a.py:first:0:300", label="first", text="a" * 300)
     second = EvidenceItem.create(identity="b.py:second:0:300", label="second", text="b" * 300)
     finding = stub_finding("guard missing", "a.py:1", evidence_refs=(first.id, second.id))
@@ -1090,7 +1090,7 @@ def test_oversized_navigation_read_uses_the_same_bounded_correction():
 
 
 def test_a_full_request_batch_beside_a_cited_unread_id_is_delivered_in_order():
-    """64 requested ids plus a finding citing a 65th unread id deliver the cited one first instead of failing."""
+    """A batch of 64 requested ids plus a finding citing a 65th unread id delivers the cited one first."""
     items = tuple(EvidenceItem.create(identity=f"a.py:item{index}:0:1", label="item", text="x") for index in range(65))
     finding = stub_finding("guard missing", "a.py:1", evidence_refs=(items[64].id,))
     replies = iter(
