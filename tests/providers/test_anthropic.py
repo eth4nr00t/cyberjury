@@ -159,7 +159,7 @@ def test_non_temperature_bad_request_still_fails_loud():
 
 
 def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch):
-    """A client built with a gateway base gets max_retries=0, leaving retries to the outer provider."""
+    """A client built with a gateway base_url gets max_retries=0, leaving retries to the outer provider."""
     captured = {}
 
     class _Anthropic:
