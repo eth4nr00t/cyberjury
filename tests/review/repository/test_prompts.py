@@ -8,7 +8,7 @@ from cyberjury.review.repository.prompts import (
 
 
 def test_repository_system_carries_the_review_contract_and_field_meanings():
-    """The system prompt embeds the brief, rubric, and navigation, backticks every field, and has no JSON example."""
+    """The system prompt embeds the kernel, rubric, and navigation, backticks every field, and has no JSON example."""
     system = repository_finder_system(
         security_kernel="# Security Kernel\nKERNEL-X",
         severity_rubric="# Severity Rubric\nRUBRIC-X",

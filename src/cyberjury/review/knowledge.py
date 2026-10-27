@@ -1,4 +1,4 @@
-"""The one language-independent security kernel bound to every review unit."""
+"""The language-independent security kernel and severity rubric bound to every review unit."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from cyberjury.review.contract import SECURITY_KERNEL_FILE, SEVERITY_RUBRIC_FILE
 
 
 def load_security_kernel() -> str:
-    """Load the language-independent security kernel, the only security knowledge given to a model judgment."""
+    """Load the language-independent security kernel."""
     return SECURITY_KERNEL_FILE.read_text(encoding="utf-8")
 
 

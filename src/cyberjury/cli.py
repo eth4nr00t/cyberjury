@@ -26,11 +26,11 @@ def _build_parser() -> argparse.ArgumentParser:
     review = sub.add_parser("review", help="review code for security findings", allow_abbrev=False)
     review_subcommands = review.add_subparsers(dest="scope", metavar="{diff,repository}", required=True)
     diff = review_subcommands.add_parser(
-        "diff", help="review the changes in a git range, with its repository as context", allow_abbrev=False
+        "diff", help="review the changes in a Git range, with its repository as context", allow_abbrev=False
     )
     diff.add_argument("range", help="git range to review, A..B or A...B, e.g. origin/main...HEAD")
     diff.add_argument(
-        "path", nargs="?", default=".", help="path inside the git repository, default the current directory"
+        "path", nargs="?", default=".", help="path inside the Git repository, default the current directory"
     )
     repository = review_subcommands.add_parser(
         "repository",

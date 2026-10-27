@@ -92,7 +92,7 @@ def test_recorded_repository_attempt_rejects_a_review_of_a_plain_directory(
 
     message = str(error.value)
     assert f"the case is commit {benchmark_project.commit}, but" in message
-    assert "a plain directory outside any git checkout" in message
+    assert "a plain directory outside any Git checkout" in message
     assert "0 changed, 1 missing, and 1 extra files" in message
 
 
@@ -105,7 +105,7 @@ def test_recorded_repository_attempt_rejects_a_review_of_another_commit(tmp_path
         recorded_attempt(repository_case, _review_attempt(tmp_path, other), 1)
 
     message = str(error.value)
-    assert f"a git checkout of commit {benchmark_project.base} path '.'" in message
+    assert f"a Git checkout of commit {benchmark_project.base} path '.'" in message
     assert "1 changed, 0 missing, and 0 extra files, for example views.py" in message
 
 

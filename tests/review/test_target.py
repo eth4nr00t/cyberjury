@@ -117,11 +117,11 @@ def test_diff_target_rejects_noncommitted_or_option_like_ranges(tmp_path, git_ra
 
 
 def test_option_like_git_range_cannot_write_an_output_file(tmp_path):
-    """A --output=<path> range is rejected as a Git option and no patch file is created."""
+    """A --output=<path> range is rejected as a git option and no patch file is created."""
     repository, _base, _head = _repository(tmp_path / "repo")
     unexpected = tmp_path / "unexpected.patch"
 
-    with pytest.raises(TargetResolutionError, match="Git option"):
+    with pytest.raises(TargetResolutionError, match="git option"):
         resolve_diff_target(repository, f"--output={unexpected}")
 
     assert not unexpected.exists()

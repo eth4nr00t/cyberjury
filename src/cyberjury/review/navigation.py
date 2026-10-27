@@ -755,7 +755,7 @@ def navigation_instructions() -> str:
         "names it as a candidate target, and `both` lists both.\n"
         "- Search results and candidates are unverified syntax matches. Read the source before relying on a "
         "relationship.\n"
-        "- Searches cover only the reviewed repository snapshot. Code from installed packages, git submodules, or "
+        "- Searches cover only the reviewed repository snapshot. Code from installed packages, Git submodules, or "
         "other locations outside it cannot be searched, and no evidence id delivers it. A symbol search that finds "
         "no definition also lists any import statements that name it. When needed code is outside the snapshot, "
         "judge with the delivered evidence and treat that code's behavior as an assumption.\n"

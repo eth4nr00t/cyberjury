@@ -1,4 +1,4 @@
-"""Materialized pinned git targets of benchmark cases."""
+"""Materialized pinned Git targets of benchmark cases."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 def target_repository(target: Mapping[str, str]) -> Path:
-    """Return the local repository path of a git target without touching it."""
+    """Return the local repository path of a Git target without touching it."""
     if url := target.get("url"):
         name = Path(url.rstrip("/").removesuffix(".git")).name or "repo"
         digest = sha256(url.encode("utf-8")).hexdigest()[:12]
@@ -21,7 +21,7 @@ def target_repository(target: Mapping[str, str]) -> Path:
 
 
 def git_target_root(target: Mapping[str, str]) -> Path:
-    """Resolve a git target to a local repository root, cloning or updating a URL target in the user cache."""
+    """Resolve a Git target to a local repository root, cloning or updating a URL target in the user cache."""
     root = target_repository(target)
     if url := target.get("url"):
         _sync_clone(url, root)
@@ -39,7 +39,7 @@ def ensure_git_target_refs(target: Mapping[str, str], root: Path) -> None:
 
 @contextmanager
 def source_root(target: Mapping[str, str]) -> Iterator[Path]:
-    """Check out the exact source commit of a git target."""
+    """Check out the exact source commit of a Git target."""
     root = git_target_root(target)
     ensure_git_target_refs(target, root)
     temporary = Path(tempfile.mkdtemp(prefix="cyberjury-eval-target-"))

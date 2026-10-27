@@ -24,9 +24,9 @@ All settings come from a `.env` file in the working directory. An exported shell
 | `OPENAI_API_KEY` | OpenAI key, used whenever it is set. |
 | `ANTHROPIC_API_KEY` | Anthropic key, used when no OpenAI key is set. |
 | `CYBERJURY_MODEL` | Model name, default `gpt-6-astra` for OpenAI and `claude-fable-5-1` for Anthropic. |
-| `CYBERJURY_BASE_URL` | Gateway or proxy endpoint for the provider. |
+| `CYBERJURY_BASE_URL` | Gateway or proxy endpoint for the provider, default the provider's own endpoint. |
 | `CYBERJURY_CONCURRENCY` | Number of review units or issue link judgments run in parallel, default `8`. |
-| `CYBERJURY_STATE_DIR` | Directory holding review sessions under `reviews/<review-id>`, default `$XDG_DATA_HOME/cyberjury` or `~/.local/share/cyberjury`. |
+| `CYBERJURY_STATE_DIR` | Directory that stores each review under `reviews/<review-id>`, default `$XDG_DATA_HOME/cyberjury`, or `~/.local/share/cyberjury` without `XDG_DATA_HOME`. |
 
 ## Review
 
@@ -39,15 +39,9 @@ A repository review of a Git work tree covers the tracked files and the untracke
 
 ## Output
 
-Each review runs the stages `config`, `target`, `session`, `source`, `facts`, `plan`, `grounding`, `review`, `link`, and `result`. Every stage, every review unit and issue link judgment, and the attempt itself is one `cyberjury.record/v1` record with the fields `schema`, `id`, `status`, `started_at`, `duration_seconds`, `metrics`, `attributes`, `artifacts`, and `error`. The status is `ok`, `incomplete`, `failed`, `interrupted`, or `running`. A `failed` or `incomplete` record has an `error` with a `code` (`config`, `input`, `busy`, `model`, or `internal`) and a `message`. `busy` means another attempt of the same review is running. An `interrupted` record names why in its `reason` attribute: the operator's interrupt or SIGTERM.
+A review stores its results in `reviews/<review-id>` under `CYBERJURY_STATE_DIR`. The findings of each attempt are in `attempts/<attempt>/findings.json`, grouped into `issues` of findings that one code change fixes.
 
-Records are written under the review directory: the stages of an attempt in `attempts/<attempt>/stages/<stage>.json`, the attempt in `attempts/<attempt>/record.json`, and the review units and issue links in `review/items/` and `link/items/`. `artifacts` lists the files that hold a record's output, relative to the review directory. Files that are not UTF-8 text, binary, empty, or too large are listed as skipped in `plan/skipped-files.json`.
-
-The findings of an attempt are in `attempts/<attempt>/findings.json`, which also groups them into `issues`: findings that one code change fixes. Grouping never removes a finding, and each finding names its `issue_id`. Findings of one category at the same file and line form one issue. Other findings form one issue only when their cited source traces the other's location and the model answers that one code change fixes both. A finding's `id` changes when the model rewords it. Its `fingerprint` comes only from the file, line, category, and change anchor, so it stays the same across runs, and findings that one issue groups by location share it. `unit_complete` is `false` when only review units that did not finish reported the finding.
-
-Model usage metrics are `calls`, `input_tokens`, which includes the `cached_tokens` read from and the `cache_write_tokens` written to the prompt cache, and `output_tokens`.
-
-The review prints one line per record to stderr as it is written. A long stage also prints `running` lines, which are not stored, with its total `items` and the number `finished` so far. When the review ends, it prints the stage records and then the attempt record to stdout, each exactly as stored. A review that fails before its review directory exists prints the same records without storing them.
+Each stage, review unit, issue link judgment, and attempt produces a `cyberjury.record/v1` JSON record with a `status` (`ok`, `incomplete`, `failed`, `interrupted`, or `running`) and, when it is `failed` or `incomplete`, an `error` with a `code` (`config`, `input`, `busy`, `model`, or `internal`). The review prints progress to stderr as records are written, and prints the stage records and then the attempt record to stdout when it ends.
 
 | Exit Code | Meaning |
 | :--- | :--- |

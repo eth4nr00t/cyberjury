@@ -18,7 +18,7 @@ PROJECTS_DIR = Path(__file__).resolve().parent.parent / "projects"
 
 @dataclass(frozen=True, kw_only=True)
 class BenchmarkCase:
-    """One benchmark case with its pinned git target and its checks."""
+    """One benchmark case with its pinned Git target and its checks."""
 
     name: str
     kind: str

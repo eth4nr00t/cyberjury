@@ -127,7 +127,7 @@ class Recorder:
         return usage_metrics([call for call in calls if call.get("unit_id") == unit_id])
 
     def item(self, record: Record) -> None:
-        """Print one item record line; the item store has written it."""
+        """Print one item record line that the item store has already written."""
         self.emit(record, write=False)
 
     @contextmanager

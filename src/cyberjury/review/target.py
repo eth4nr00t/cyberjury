@@ -129,7 +129,7 @@ def _parse_git_range(value: str) -> tuple[str, str, str]:
     if any(character.isspace() or ord(character) < 32 for character in value):
         raise TargetResolutionError("git range cannot contain whitespace or control characters")
     if value.startswith("-"):
-        raise TargetResolutionError("git range cannot be a Git option")
+        raise TargetResolutionError("git range cannot be a git option")
     if "..." in value:
         if value.count("...") != 1:
             raise TargetResolutionError("git range must contain exactly two endpoints")

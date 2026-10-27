@@ -1,4 +1,4 @@
-"""Benchmark git targets fetch the exact commits their cases pin and report git's own errors."""
+"""Benchmark Git targets fetch the exact commits their cases pin and report git's own errors."""
 
 from __future__ import annotations
 

@@ -28,7 +28,7 @@ def test_split_diff_by_file():
 
 
 def test_split_diff_of_an_empty_range_is_no_chunks():
-    """An empty patch, as an unchanged git range produces, yields no chunks."""
+    """An empty patch, as an unchanged Git range produces, yields no chunks."""
     assert split_diff_by_file("") == []
 
 

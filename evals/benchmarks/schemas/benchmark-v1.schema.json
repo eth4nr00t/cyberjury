@@ -23,7 +23,7 @@
       "pattern": "^(?!.*\\\\)(?:(?!\\.\\.?/)[^/]+/)*(?!\\.\\.?$)[^/]+$"
     },
     "repository": {
-      "description": "The reviewed git repository, named by exactly one of url and local_path, and the commit the repository case reviews.",
+      "description": "The reviewed Git repository, named by exactly one of url and local_path, and the commit the repository case reviews.",
       "type": "object",
       "additionalProperties": false,
       "required": ["commit"],
