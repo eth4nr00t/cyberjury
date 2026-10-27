@@ -1,4 +1,4 @@
-"""Evaluation fixtures build real git benchmark projects and recorded attempts."""
+"""Evaluation fixtures build real Git benchmark projects and recorded attempts."""
 
 import hashlib
 import json

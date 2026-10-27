@@ -48,7 +48,7 @@ def test_a_seat_without_its_sdk_key_is_rejected_before_review_work(monkeypatch):
 
 
 def test_blank_settings_count_as_unset(monkeypatch):
-    """Whitespace-only key, model, and base variables fall back to the anthropic claude-fable-5-1 seat."""
+    """Whitespace-only key, model, and base URL variables fall back to the anthropic claude-fable-5-1 seat."""
     for name in ("OPENAI_API_KEY", "CYBERJURY_MODEL", "CYBERJURY_BASE_URL"):
         monkeypatch.setenv(name, "  ")
 

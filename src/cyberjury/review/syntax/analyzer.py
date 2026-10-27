@@ -236,7 +236,7 @@ def spec_for(specs: dict[str, LangSpec], rel: str) -> LangSpec | None:
 
 
 def grammar_for(spec: LangSpec) -> CapsuleType:
-    """Return the installed grammar of one language specification as the capsule tree-sitter loads."""
+    """Return the installed grammar of one language specification as the capsule Tree-sitter loads."""
     grammar = getattr(importlib.import_module(spec.module), spec.accessor)()
     return _language_capsule(grammar) if isinstance(grammar, int) else grammar
 
