@@ -39,12 +39,12 @@ def test_environment_sets_the_model_and_endpoint(monkeypatch):
 
 
 def test_a_seat_without_its_sdk_key_is_rejected_before_review_work(monkeypatch):
-    """An openai seat raises "Set OPENAI_API_KEY" until that variable is present."""
-    with pytest.raises(ProviderCredentialsError, match="Set OPENAI_API_KEY"):
-        require_provider_key(ProviderSeat(provider="openai", model="m"))
+    """An anthropic seat raises "Set ANTHROPIC_API_KEY" until that variable is present."""
+    with pytest.raises(ProviderCredentialsError, match="Set ANTHROPIC_API_KEY"):
+        require_provider_key(ProviderSeat(provider="anthropic", model="m"))
 
-    monkeypatch.setenv("OPENAI_API_KEY", "k")
-    require_provider_key(ProviderSeat(provider="openai", model="m"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    require_provider_key(ProviderSeat(provider="anthropic", model="m"))
 
 
 def test_blank_settings_count_as_unset(monkeypatch):

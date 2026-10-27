@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from cyberjury.review.context import GroundingContext
-from cyberjury.review.detection import Detection, detection_for
+from cyberjury.review.detection import Detection
 from cyberjury.review.engine import ReviewUnit
 from cyberjury.review.facts import Facts, FactsReceipt
 from cyberjury.review.failures import BackendUnavailable
@@ -55,13 +55,11 @@ class PreparedReview[U: ReviewUnit]:
 
 
 def extract_facts(
-    snapshot: SourceSnapshot, selection: FileSelection, detection: Detection, *, progress: Progress
+    snapshot: SourceSnapshot, selection: FileSelection, *, progress: Progress
 ) -> tuple[Facts, FactsReceipt]:
     """Extract syntax facts with loud failure and bind them to the backend identity."""
     try:
-        facts = extract_syntax_facts(
-            snapshot.root, snapshot.files, selection.navigation_files, detection, progress=progress
-        )
+        facts = extract_syntax_facts(snapshot.root, selection.review_files, progress=progress)
     except Exception as exc:
         raise BackendUnavailable(f"facts extraction failed, so this review has no grounding: {exc}") from exc
     return facts, FactsReceipt.create(backend_id=syntax_backend_id(), facts=facts)
@@ -72,24 +70,18 @@ def prepare_review[U: ReviewUnit](
     *,
     plan: Callable[[SharedGrounding], ReviewPlan[U]],
     ground: Callable[[U, SharedGrounding], GroundingContext],
-    detection: Detection | None = None,
+    detection: Detection,
     has_reviewable_source: bool = True,
     recorder: Recorder,
 ) -> PreparedReview[U]:
-    """Extract facts and navigation when the target has reviewable source, then plan and ground, one stage each.
-
-    A caller that already detected the snapshot's languages passes that detection instead of detecting again.
-    """
+    """Extract facts and navigation when the target has reviewable source, then plan and ground, one stage each."""
     with recorder.stage("facts") as measure:
-        if detection is None:
-            detection = detection_for(snapshot.root, snapshot.files)
         selection = select_files(snapshot.root, snapshot.files, detection)
         if has_reviewable_source:
-            facts, receipt = extract_facts(snapshot, selection, detection, progress=measure.progress)
+            facts, receipt = extract_facts(snapshot, selection, progress=measure.progress)
             navigator = SourceNavigator.from_facts(
                 snapshot.root,
                 source_files=selection.navigation_files,
-                import_files=facts.import_files,
                 relationship_evidence=facts.relationships,
                 documentation_files=selection.documentation_files,
                 dependency_files=selection.dependency_files,

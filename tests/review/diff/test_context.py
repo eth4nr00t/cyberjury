@@ -211,7 +211,7 @@ def test_collect_diff_context_respects_total_budget(tmp_path):
 
 
 def test_diff_planning_and_grounding_are_distinct_deterministic_steps(tmp_path):
-    """Planned units have no grounding, grounded units keep the same diffs and snapshot, and reruns match."""
+    """Planned units have no grounding, grounded units keep the same diffs, and reruns match."""
     source = "def route():\n    return sink()\n"
     (tmp_path / "route.py").write_text(source)
     diff = "diff --git a/route.py b/route.py\n+++ b/route.py\n@@ -1,2 +1,2 @@\n+def route():\n+    return sink()\n"
@@ -223,7 +223,6 @@ def test_diff_planning_and_grounding_are_distinct_deterministic_steps(tmp_path):
     assert all(unit.grounding is None for unit in planned)
     assert all(unit.grounding is not None for unit in grounded)
     assert [unit.diff for unit in planned] == [unit.diff for unit in grounded]
-    assert grounded[0].grounding.source_snapshot == shared.snapshot
     assert _prepare(shared, diff) == grounded
 
 

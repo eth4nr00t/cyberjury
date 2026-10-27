@@ -137,39 +137,30 @@ class SourceNavigator:
         *,
         relationship_evidence: RelationshipEvidenceBundle,
         source_files: Iterable[str] = (),
-        import_files: Iterable[str] = (),
         documentation_files: Iterable[str] = (),
         dependency_files: Iterable[str] = (),
     ) -> SourceNavigator | None:
         """Build navigation from shared facts without adding resolver semantics."""
-        base = Path(root).resolve()
-        all_definitions = definitions_by_name(relationship_evidence.definitions)
-        relationship_files = (
-            *(definition.source.path for definition in relationship_evidence.definitions),
-            *(callsite.source.path for callsite in relationship_evidence.callsites),
-            *(source.path for source in relationship_evidence.sources),
-        )
+        definitions = definitions_by_name(relationship_evidence.definitions)
         files = tuple(
             dict.fromkeys(
                 (
-                    *(definition.source.path for definition in all_definitions),
+                    *(definition.source.path for definition in definitions),
                     *source_files,
-                    *relationship_files,
-                    *import_files,
+                    *(callsite.source.path for callsite in relationship_evidence.callsites),
+                    *(source.path for source in relationship_evidence.sources),
                 )
             )
         )
-        included = set(files)
-        definitions = tuple(definition for definition in all_definitions if definition.source.path in included)
         if not files:
             return None
         return cls(
-            root=base,
+            root=Path(root).resolve(),
             definitions=definitions,
             files=files,
             relationship_evidence=relationship_evidence,
-            documentation_files=frozenset(documentation_files).intersection(included),
-            dependency_files=frozenset(dependency_files).intersection(included),
+            documentation_files=frozenset(documentation_files),
+            dependency_files=frozenset(dependency_files),
         )
 
     def session(self) -> SourceNavigationSession:
@@ -190,10 +181,7 @@ class SourceNavigationSession:
             definition.id: definition for definition in navigator.relationship_evidence.definitions
         }
         self._callsites = {callsite.id: callsite for callsite in navigator.relationship_evidence.callsites}
-        self._call_relationships = {
-            relationship.callsite_id: relationship
-            for relationship in navigator.relationship_evidence.call_relationships
-        }
+        self._call_candidates = navigator.relationship_evidence.call_candidates
         self._structural_relationships = navigator.relationship_evidence.structural_relationships
         self._observations_by_callsite = self._group_callsite_observations(navigator.relationship_evidence.observations)
         self._discovered_definition_ids: set[str] = set()
@@ -330,12 +318,12 @@ class SourceNavigationSession:
         *,
         target_chars: int,
     ) -> SourceNavigationResult | None:
-        kind = query["kind"]
+        kind, page = query["kind"], query["page"]
         if kind == "search_symbols":
-            targets, page, more, exact_match = self._search_symbols(query["query"], query["page"])
+            targets, more, exact_match = self._search_symbols(query["query"], page)
             label = "Unique exact symbol match"
         else:
-            targets, page, more = self._search_text(query["query"], query["page"])
+            targets, more = self._search_text(query["query"], page)
             exact_match, label = True, "Unique exact text match"
         blocks.append(
             _render_search(
@@ -455,7 +443,7 @@ class SourceNavigationSession:
         self,
         query: str,
         page: int,
-    ) -> tuple[tuple[SourceTarget, ...], int, bool, bool]:
+    ) -> tuple[tuple[SourceTarget, ...], bool, bool]:
         *qualifier, symbol = query.split(".")
         named = [definition for definition in self._navigator.definitions if definition.name == symbol]
         matches = [definition for definition in self._navigator.definitions if definition.name == query]
@@ -463,10 +451,10 @@ class SourceNavigationSession:
             matches.extend(definition for definition in named if self._owned_by(definition, tuple(qualifier)))
         exact = bool(matches)
         targets = tuple(target for definition in (matches or named) for target in self._definition_targets(definition))
-        selected, selected_page, more = _page(targets, page)
+        selected, more = _page(targets, page)
         published = tuple(self._register_target(target) for target in selected)
         self._discovered_definition_ids.update(target.definition_id for target in published if target.definition_id)
-        return published, selected_page, more, exact
+        return published, more, exact
 
     def _import_bindings(self, name: str) -> str:
         if not name or any(definition.name == name for definition in self._navigator.definitions):
@@ -514,7 +502,7 @@ class SourceNavigationSession:
         self,
         query: str,
         page: int,
-    ) -> tuple[tuple[SourceTarget, ...], int, bool]:
+    ) -> tuple[tuple[SourceTarget, ...], bool]:
         wanted = (page + 1) * _MAX_RESULTS_PER_PAGE + 1
         targets: list[SourceTarget] = []
         for file in self._navigator.files:
@@ -545,8 +533,8 @@ class SourceNavigationSession:
                     break
             if len(targets) == wanted:
                 break
-        selected, selected_page, more = _page(tuple(targets), page)
-        return tuple(self._register_target(target) for target in selected), selected_page, more
+        selected, more = _page(tuple(targets), page)
+        return tuple(self._register_target(target) for target in selected), more
 
     def _search_call_candidates(self, definition_id: str, direction: str, page: int) -> str:
         if definition_id not in self._discovered_definition_ids:
@@ -555,27 +543,24 @@ class SourceNavigationSession:
             )
         calls = []
         for callsite in self._callsites.values():
-            candidate_ids = self._callsite_candidate_ids(callsite)
+            candidate_ids = self._call_candidates[callsite.id]
             if direction in {"callees", "both"} and callsite.caller_definition_id == definition_id:
                 calls.append((callsite, candidate_ids))
                 continue
             if direction in {"callers", "both"} and definition_id in candidate_ids:
                 calls.append((callsite, candidate_ids))
         calls = sorted(calls, key=lambda item: (item[0].source.path, item[0].source.start, item[0].id))
-        selected_calls, selected_page, more = _page(tuple(calls), page)
+        selected_calls, more = _page(tuple(calls), page)
         lines = [
-            f"`search_call_candidates` for `{definition_id}` direction `{direction}`, page {selected_page}.",
+            f"`search_call_candidates` for `{definition_id}` direction `{direction}`, page {page}.",
         ]
         for callsite, candidate_ids in selected_calls:
             lines.extend(self._render_call_candidate(callsite, candidate_ids))
         if not selected_calls:
             lines.append("- no matches")
         if more:
-            lines.append(f"- more results are available on page {selected_page + 1}")
+            lines.append(f"- more results are available on page {page + 1}")
         return "\n".join(lines)
-
-    def _callsite_candidate_ids(self, callsite: CallsiteEvidence) -> tuple[str, ...]:
-        return self._call_relationships[callsite.id].candidate_callee_definition_ids
 
     def _search_structural_candidates(self, definition_id: str, direction: str, page: int) -> str:
         if definition_id not in self._discovered_definition_ids:
@@ -597,16 +582,16 @@ class SourceNavigationSession:
             for relationship in relationships
             for candidate_id in relationship.candidate_target_definition_ids or ("",)
         )
-        selected_relationships, selected_page, more = _page(expanded, page)
+        selected_relationships, more = _page(expanded, page)
         lines = [
-            f"`search_structural_candidates` for `{definition_id}` direction `{direction}`, page {selected_page}.",
+            f"`search_structural_candidates` for `{definition_id}` direction `{direction}`, page {page}.",
         ]
         for relationship, candidate_id in selected_relationships:
             lines.extend(self._render_structural_candidate(relationship, candidate_id))
         if not selected_relationships:
             lines.append("- no matches")
         if more:
-            lines.append(f"- more results are available on page {selected_page + 1}")
+            lines.append(f"- more results are available on page {page + 1}")
         return "\n".join(lines)
 
     def _render_structural_candidate(
@@ -792,8 +777,6 @@ def parse_source_queries(value: list[dict[str, object]]) -> list[dict[str, objec
         if raw["page"] < 0:
             raise SourceNavigationError(f"source query {index} page must be a nonnegative integer")
         if "definition_id" in raw:
-            if not raw["definition_id"].startswith("def-"):
-                raise SourceNavigationError(f"source query {index} definition_id must be a def-* id")
             queries.append(dict(raw))
         elif not raw["query"].strip():
             raise SourceNavigationError(f"source query {index} query must be a nonempty string")
@@ -808,10 +791,10 @@ def _definition_label(definition: DefinitionEvidence) -> str:
     return f"{label} | {inline_source(signature)}" if signature else label
 
 
-def _page[T](targets: tuple[T, ...], page: int) -> tuple[tuple[T, ...], int, bool]:
+def _page[T](targets: tuple[T, ...], page: int) -> tuple[tuple[T, ...], bool]:
     start = page * _MAX_RESULTS_PER_PAGE
     selected = targets[start : start + _MAX_RESULTS_PER_PAGE]
-    return selected, page, start + len(selected) < len(targets)
+    return selected, start + len(selected) < len(targets)
 
 
 def _query_key(query: Mapping[str, object]) -> str:
@@ -873,8 +856,6 @@ def _span_key(span: SourceSpan) -> tuple[str, int, int]:
 
 
 def _line_offset(source: str, line: int) -> int:
-    if line <= 1:
-        return 0
     offset = 0
     for _ in range(line - 1):
         next_line = source.find("\n", offset)
@@ -888,5 +869,4 @@ def _line_character_range(source: str, line: int) -> tuple[int, int] | None:
     start = _line_offset(source, line)
     if start >= len(source):
         return None
-    end = _line_offset(source, line + 1)
-    return (start, end if end > start else len(source))
+    return start, _line_offset(source, line + 1)

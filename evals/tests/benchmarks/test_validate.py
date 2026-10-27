@@ -209,23 +209,24 @@ def test_validate_benchmark_accepts_a_location_path_with_spaces(tmp_path):
     validate_benchmark(path)
 
 
-@pytest.mark.parametrize("file", ["./models/records.py", "/models/records.py", '"models\\\\records.py"'])
-def test_validate_benchmark_rejects_a_location_outside_repository_relative_form(tmp_path, file):
-    """Location files with a ./ prefix, a leading slash, or backslashes fail the schema."""
+@pytest.mark.parametrize(
+    "file",
+    [
+        "./models/records.py",
+        "/models/records.py",
+        '"models\\\\records.py"',
+        "models//records.py",
+        "models/./records.py",
+        "models/../records.py",
+        "models/",
+    ],
+)
+def test_validate_benchmark_rejects_a_location_that_is_not_a_normalized_relative_path(tmp_path, file):
+    """A ./ or / prefix, a backslash, an empty, . or .. segment, or a trailing slash fails the benchmark-v1 schema."""
     path = _write_benchmark(tmp_path / "example-project")
     _replace(path, "{file: models/records.py, line: 1}", f"{{file: {file}, line: 1}}")
 
     with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
-        validate_benchmark(path)
-
-
-@pytest.mark.parametrize("file", ["models//records.py", "models/./records.py", "models/../records.py", "models/"])
-def test_validate_benchmark_rejects_a_noncanonical_location_path(tmp_path, file):
-    """Paths with //, ./, ../, or a trailing slash fail the normalized-path check."""
-    path = _write_benchmark(tmp_path / "example-project")
-    _replace(path, "{file: models/records.py, line: 1}", f"{{file: {file}, line: 1}}")
-
-    with pytest.raises(ValueError, match="normalized repository-relative path"):
         validate_benchmark(path)
 
 

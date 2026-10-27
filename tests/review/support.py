@@ -71,28 +71,17 @@ def route_call(
     )
 
 
-def callgraph_relationships(
-    root: Path, callgraph: dict[str, dict[str, list[dict[str, object]]]]
-) -> RelationshipEvidenceBundle:
-    """Build definition evidence from a compact file, name, and range table over real source files."""
+def navigator_from_definitions(
+    root: Path, ranges: dict[str, dict[str, list[tuple[int, int]]]], **values: object
+) -> SourceNavigator | None:
+    """Build a navigator over definitions given as character ranges per file and name of real source files."""
     definitions = []
-    for path, names in callgraph.items():
-        source = (root / path).read_bytes().decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-        for name, entries in names.items():
-            for entry in entries:
-                start, end = entry["range"]
-                definitions.append(definition(path, name, start, end, source=source))
-    return RelationshipEvidenceBundle(definitions=tuple(definitions))
-
-
-def navigator_from_callgraph(root: Path, graph: dict[str, object], **values: object) -> SourceNavigator | None:
-    """Build a navigator whose definitions come from the graph's compact callgraph table."""
-    relationships = callgraph_relationships(root, graph.get("callgraph", {}))
+    for path, names in ranges.items():
+        source = (root / path).read_text(encoding="utf-8")
+        for name, spans in names.items():
+            definitions.extend(definition(path, name, start, end, source=source) for start, end in spans)
     return SourceNavigator.from_facts(
-        root,
-        import_files=tuple(graph.get("syntax_imports", {})),
-        relationship_evidence=relationships,
-        **values,
+        root, relationship_evidence=RelationshipEvidenceBundle(definitions=tuple(definitions)), **values
     )
 
 

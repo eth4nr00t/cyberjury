@@ -13,11 +13,9 @@ syntax:
   type_definitions: |
     (type_declaration (type_spec name: (type_identifier) @name)) @type
   calls: |
-    (call_expression function: (identifier) @callee arguments: (argument_list) @arguments) @call
+    (call_expression function: (identifier) @callee arguments: (argument_list)) @call
     (call_expression function: (selector_expression operand: (_) @receiver field: (field_identifier) @member)
-      arguments: (argument_list) @arguments) @call
-  receivers: |
-    (method_declaration receiver: (parameter_list (_) @receiver)) @def
+      arguments: (argument_list)) @call
   namespace_imports:
   - |
     (import_spec !name path: (interpreted_string_literal) @module) @statement

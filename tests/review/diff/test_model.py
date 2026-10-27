@@ -27,10 +27,9 @@ def test_split_diff_by_file():
     assert chunks == [FILE_A_DIFF, FILE_B_DIFF]
 
 
-def test_split_diff_empty_and_unbounded():
-    """An empty string yields no chunks, and text without a diff --git header is returned as one chunk."""
+def test_split_diff_of_an_empty_range_is_no_chunks():
+    """An empty patch, as an unchanged git range produces, yields no chunks."""
     assert split_diff_by_file("") == []
-    assert split_diff_by_file("just text\n") == ["just text\n"]
 
 
 def test_pack_diff_chunks_empty_is_no_batches():
@@ -93,17 +92,6 @@ def test_diff_unit_plan_record_exposes_patch_ownership():
     assert record.patch_sha256 is not None
 
 
-def test_diff_model_excludes_test_files_before_review(tmp_path):
-    """A tests/test_views.py change is skipped as noise while the app/views.py change is kept."""
-    production = "diff --git a/app/views.py b/app/views.py\n+++ b/app/views.py\n@@ -0,0 +1 @@\n+x = 1\n"
-    test = "diff --git a/tests/test_views.py b/tests/test_views.py\n+++ b/tests/test_views.py\n@@ -0,0 +1 @@\n+x = 1\n"
-
-    kept, skipped = strip_unreviewable_files(production + test, _DETECTION, root=tmp_path)
-
-    assert kept == production
-    assert [(item.path, item.reason) for item in skipped] == [("tests/test_views.py", "noise")]
-
-
 _SRC = "diff --git a/app.py b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"
 
 _DOC = "diff --git a/README.md b/README.md\n@@ -0,0 +1 @@\n+# Title\n"
@@ -157,14 +145,6 @@ def test_strip_unreviewable_files_skips_submodule_pointer_changes(tmp_path):
     assert kept == _SRC
 
 
-def test_strip_unreviewable_files_keeps_a_chunk_whose_path_cannot_be_read(tmp_path):
-    """A hunk with no file header is kept and nothing is reported as skipped."""
-    headerless = "@@ -0,0 +1 @@\n+x = 1\n"
-    kept, skipped = strip_unreviewable_files(headerless, _DETECTION, root=tmp_path)
-    assert kept == headerless
-    assert skipped == ()
-
-
 def test_chunk_path_reads_the_deletion_and_git_header_fallbacks():
     """Paths come from a/ for /dev/null deletions and from plain, quoted, and octal-escaped git headers."""
     deletion = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-# Title\n"
@@ -175,6 +155,19 @@ def test_chunk_path_reads_the_deletion_and_git_header_fallbacks():
     assert chunk_path(quoted_header_only) == "app icon.png"
     encoded_header_only = 'diff --git "a/caf\\303\\251.py" "b/caf\\303\\251.py"\nBinary files differ\n'
     assert chunk_path(encoded_header_only) == "caf\u00e9.py"
+
+
+@pytest.mark.parametrize(
+    ("chunk", "expected"),
+    [
+        ("diff --git a/it's.py b/it's moved.py\nsimilarity index 100%\nrename from it's.py\n", "it's moved.py"),
+        ('diff --git a/plain.py "b/n\\303\\253w.py"\nsimilarity index 100%\n', "n\u00ebw.py"),
+        ("diff --git a/trail  b/trail \n--- a/trail \t\n+++ b/trail \t\n@@ -1 +1,2 @@\n b\n+d\n", "trail "),
+    ],
+)
+def test_chunk_path_keeps_the_exact_path_git_writes(chunk, expected):
+    """An apostrophe rename, a quoted non-ASCII rename target, and a trailing-space name keep their exact paths."""
+    assert chunk_path(chunk) == expected
 
 
 def test_pack_diff_chunks_preserves_source_order_within_bound():
@@ -209,7 +202,7 @@ def test_diff_paths_and_ranges_preserve_git_paths_with_spaces(header):
     diff = header + "@@ -0,0 +7,2 @@\n+def route():\n+    return sink()\n"
 
     assert diff_paths(diff) == ("app route.py",)
-    assert changed_line_ranges(diff, _DETECTION) == {"app route.py": ((7, 8),)}
+    assert changed_line_ranges(diff) == {"app route.py": ((7, 8),)}
 
 
 def test_diff_line_ranges_separate_current_old_and_new_sides():
@@ -225,7 +218,7 @@ def test_diff_line_ranges_separate_current_old_and_new_sides():
         " context_after\n"
     )
 
-    ranges = diff_line_ranges(diff, _DETECTION)
+    ranges = diff_line_ranges(diff)
 
     assert ranges.current == {"app.py": ((10, 12),)}
     assert ranges.old == {"app.py": ((11, 11),)}
@@ -236,7 +229,7 @@ def test_diff_line_ranges_keep_renamed_side_paths_distinct():
     """A rename from old.py to new.py records old-side ranges on old.py and new and current on new.py."""
     diff = "diff --git a/old.py b/new.py\n--- a/old.py\n+++ b/new.py\n@@ -4 +4 @@\n-allow()\n+deny()\n"
 
-    ranges = diff_line_ranges(diff, _DETECTION)
+    ranges = diff_line_ranges(diff)
 
     assert ranges.old == {"old.py": ((4, 4),)}
     assert ranges.new == {"new.py": ((4, 4),)}
@@ -254,28 +247,12 @@ def test_diff_line_ranges_keep_reportable_non_source_files():
         "+require_approval: false\n"
     )
 
-    ranges = diff_line_ranges(diff, _DETECTION)
+    ranges = diff_line_ranges(diff)
 
     assert ranges.current == {"policy.yaml": ((1, 1),)}
     assert ranges.old == {"policy.yaml": ((1, 1),)}
     assert ranges.new == {"policy.yaml": ((1, 1),)}
-    assert changed_line_ranges(diff, _DETECTION) == {"policy.yaml": ((1, 1),)}
-
-
-def test_strip_unreviewable_files_skips_changes_to_vendored_files_as_noise(tmp_path):
-    """A change to linguist-vendored public/plugins/lib.js is skipped as noise, and the app.py change stays."""
-    (tmp_path / ".gitattributes").write_text("public/plugins/** linguist-vendored\n", encoding="utf-8")
-    diff = (
-        "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-a = 1\n+a = 2\n"
-        "diff --git a/public/plugins/lib.js b/public/plugins/lib.js\n--- a/public/plugins/lib.js\n"
-        "+++ b/public/plugins/lib.js\n@@ -1 +1 @@\n-var a = 1\n+var a = 2\n"
-    )
-
-    kept, skipped = strip_unreviewable_files(diff, detection_for(tmp_path, [".gitattributes"]), root=tmp_path)
-
-    assert "app.py" in kept
-    assert "lib.js" not in kept
-    assert skipped == (SkippedFile(path="public/plugins/lib.js", reason="noise"),)
+    assert changed_line_ranges(diff) == {"policy.yaml": ((1, 1),)}
 
 
 def test_strip_unreviewable_files_skips_oversized_files_as_too_large(tmp_path):

@@ -5,7 +5,6 @@ from dataclasses import replace
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.facts import Facts, FactsReceipt
 from cyberjury.review.repository import model as repository_model
-from cyberjury.review.repository.context import gather_context
 from cyberjury.review.repository.model import (
     build_units,
     char_spans,
@@ -49,35 +48,8 @@ def test_oversized_source_keeps_bounded_windows(tmp_path, monkeypatch):
     assert all(unit.span[1] - unit.span[0] <= 40 for unit in units)
 
 
-def test_repository_unit_plan_records_intentional_hard_split_overlap(tmp_path):
-    """A 30,000-space file splits into slices where consecutive windows overlap by 2,000 characters."""
-    (tmp_path / "large.py").write_text(" " * 30_000)
-    units = build_units(tmp_path, ["large.py"], ())
-
-    receipt = UnitPlanReceipt.create(
-        facts=_FACTS,
-        units=tuple(repository_unit_plan_record(unit) for unit in units),
-    )
-
-    slices = [unit.source_slices[0] for unit in receipt.units]
-    assert slices[0].end - slices[1].start == 2_000
-
-
-def test_build_units_keeps_root_level_sources_separate(tmp_path):
-    """Root files app.py and services.py each get their own whole-file unit."""
-    (tmp_path / "app.py").write_text("entry")
-    (tmp_path / "services.py").write_text("service")
-
-    units = build_units(tmp_path, ["app.py", "services.py"], ())
-
-    assert [(unit.name, unit.file, unit.span) for unit in units] == [
-        ("app.py", "app.py", (0, 5)),
-        ("services.py", "services.py", (0, 7)),
-    ]
-
-
 def test_build_units_covers_each_source_once(tmp_path):
-    """An entry file plus 25 pkg services of 24 KB yield 26 units, each with complete gathered coverage."""
+    """An entry file plus 25 pkg services of 24 KB yield 26 units, each spanning its whole file."""
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "entry.py").write_text("entry")
     targets = []
@@ -87,21 +59,21 @@ def test_build_units_covers_each_source_once(tmp_path):
         targets.append(rel)
 
     units = build_units(tmp_path, ["pkg/entry.py", *targets], ())
-    covered = {unit.file for unit in units if unit.name != "pkg/entry.py"}
 
-    assert covered == set(targets)
-    assert len(units) == 26
-    assert all(gather_context(unit).coverage.complete for unit in units)
+    assert [(unit.name, unit.span) for unit in units] == [
+        ("pkg/entry.py", (0, 5)),
+        *((target, (0, 24_000)) for target in targets),
+    ]
 
 
 def test_build_units_splits_a_large_file_into_overlapping_windows(tmp_path):
-    """A 60,000-character views.py yields views.py#1 to #3, with overlap and full coverage to the end."""
+    """A 60,000-character views.py yields views.py#1 to #3, overlapping by 2,000 characters through the end."""
     (tmp_path / "views.py").write_text("x" * 60_000)
     units = build_units(str(tmp_path), ["views.py"], ())
     assert [u.name for u in units] == ["views.py#1", "views.py#2", "views.py#3"]
     assert {u.file for u in units} == {"views.py"}
     assert units[0].span[0] == 0
-    assert units[1].span[0] < units[0].span[1]
+    assert units[0].span[1] - units[1].span[0] == 2_000
     assert units[-1].span[1] == 60_000
 
 

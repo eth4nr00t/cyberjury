@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
-from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
+from cyberjury.providers.base import CompletionResult, Provider, Usage
 from cyberjury.providers.metering import (
     MeteringProvider,
     UsageMeter,
@@ -30,7 +30,7 @@ def _receipt(path):
     with model_call_scope(unit_id="unit-one"), model_call_context(role="finder", trigger="initial_judgment"):
         MeteringProvider(_Fake(), meter).complete(
             system="system",
-            messages=[Message(role="user", content="source")],
+            prompt="source",
             model="test",
             max_tokens=100,
             response_schema=EMPTY_SCHEMA,
@@ -62,7 +62,6 @@ def test_report_counts_recall_per_run_and_check_precision(
     assert f"{check} 1/2" in text
     assert "report precision 50.0% = supported 1 / (supported 1 + not_actionable 1), over 3 reports" in text
     assert "excluded from precision: duplicate 1, needs_review 0" in text
-    assert "precision = supported / (supported + not_actionable)" in text
 
 
 def test_report_sums_cost_from_model_call_receipts(tmp_path, cases, write_attempt, write_ledger):

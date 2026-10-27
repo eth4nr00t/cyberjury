@@ -24,17 +24,16 @@ def test_unresolved_import_remains_a_syntax_clue(tmp_path):
 
     facts = syntax_facts(tmp_path)
 
-    assert facts.import_files == ("views.py",)
     assert "observes imports Record from package.models" in facts.by_file["views.py"]
 
 
 def test_import_only_repository_keeps_module_relationship_facts(tmp_path):
-    """A lone index.ts with export * from a missing module still counts as an import file."""
+    """A lone index.ts with export * from a missing module still records its import relationship."""
     (tmp_path / "index.ts").write_text("export * from './missing';\n")
 
-    facts = syntax_facts(tmp_path)
+    relationships = syntax_facts(tmp_path).relationships.structural_relationships
 
-    assert facts.import_files == ("index.ts",)
+    assert [(item.kind, item.source.path) for item in relationships] == [("import", "index.ts")]
 
 
 def test_relationship_evidence_preserves_calls_but_does_not_assign_targets(tmp_path):
@@ -48,9 +47,7 @@ def test_relationship_evidence_preserves_calls_but_does_not_assign_targets(tmp_p
 
     assert [item["expression"] for item in evidence["callsites"]] == ["load(x)", "load(x + 1)"]
     load = next(item for item in evidence["definitions"] if item["name"] == "load")
-    relationships = syntax_facts(tmp_path).relationships.call_relationships
-    assert all(item.target_status == "candidate" for item in relationships)
-    assert all(item.candidate_callee_definition_ids == (load["id"],) for item in relationships)
+    assert set(syntax_facts(tmp_path).relationships.call_candidates.values()) == {(load["id"],)}
     assert {item["kind"] for item in evidence["observations"] if item["kind"] != "syntax_call"} == {
         "import_declaration"
     }
@@ -64,20 +61,16 @@ def test_same_name_definitions_remain_visible_as_ambiguous_call_candidates(tmp_p
 
     evidence = syntax_facts(tmp_path).relationships.to_dict()
     candidates = {item["id"] for item in evidence["definitions"] if item["name"] == "load"}
-    relationship = syntax_facts(tmp_path).relationships.call_relationships[0]
+    (call_candidates,) = syntax_facts(tmp_path).relationships.call_candidates.values()
 
-    assert relationship.target_status == "candidate"
-    assert set(relationship.candidate_callee_definition_ids) == candidates
+    assert set(call_candidates) == candidates
 
 
 def test_missing_definition_keeps_an_explicit_unresolved_call_target(tmp_path):
-    """A call to an undefined external() is marked unresolved with no candidate definitions."""
+    """A call to an undefined external() has no candidate definitions."""
     (tmp_path / "route.py").write_text("def route(value):\n    return external(value)\n")
 
-    relationship = syntax_facts(tmp_path).relationships.call_relationships[0]
-
-    assert relationship.target_status == "unresolved"
-    assert relationship.candidate_callee_definition_ids == ()
+    assert list(syntax_facts(tmp_path).relationships.call_candidates.values()) == [()]
 
 
 def test_import_alias_remains_unresolved_with_its_declaration_clue(tmp_path):
@@ -90,17 +83,13 @@ def test_import_alias_remains_unresolved_with_its_declaration_clue(tmp_path):
 
     evidence = syntax_facts(tmp_path).relationships.to_dict()
     callsite = next(item for item in evidence["callsites"] if item["callee_spelling"] == "selected_load")
-    relationship = next(
-        item for item in syntax_facts(tmp_path).relationships.call_relationships if item.callsite_id == callsite["id"]
-    )
     declaration = next(
         item
         for item in evidence["observations"]
         if item["kind"] == "import_declaration" and callsite["id"] in item["subject_ids"]
     )
 
-    assert relationship.target_status == "unresolved"
-    assert relationship.candidate_callee_definition_ids == ()
+    assert syntax_facts(tmp_path).relationships.call_candidates[callsite["id"]] == ()
     assert declaration["label"] == "selected_load from one"
 
 
@@ -253,10 +242,8 @@ def test_solidity_modifier_calls_belong_to_the_modified_function(tmp_path):
     relationships = syntax_facts(tmp_path).relationships
     names = {item.id: item.name for item in relationships.definitions}
     callsite = next(item for item in relationships.callsites if item.callee_spelling == "onlyOwner")
-    relationship = next(item for item in relationships.call_relationships if item.callsite_id == callsite.id)
-
     assert names[callsite.caller_definition_id] == "withdraw"
-    assert [names[item] for item in relationship.candidate_callee_definition_ids] == ["onlyOwner"]
+    assert [names[item] for item in relationships.call_candidates[callsite.id]] == ["onlyOwner"]
 
 
 def test_solidity_named_import_is_a_declaration_clue_for_its_alias(tmp_path):
@@ -298,34 +285,23 @@ def test_unaliased_go_import_is_a_raw_clue_for_a_receiver_call(tmp_path):
     assert source[start:end] == '"example.com/app/client-go"'
 
 
-def test_relationship_definition_records_its_type_owner(tmp_path):
-    """Service.load is recorded as a method whose owner_id is the Service class."""
+def test_relationship_definition_records_its_owner(tmp_path):
+    """Service.load records the Service class as its owner_id."""
     (tmp_path / "service.py").write_text("class Service:\n    def load(self, x):\n        return x\n")
 
     definitions = syntax_facts(tmp_path).relationships.to_dict()["definitions"]
     owner = next(item for item in definitions if item["name"] == "Service")
     method = next(item for item in definitions if item["name"] == "load")
 
-    assert method["kind"] == "method"
     assert method["owner_id"] == owner["id"]
 
 
-def test_relationship_evidence_keeps_a_recursive_callsite(tmp_path):
-    """The walk(node.parent) call inside walk() is kept as a callsite."""
-    (tmp_path / "walk.py").write_text("def walk(node):\n    if node:\n        return walk(node.parent)\n")
-
-    evidence = syntax_facts(tmp_path).relationships.to_dict()
-
-    assert [item["expression"] for item in evidence["callsites"]] == ["walk(node.parent)"]
-
-
 def test_typescript_default_import_alias_call_and_import_edge_are_kept(tmp_path):
-    """Facts keep the client(value) default-import call, the route.ts import edge, and tsconfig.json as a source."""
+    """Facts keep the client(value) default-import call and the route.ts import edge."""
     (tmp_path / "service.ts").write_text("export default function actual(value: number) { return value; }\n")
     (tmp_path / "route.ts").write_text(
         "import client from './service';\nexport function route(value: number) { return client(value); }\n"
     )
-    (tmp_path / "tsconfig.json").write_text('{"compilerOptions":{"paths":{"@app/*":["./*"]}}}\n')
 
     evidence = syntax_facts(tmp_path).relationships
 
@@ -334,4 +310,3 @@ def test_typescript_default_import_alias_call_and_import_edge_are_kept(tmp_path)
         relationship.kind == "import" and relationship.source.path == "route.ts"
         for relationship in evidence.structural_relationships
     )
-    assert "tsconfig.json" in {source.path for source in evidence.sources}

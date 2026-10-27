@@ -37,9 +37,9 @@ syntax:
           [(identifier) @reference @target_name
            (member_expression property: (property_identifier) @target_name) @reference])) @owner
   calls: |
-    (call_expression function: (identifier) @callee arguments: (arguments) @arguments) @call
+    (call_expression function: (identifier) @callee arguments: (arguments)) @call
     (call_expression function: (member_expression object: (_) @receiver property: (property_identifier) @member)
-      arguments: (arguments) @arguments) @call
+      arguments: (arguments)) @call
   imports:
   - query: |
       (import_statement

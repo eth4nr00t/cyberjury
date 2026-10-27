@@ -100,16 +100,12 @@ def _review_units[U: ReviewUnit](
         unit_store = ItemStore(review, "review", payload="findings")
         earlier = {unit.id: unit_store.restore(unit.id, _unit_cycle) for unit in units}
         finder = UnitFinder(target, provider=seats.finder, model=seats.finder_model)
-        outcome: ReviewOutcome = (
-            run_review_units(
-                units,
-                execute=finder.review_unit,
-                concurrency=concurrency,
-                restore=lambda unit: earlier.get(unit.id),
-                on_unit=_unit_item_writer(recorder, unit_store),
-            )
-            if units
-            else ReviewOutcome(findings=())
+        outcome = run_review_units(
+            units,
+            execute=finder.review_unit,
+            concurrency=concurrency,
+            restore=lambda unit: earlier.get(unit.id),
+            on_unit=_unit_item_writer(recorder, unit_store),
         )
         measure.metrics.update(
             items=len(units),

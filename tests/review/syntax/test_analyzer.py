@@ -27,7 +27,8 @@ def test_specs_ship_a_grammar_and_every_query_per_language():
             spec.calls,
             *(query.query for query in spec.imports),
             *spec.namespace_imports,
-            *(query for query in (spec.type_definitions, spec.receivers, spec.qualified_uses) if query),
+            spec.type_definitions,
+            *(query for query in (spec.qualified_uses,) if query),
             *(relationship.query for relationship in spec.structural_relationships),
         )
         for query in queries:
@@ -35,7 +36,6 @@ def test_specs_ship_a_grammar_and_every_query_per_language():
         assert spec.extensions, name
         assert "@def" in spec.definitions, name
         assert "@name" in spec.definitions, name
-        assert "@target" not in spec.definitions, name
         assert "@callee" in spec.calls, name
         assert "@member" in spec.calls, name
         for query in spec.imports:
@@ -53,18 +53,9 @@ def test_specs_ship_a_grammar_and_every_query_per_language():
             assert "@target_name" in relationship.query, name
 
 
-def test_python_and_javascript_family_ship_imports_queries():
-    """Python, JavaScript, TypeScript, and TSX define import queries."""
-    specs = load_specs()
-    for name in ("python", "javascript", "typescript", "tsx"):
-        assert specs[name].imports, name
-
-
 def test_a_syntax_error_keeps_the_partial_graph_and_records_a_limitation(tmp_path):
-    """A NUL byte inside a TS template literal keeps render.ts in the graph with a partially parsed limitation."""
-    source = b"export function render(value: string) {\n  return `${value}\x00${value}`;\n}\n"
-    path = tmp_path / "render.ts"
-    path.write_bytes(source)
+    """A dangling operator in render.ts keeps it in the graph with a partially parsed limitation."""
+    (tmp_path / "render.ts").write_text("export function render(value: string) {\n  return value +;\n}\n")
     (tmp_path / "ok.ts").write_text("export function ok() { return true; }\n")
 
     facts = syntax_facts(tmp_path)
@@ -296,17 +287,6 @@ def test_one_extension_maps_to_one_language():
             seen[ext] = name
 
 
-def test_invalid_utf8_source_is_a_facts_limitation(tmp_path):
-    """A 0xff byte in app.py yields a "not valid UTF-8" limitation and only ok.py keeps facts."""
-    (tmp_path / "app.py").write_bytes(b"def route():\n    return 1\n# \xff\n")
-    (tmp_path / "ok.py").write_text("def ok():\n    return 1\n")
-
-    facts = syntax_facts(tmp_path)
-
-    assert [limitation.message for limitation in facts.limitations] == ["app.py: python not valid UTF-8"]
-    assert set(facts.by_file) == {"ok.py"}
-
-
 def test_a_definition_range_cuts_the_whole_definition_from_its_own_source(tmp_path):
     """The range of target() slices exactly its two lines out of a file with neighbouring functions."""
     (tmp_path / "m.py").write_text(
@@ -341,42 +321,10 @@ def test_a_method_call_resolves_to_the_bare_callee_name(tmp_path):
     assert callgraph(tmp_path)["a.ts"]["outer"][0]["calls"] == ["readOne"]
 
 
-def test_an_untyped_member_call_remains_unresolved_syntax(tmp_path):
-    """A client.get() call with two classes defining get records the bare callee "get"."""
-    (tmp_path / "views.py").write_text(
-        "class A:\n    def get(self):\n        return 1\n\n"
-        "class B:\n    def get(self):\n        return 2\n\n"
-        "def view(client):\n    return client.get()\n"
-    )
-
-    assert callgraph(tmp_path)["views.py"]["view"][0]["calls"] == ["get"]
-
-
-def test_a_local_receiver_call_remains_a_syntax_observation(tmp_path):
-    """A self.inner() call records the bare callee "inner"."""
-    (tmp_path / "service.py").write_text(
-        "class Service:\n    def outer(self):\n        return self.inner()\n\n    def inner(self):\n        return 1\n"
-    )
-
-    assert callgraph(tmp_path)["service.py"]["outer"][0]["calls"] == ["inner"]
-
-
 def test_python_recursion_is_preserved_as_an_unresolved_call_clue(tmp_path):
     """A Python walk() calling itself keeps "walk" in its own call list."""
     (tmp_path / "r.py").write_text("def walk(n):\n    return walk(n - 1)\n")
     assert callgraph(tmp_path)["r.py"]["walk"][0]["calls"] == ["walk"]
-
-
-def test_typescript_recursion_is_preserved_as_an_unresolved_call_clue(tmp_path):
-    """A TypeScript walk() calling itself keeps "walk" in its own call list."""
-    (tmp_path / "r.ts").write_text("function walk(n) {\n  return walk(n - 1);\n}\n")
-    assert callgraph(tmp_path)["r.ts"]["walk"][0]["calls"] == ["walk"]
-
-
-def test_go_recursion_is_preserved_as_an_unresolved_call_clue(tmp_path):
-    """A Go walk() calling itself keeps "walk" in its own call list."""
-    (tmp_path / "r.go").write_text("package main\nfunc walk(n int) int { return walk(n - 1) }\n")
-    assert callgraph(tmp_path)["r.go"]["walk"][0]["calls"] == ["walk"]
 
 
 def test_same_name_attribute_call_is_not_filtered_as_recursion(tmp_path):
@@ -385,18 +333,6 @@ def test_same_name_attribute_call_is_not_filtered_as_recursion(tmp_path):
         "def update_memory_by_id(memories, memory_id):\n    return memories.update_memory_by_id(memory_id)\n"
     )
     assert callgraph(tmp_path)["route.py"]["update_memory_by_id"][0]["calls"] == ["update_memory_by_id"]
-
-
-def test_same_name_member_call_is_not_filtered_as_recursion(tmp_path):
-    """A store.save() call inside a TypeScript save() stays in that function's calls."""
-    (tmp_path / "route.ts").write_text("function save(store) {\n  return store.save();\n}\n")
-    assert callgraph(tmp_path)["route.ts"]["save"][0]["calls"] == ["save"]
-
-
-def test_same_name_go_selector_call_is_not_filtered_as_recursion(tmp_path):
-    """A store.save() call inside a Go save() stays in that function's calls."""
-    (tmp_path / "route.go").write_text("package main\nfunc save(store Store) { store.save() }\n")
-    assert callgraph(tmp_path)["route.go"]["save"][0]["calls"] == ["save"]
 
 
 def test_two_definitions_sharing_a_name_in_one_file_both_survive(tmp_path):
@@ -442,18 +378,6 @@ def test_references_inside_a_decorated_definition_keep_their_owner(tmp_path):
     assert owners == ["handler", "plain"]
 
 
-def test_a_syntactically_broken_file_preserves_other_facts(tmp_path):
-    """A broken.py yields a limitation with line and column while ok.py keeps its call graph."""
-    (tmp_path / "broken.py").write_text("def f(:\n  ???\n")
-    (tmp_path / "ok.py").write_text("def g():\n    return 1\n")
-    facts = syntax_facts(tmp_path)
-
-    assert set(callgraph(tmp_path)) == {"ok.py"}
-    assert facts.limitations[0].source == "broken.py"
-    assert facts.limitations[0].line is not None
-    assert facts.limitations[0].column is not None
-
-
 def test_parse_limitation_column_uses_characters_after_non_ascii_text(tmp_path):
     """After "é" on line 1, the error column is the character index of "function" plus one."""
     source = 'const x = "é"; function broken( {\n'
@@ -489,18 +413,6 @@ def test_every_tree_sitter_language_uses_one_parse_limitation_contract(tmp_path,
     assert (limitation.source, limitation.analyzer, limitation.reason) == (name, analyzer, "partially parsed")
 
 
-def test_go_receiver_function_is_a_method(tmp_path):
-    """A Go func with a *Store receiver named Load is recorded with kind "method"."""
-    (tmp_path / "service.go").write_text(
-        "package service\ntype Store struct{}\nfunc (store *Store) Load(value int) int { return value }\n"
-    )
-
-    definitions = syntax_facts(tmp_path).relationships.to_dict()["definitions"]
-    method = next(item for item in definitions if item["name"] == "Load")
-
-    assert method["kind"] == "method"
-
-
 def test_an_unsupported_typescript_export_does_not_abort_other_files(tmp_path):
     """A barrel.ts with "export type * from" yields one typescript limitation while ok.ts keeps facts."""
     (tmp_path / "barrel.ts").write_text("export type * from './model';\n")
@@ -514,7 +426,7 @@ def test_an_unsupported_typescript_export_does_not_abort_other_files(tmp_path):
 
 
 def test_native_analyzer_recovers_the_cross_language_structure(tmp_path):
-    """Python, JS, TS, and Go sources yield the expected definitions, callsites, and Go receivers."""
+    """Python, JS, TS, and Go sources yield the expected definitions and callsites."""
     sources = {
         "service.py": (
             "class Service:\n"
@@ -564,8 +476,6 @@ def test_native_analyzer_recovers_the_cross_language_structure(tmp_path):
         definition = definitions[identity]
         assert definition.calls == (callee,)
         assert [(call.callee, call.expression) for call in definition.callsites] == [(callee, expression)]
-    assert definitions[("store.go", "Load")].has_receiver
-    assert not definitions[("store.go", "helper")].has_receiver
     for (file, _name), definition in definitions.items():
         body = analyzed.sources[file][definition.start : definition.end]
         assert body

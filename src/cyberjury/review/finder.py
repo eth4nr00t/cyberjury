@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import Literal
 
-from cyberjury.providers.base import Message, Provider, ResponseSchema
+from cyberjury.providers.base import Provider, ProviderAccessError, ResponseSchema
 from cyberjury.review.context import (
     EvidencePromptContext,
     SourceEvidence,
     SourceSpan,
     cited_source_spans,
 )
-from cyberjury.review.engine import ReviewCycle, ReviewUnit, run_grounded_judgment
+from cyberjury.review.engine import ReviewCycle, ReviewUnit
 from cyberjury.review.exchange import EvidenceJudgment, run_evidence_judgment
+from cyberjury.review.failures import exception_reason
 from cyberjury.review.finding import ChangeAnchor, Finding
 from cyberjury.review.identity import canonical_category
 from cyberjury.review.knowledge import load_review_brief, load_severity_rubric
@@ -81,7 +81,7 @@ def findings_from_reply(reply: RoleReply) -> list[Finding]:
         else:
             findings.append(finding_from_item(item))
     if corrections:
-        raise CorrectableRoleResponseError(" ".join(corrections), tuple(findings), tuple(findings))
+        raise CorrectableRoleResponseError(" ".join(corrections), tuple(findings))
     return findings
 
 
@@ -89,7 +89,6 @@ def findings_from_reply(reply: RoleReply) -> list[Finding]:
 class ReviewTarget[U: ReviewUnit]:
     """What differs between review targets around the shared Finder judgment."""
 
-    kind: Literal["diff", "repository"]
     role: str
     response_schema: ResponseSchema
     system: Callable[..., str]
@@ -127,19 +126,31 @@ class UnitFinder[U: ReviewUnit]:
     def review_unit(self, unit: U) -> ReviewCycle:
         """Judge one grounded unit, keep only located findings, and bind their source operations and cited spans."""
         grounding = unit.grounding
-        cycle = run_grounded_judgment(
-            grounding,
-            run_judgment=lambda navigation: self._judge(unit, navigation),
+        navigation = grounding.navigator.session() if grounding.navigator is not None else None
+        try:
+            judgment = self._judge(unit, navigation)
+        except ProviderAccessError:
+            raise
+        except Exception as exc:
+            judgment = EvidenceJudgment(findings=[], failure_reason=exception_reason(exc))
+        cycle = self._validate_locations(
+            unit,
+            ReviewCycle(
+                findings=judgment.findings,
+                failure_reason=judgment.failure_reason,
+                grounding=judgment.grounding,
+                source_evidence=judgment.source_evidence,
+            ),
         )
-        cycle = self._validate_locations(unit, cycle)
-        session = grounding.navigator.session() if grounding.navigator is not None else None
         evidence = _unit_evidence(unit, cycle)
         return replace(
             cycle,
             findings=[
                 replace(
                     finding,
-                    source_operation_id=session.source_operation_id(finding.file, finding.line) if session else "",
+                    source_operation_id=(
+                        navigation.source_operation_id(finding.file, finding.line) if navigation is not None else ""
+                    ),
                     cited_spans=cited_source_spans(
                         finding.evidence_refs, seed_spans=grounding.source_spans, source_evidence=evidence
                     ),
@@ -155,7 +166,7 @@ class UnitFinder[U: ReviewUnit]:
             prompt = prompt_context.plan
             result = self._provider.complete(
                 system=self._systems[prompt_context.navigation_available],
-                messages=[Message(role="user", content=prompt.text)],
+                prompt=prompt.text,
                 model=self._model,
                 max_tokens=_EXECUTION.reviewer_max_output_tokens,
                 response_schema=target.response_schema,

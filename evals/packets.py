@@ -25,8 +25,7 @@ def _report(finding: dict) -> dict:
 
 
 def _location(report: dict) -> tuple[str, int, int]:
-    line = report.get("line")
-    return str(report.get("file") or ""), line if isinstance(line, int) else 0, int(report["label"].rsplit("#", 1)[1])
+    return report["file"], report["line"], int(report["label"].rsplit("#", 1)[1])
 
 
 def default_mapping_path(out: Path) -> Path:
@@ -76,10 +75,6 @@ def build_packets(
     references: Sequence[Path] = (),
 ) -> dict[str, object]:
     """Write anonymized packets for every complete attempt under the runs directories."""
-    if groups < 1:
-        raise ValueError("adjudication packets need at least one group")
-    if max_reports is not None and max_reports < 1:
-        raise ValueError("adjudication entries need room for at least one report")
     mapping_path = mapping_path or default_mapping_path(out)
     if mapping_path.resolve().is_relative_to(out.resolve()):
         raise ValueError("the private mapping must be written outside the adjudicator packet directory")
@@ -192,7 +187,7 @@ def write_ledgers(
         if attempt.case not in cases:
             raise ValueError(f"{path} names an unknown case {attempt.case!r}")
         case = cases[attempt.case]
-        if checks_sha256(case) != mapping.get("checks_sha256", {}).get(attempt.case):
+        if checks_sha256(case) != mapping["checks_sha256"].get(attempt.case):
             raise ValueError(f"the checks of {attempt.case} changed after these packets were built")
         ledger = _ledger(attempt, case.target["commit"], by_attempt[path], labels, results)
         attempts.append(

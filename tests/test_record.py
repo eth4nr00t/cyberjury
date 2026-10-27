@@ -53,6 +53,24 @@ def test_a_record_round_trips_through_its_rendered_text_in_field_order():
     assert render(record).endswith("}\n")
 
 
+def test_a_record_line_lists_its_fields_and_quotes_values_with_spaces():
+    """The line holds id, status, duration, metrics in vocabulary order, attributes, then the error."""
+    record = Record(
+        id="review/unit-1",
+        status="incomplete",
+        started_at="2026-01-01T00:00:00Z",
+        duration_seconds=1.5,
+        metrics={"findings": 2, "items": 1},
+        attributes={"paths": "app.py, lib.py", "source_changed": None},
+        error=RecordError(code="model", message="one finding has no location"),
+    )
+
+    assert record.line() == (
+        'review/unit-1 incomplete 1.5s items=1 findings=2 paths="app.py, lib.py" source_changed=null '
+        "error: model one finding has no location"
+    )
+
+
 @pytest.mark.parametrize(
     ("fields", "match"),
     [

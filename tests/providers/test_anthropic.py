@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from cyberjury.providers.anthropic import AnthropicProvider, _extract_usage
-from cyberjury.providers.base import Message, ResponseSchema, Usage
+from cyberjury.providers.base import ResponseSchema, Usage
 
 _SCHEMA = ResponseSchema(
     name="review_reply",
@@ -36,7 +36,7 @@ def _sent(content: str, **values) -> dict:
     client = _FakeClient()
     AnthropicProvider(client=client).complete(
         system="sys",
-        messages=[Message(role="user", content=content)],
+        prompt=content,
         model="m",
         max_tokens=64,
         response_schema=_SCHEMA,
@@ -49,7 +49,7 @@ def test_maps_the_request_and_joins_text_blocks():
     """Text blocks he and llo join to hello, and the SDK gets messages, max_tokens 64, and temperature 0."""
     client = _FakeClient()
     result = AnthropicProvider(client=client).complete(
-        system="sys", messages=[Message(role="user", content="hi")], model="m", max_tokens=64, response_schema=_SCHEMA
+        system="sys", prompt="hi", model="m", max_tokens=64, response_schema=_SCHEMA
     )
 
     assert result.text == "hello"
@@ -128,9 +128,7 @@ class _RecordingClient:
 
 
 def _run(provider):
-    return provider.complete(
-        system="s", messages=[Message(role="user", content="x")], model="opus", max_tokens=8, response_schema=_SCHEMA
-    )
+    return provider.complete(system="s", prompt="x", model="opus", max_tokens=8, response_schema=_SCHEMA)
 
 
 def test_drops_temperature_when_model_rejects_it_then_skips_it():

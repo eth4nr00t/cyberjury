@@ -13,7 +13,6 @@ from dataclasses import replace
 from cyberjury.json_parse import parse_json_object
 from cyberjury.providers.base import (
     CompletionResult,
-    Message,
     Provider,
     ProviderAccessError,
     ResponseSchema,
@@ -119,7 +118,7 @@ class RetryProvider(Provider):
         self,
         *,
         system: str,
-        messages: list[Message],
+        prompt: str,
         model: str,
         max_tokens: int,
         response_schema: ResponseSchema,
@@ -133,7 +132,7 @@ class RetryProvider(Provider):
                 result = _call_with_deadline(
                     lambda: self._inner.complete(
                         system=system,
-                        messages=messages,
+                        prompt=prompt,
                         model=model,
                         max_tokens=max_tokens,
                         response_schema=response_schema,

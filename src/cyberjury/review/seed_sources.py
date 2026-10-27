@@ -128,23 +128,17 @@ def _single_candidate_calls(
     callsite_ids: frozenset[str] | None,
 ) -> list[_Call]:
     definitions = {definition.id: definition for definition in relationships.definitions}
-    targets = {
-        relationship.callsite_id: relationship
-        for relationship in relationships.call_relationships
-        if relationship.target_status == "candidate" and relationship.candidate_callee_definition_ids
-    }
     calls: list[_Call] = []
     for callsite in sorted(relationships.callsites, key=lambda item: (item.source.path, item.source.start, item.id)):
-        relationship = targets.get(callsite.id)
+        candidates = relationships.call_candidates[callsite.id]
         if (
             callsite.caller_definition_id not in seed_ids
-            or relationship is None
             or (callsite_ids is not None and callsite.id not in callsite_ids)
             or callsite.receiver_expression
-            or len(relationship.candidate_callee_definition_ids) != 1
+            or len(candidates) != 1
         ):
             continue
-        callee = definitions[relationship.candidate_callee_definition_ids[0]]
+        callee = definitions[candidates[0]]
         calls.append((callsite, definitions[callsite.caller_definition_id], callee))
     return calls
 

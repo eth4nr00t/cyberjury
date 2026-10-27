@@ -53,7 +53,6 @@ class Facts:
 
     by_file: Mapping[str, str] = field(default_factory=dict)
     relationships: RelationshipEvidenceBundle = field(default_factory=RelationshipEvidenceBundle)
-    import_files: tuple[str, ...] = ()
     limitations: tuple[FactLimitation, ...] = ()
 
 
@@ -71,7 +70,6 @@ class FactsReceipt:
         evidence = {
             "by_file": dict(facts.by_file),
             "relationship_evidence": facts.relationships.to_dict(),
-            "import_files": list(facts.import_files),
             "limitations": [limitation.to_dict() for limitation in facts.limitations],
         }
         semantic = {"backend_id": backend_id, "evidence_sha256": canonical_sha256(evidence)}

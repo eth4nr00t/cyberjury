@@ -1,4 +1,4 @@
-"""Entry point for `python -m cyberjury`, mirroring the `cyberjury` console script."""
+"""Run cyberjury as a module."""
 
 from cyberjury.cli import main
 

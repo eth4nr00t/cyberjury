@@ -20,36 +20,29 @@ from cyberjury.review.relationships import (
     SourceReference,
     StructuralRelationshipEvidence,
 )
-from tests.review.support import navigator_from_callgraph
+from tests.review.support import navigator_from_definitions
 from tests.review.syntax.support import syntax_facts
 
 
 def _graph(*, first_end: int, second_end: int) -> dict[str, object]:
     return {
-        "callgraph": {
-            "src/one.py": {"Record": [{"range": [0, first_end], "calls": []}]},
-            "plugins/two.py": {"Record": [{"range": [0, second_end], "calls": []}]},
-        },
+        "src/one.py": {"Record": [(0, first_end)]},
+        "plugins/two.py": {"Record": [(0, second_end)]},
     }
 
 
 def _record_navigator(tmp_path, source: str) -> SourceNavigator:
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
-    navigator = navigator_from_callgraph(
-        tmp_path, {"callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}}
-    )
+    navigator = navigator_from_definitions(tmp_path, {"model.py": {"Record": [(0, len(source))]}})
     assert navigator is not None
     return navigator
 
 
-def test_default_navigation_contract_publishes_the_query_batch_limit():
-    """Default instructions tell the model to send at most 8 source_queries per batch."""
-    assert "Send at most 8 `source_queries`" in navigation_instructions()
-
-
 def test_navigation_contract_states_the_exact_search_semantics():
-    """Instructions describe exact-name symbol match, literal one-line text match, and 20-result pages from 0."""
+    """Instructions describe exact-name symbol match, literal one-line text match, 20-result pages, and 8 queries."""
     instructions = navigation_instructions()
+
+    assert "Send at most 8 `source_queries`" in instructions
 
     assert "whose name equals `query` exactly" in instructions
     assert "literal, case-sensitive substring of one line" in instructions
@@ -169,7 +162,7 @@ def test_symbol_search_returns_every_real_candidate_without_evidence(tmp_path):
     (tmp_path / "plugins").mkdir()
     (tmp_path / "src/one.py").write_text(first, encoding="utf-8")
     (tmp_path / "plugins/two.py").write_text(second, encoding="utf-8")
-    navigator = navigator_from_callgraph(tmp_path, _graph(first_end=len(first), second_end=len(second)))
+    navigator = navigator_from_definitions(tmp_path, _graph(first_end=len(first), second_end=len(second)))
 
     assert navigator is not None
     result = navigator.session().execute(
@@ -207,7 +200,6 @@ def _extracted_navigator(tmp_path, files: dict[str, str]) -> SourceNavigator:
     facts = syntax_facts(tmp_path)
     navigator = SourceNavigator.from_facts(
         tmp_path,
-        import_files=facts.import_files,
         relationship_evidence=facts.relationships,
     )
     assert navigator is not None
@@ -285,10 +277,10 @@ def test_last_symbol_page_is_not_mistaken_for_a_unique_result(tmp_path):
     """Page 1 of 21 Repeated definitions holds one item yet is not auto-read as a unique match."""
     source = "value = 1\n" * 21
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
-    definitions = [{"range": [index * 10, index * 10 + 9], "calls": []} for index in range(21)]
-    navigator = navigator_from_callgraph(
+    definitions = [(index * 10, index * 10 + 9) for index in range(21)]
+    navigator = navigator_from_definitions(
         tmp_path,
-        {"callgraph": {"model.py": {"Repeated": definitions}}},
+        {"model.py": {"Repeated": definitions}},
     )
 
     assert navigator is not None
@@ -360,14 +352,12 @@ def test_source_target_ids_are_stable_across_sessions_and_query_order(tmp_path):
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
     first_end = source.index("\n\n")
     graph = {
-        "callgraph": {
-            "model.py": {
-                "Record": [{"range": [0, first_end], "calls": []}],
-                "Other": [{"range": [first_end + 2, len(source)], "calls": []}],
-            }
-        },
+        "model.py": {
+            "Record": [(0, first_end)],
+            "Other": [(first_end + 2, len(source))],
+        }
     }
-    navigator = navigator_from_callgraph(tmp_path, graph)
+    navigator = navigator_from_definitions(tmp_path, graph)
     assert navigator is not None
 
     first = navigator.session().execute(
@@ -448,11 +438,9 @@ def test_large_definition_search_publishes_bounded_page_targets(tmp_path):
     """A 5,000-line function is split into paged targets, and reading page 0 stays within 48,000 chars."""
     source = "def large():\n" + "    value = 1\n" * 5_000
     (tmp_path / "large.py").write_text(source, encoding="utf-8")
-    navigator = navigator_from_callgraph(
+    navigator = navigator_from_definitions(
         tmp_path,
-        {
-            "callgraph": {"large.py": {"large": [{"range": [0, len(source)], "calls": []}]}},
-        },
+        {"large.py": {"large": [(0, len(source))]}},
     )
     assert navigator is not None
     session = navigator.session()
@@ -475,8 +463,8 @@ def test_reading_requires_a_target_published_by_the_same_session(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src/one.py").write_text(source, encoding="utf-8")
     graph = _graph(first_end=len(source), second_end=len(source))
-    graph["callgraph"] = {"src/one.py": graph["callgraph"]["src/one.py"]}
-    navigator = navigator_from_callgraph(tmp_path, graph)
+    graph = {"src/one.py": graph["src/one.py"]}
+    navigator = navigator_from_definitions(tmp_path, graph)
 
     assert navigator is not None
     session = navigator.session()
@@ -500,10 +488,8 @@ def test_definition_navigation_uses_normalized_character_ranges(tmp_path):
     (tmp_path / "app.py").write_text(source, encoding="utf-8")
     start = len(prefix)
     end = start + len(definition)
-    graph = {
-        "callgraph": {"app.py": {"target": [{"range": [start, end], "calls": []}]}},
-    }
-    navigator = navigator_from_callgraph(tmp_path, graph)
+    graph = {"app.py": {"target": [(start, end)]}}
+    navigator = navigator_from_definitions(tmp_path, graph)
 
     assert navigator is not None
     session = navigator.session()
@@ -534,10 +520,8 @@ def test_definition_navigation_uses_normalized_newlines(tmp_path):
     start = normalized.index(definition)
     end = start + len(definition)
     (tmp_path / "app.py").write_bytes(raw)
-    graph = {
-        "callgraph": {"app.py": {"target": [{"range": [start, end], "calls": []}]}},
-    }
-    navigator = navigator_from_callgraph(tmp_path, graph)
+    graph = {"app.py": {"target": [(start, end)]}}
+    navigator = navigator_from_definitions(tmp_path, graph)
 
     assert navigator is not None
     session = navigator.session()
@@ -807,8 +791,8 @@ def _target_navigator(tmp_path, body: str = ""):
     definition = f"def target():\n{body}    return 'ok'\n"
     (tmp_path / "app.py").write_text(prefix + definition, encoding="utf-8")
     start = len(prefix)
-    graph = {"callgraph": {"app.py": {"target": [{"range": [start, start + len(definition)], "calls": []}]}}}
-    navigator = navigator_from_callgraph(tmp_path, graph)
+    graph = {"app.py": {"target": [(start, start + len(definition))]}}
+    navigator = navigator_from_definitions(tmp_path, graph)
     assert navigator is not None
     return navigator
 
@@ -871,9 +855,7 @@ def test_caller_search_returns_the_go_function_calling_a_definition(tmp_path):
     )
     facts = syntax_facts(tmp_path)
     target = next(item for item in facts.relationships.definitions if item.name == "CheckPolicy")
-    navigator = SourceNavigator.from_facts(
-        tmp_path, import_files=facts.import_files, relationship_evidence=facts.relationships
-    )
+    navigator = SourceNavigator.from_facts(tmp_path, relationship_evidence=facts.relationships)
     assert navigator is not None
     session = navigator.session()
     session.execute([{"kind": "search_symbols", "query": "CheckPolicy", "page": 0}], target_chars=10_000)

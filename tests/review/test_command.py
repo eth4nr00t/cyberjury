@@ -447,7 +447,7 @@ def test_repository_review_with_model_errors_marks_units_failed(tmp_path, monkey
 def test_a_provider_that_rejects_access_fails_the_review_with_a_config_error(tmp_path, monkeypatch):
     """A provider raising ProviderAccessError fails the review stage and the attempt with a config error."""
 
-    def reject(_system, _messages):
+    def reject(_system, _prompt):
         raise ProviderAccessError("provider rejected the request: invalid x-api-key")
 
     monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(responder=reject))

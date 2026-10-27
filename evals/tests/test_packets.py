@@ -54,15 +54,13 @@ def _result(packets, verdicts):
     return result
 
 
-def test_packets_hide_report_provenance_and_include_no_earlier_verdicts(tmp_path, cases, runs_dirs):
-    """Two runs give reports labelled by run A/B, without candidate ids or earlier verdicts."""
+def test_packets_hide_report_provenance(tmp_path, cases, runs_dirs):
+    """Two runs give reports labelled by run A/B, without report or candidate ids."""
     out = tmp_path / "adjudication"
 
-    counts = build_packets(cases, list(runs_dirs), out, groups=1)
+    build_packets(cases, list(runs_dirs), out, groups=1)
 
-    assert counts["references"] is None
     (entry,) = json.loads((out / "packet-1.json").read_text(encoding="utf-8"))
-    assert "reference_decisions" not in entry
     assert {report["run"] for report in entry["reports"]} == {"A", "B"}
     assert all(not {"id", "candidate_id"} & set(report) for report in entry["reports"])
 
@@ -283,24 +281,6 @@ def test_a_ledger_with_evidence_outside_the_pinned_source_is_rejected_and_not_wr
     assert written == 0
     assert "evidence line does not exist" in failures[0]
     assert not list(runs_dirs[1].rglob("ledger-*.json"))
-
-
-def test_attempts_recorded_before_a_check_fix_are_adjudicated_against_the_fixed_checks(
-    tmp_path, cases, runs_dirs, benchmark_project
-):
-    """Packets built from edited checks write ledgers carrying the edited checks hash."""
-    name = benchmark_project.diff_case
-    fixed = cases | {
-        name: replace(cases[name], checks=tuple(replace(check, locations=()) for check in cases[name].checks))
-    }
-    out = tmp_path / "adjudication"
-    build_packets(fixed, list(runs_dirs), out, groups=1)
-    _result(out, {f"Claim {A}": "supported"})
-
-    assert write_ledgers(fixed, out) == (2, [])
-    case_dir = runs_dirs[0] / "demo" / name.split(":", 1)[1]
-    ledger = json.loads((case_dir / "ledger-01.json").read_text(encoding="utf-8"))
-    assert ledger["checks_sha256"] == checks_sha256(fixed[name]) != checks_sha256(cases[name])
 
 
 def test_checks_changed_after_the_packets_were_built_stop_the_ledgers(tmp_path, cases, runs_dirs, benchmark_project):

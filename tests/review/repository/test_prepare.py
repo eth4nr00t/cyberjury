@@ -31,40 +31,6 @@ def _target(tmp_path):
     return d
 
 
-GO_LIB = """
-package matcher
-
-func Match(a, b string) bool {
-    return a == b
-}
-"""
-
-
-def _go_lib(tmp_path):
-    d = tmp_path / "matcher"
-    d.mkdir(exist_ok=True)
-    (d / "matcher.go").write_text(GO_LIB)
-    return d
-
-
-def test_prepare_reviews_library_source_without_export_rules(tmp_path):
-    """A Go library with only matcher.go plans matcher.go as its single unit."""
-    res = prepare_target(_go_lib(tmp_path))
-    assert [unit.name for unit in res.units] == ["matcher.go"]
-
-
-def test_prepare_plans_a_django_url_module_for_review(tmp_path):
-    """A Django project with manage.py and app/urls.py plans a unit for app/urls.py."""
-    d = tmp_path / "dj"
-    d.mkdir()
-    (d / "manage.py").write_text("import django\n")
-    (d / "app").mkdir()
-    (d / "app" / "urls.py").write_text("from django.urls import path\nurlpatterns = []\n")
-    (d / "requirements.txt").write_text("Django==4.2\n")
-    res = prepare_target(d)
-    assert "app/urls.py" in [unit.file for unit in res.units]
-
-
 def test_prepare_assigns_downstream_logic_to_review_units(tmp_path):
     """The file app/managers/auth_manager.py gets its own unit while files under app/tests get none."""
     d = tmp_path / "dj"

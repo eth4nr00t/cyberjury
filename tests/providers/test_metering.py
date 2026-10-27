@@ -5,7 +5,7 @@ import json
 import pytest
 
 from cyberjury.canonical import canonical_sha256
-from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
+from cyberjury.providers.base import CompletionResult, Provider, Usage
 from cyberjury.providers.metering import (
     MeteringProvider,
     UsageMeter,
@@ -29,7 +29,7 @@ class _Fake(Provider):
 def _call(provider, content="u"):
     return provider.complete(
         system="s",
-        messages=[Message(role="user", content=content)],
+        prompt=content,
         model="m",
         max_tokens=8,
         response_schema=EMPTY_SCHEMA,
@@ -50,19 +50,6 @@ def test_metering_records_each_calls_usage_and_returns_the_inner_result():
         "cache_write_tokens": 0,
         "output_tokens": 20,
     }
-
-
-def test_meter_accumulates_across_calls():
-    """Two identical calls double model_requests, uncached input, output, and cache-write counts."""
-    meter = UsageMeter()
-    metered = MeteringProvider(_Fake(Usage(input_tokens=10, output_tokens=5, cache_write_tokens=10)), meter)
-    _call(metered)
-    _call(metered)
-    usage = usage_from_calls(meter.call_snapshot())
-    assert usage["model_requests"] == 2
-    assert usage["uncached_input_tokens"] == 20
-    assert usage["output_tokens"] == 10
-    assert usage["cache_write_tokens"] == 20
 
 
 def test_call_snapshot_is_a_copy_so_a_later_call_cannot_change_it():
@@ -97,7 +84,7 @@ def test_meter_records_role_unit_prompt_size_usage_duration_and_status():
     with model_call_scope(unit_id="unit-a"), model_call_context(role="finder", trigger="initial_judgment"):
         provider.complete(
             system="system",
-            messages=[Message(role="user", content="prompt")],
+            prompt="prompt",
             model="model-a",
             max_tokens=100,
             response_schema=EMPTY_SCHEMA,

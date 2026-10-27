@@ -5,7 +5,6 @@ from cyberjury.review.context import EvidenceItem, GroundingContext, SourceEvide
 from cyberjury.review.facts import Facts, FactsReceipt
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.unit_plans import UnitPlanReceipt, UnitPlanRecord, UnitSourceSlice
-from cyberjury.sources.snapshot import SourceSnapshot
 
 
 def _plan(source_chars: int) -> UnitPlanReceipt:
@@ -21,11 +20,9 @@ def _plan(source_chars: int) -> UnitPlanReceipt:
     )
 
 
-def test_grounding_receipt_binds_the_unit_plan_and_exact_evidence_content(tmp_path):
+def test_grounding_receipt_binds_the_unit_plan_and_exact_evidence_content():
     """The receipt records the unit plan sha256, grounding/v1 schema, seed/context sizes, evidence hashes."""
     source = "def route():\n    return 1\n"
-    (tmp_path / "app.py").write_text(source)
-    snapshot = SourceSnapshot.capture(tmp_path, ("app.py",))
     unit_plan = _plan(len(source))
     evidence = EvidenceItem.create(
         identity=f"app.py:route:0:{len(source)}",
@@ -40,7 +37,6 @@ def test_grounding_receipt_binds_the_unit_plan_and_exact_evidence_content(tmp_pa
         files=("app.py",),
         evidence=(evidence,),
         source_spans=(SourceSpan(file="app.py", start_line=1, end_line=2),),
-        source_snapshot=snapshot,
         snapshot_files=("app.py",),
     )
 
@@ -58,13 +54,10 @@ def test_grounding_receipt_binds_the_unit_plan_and_exact_evidence_content(tmp_pa
     assert record["evidence"][0]["content_sha256"] == text_sha256(source)
 
 
-def test_grounding_receipt_binds_source_the_agent_delivered_before_the_first_call(tmp_path):
+def test_grounding_receipt_binds_source_the_agent_delivered_before_the_first_call():
     """A service.py callee delivered as source evidence is recorded with its id and character count."""
     source = "def route():\n    return load()\n"
     callee = "def load():\n    return 1\n"
-    (tmp_path / "app.py").write_text(source)
-    (tmp_path / "service.py").write_text(callee)
-    snapshot = SourceSnapshot.capture(tmp_path, ("app.py", "service.py"))
     delivered = SourceEvidence(
         id="src-0123456789ab",
         identity="service.py:1-2",
@@ -75,7 +68,6 @@ def test_grounding_receipt_binds_source_the_agent_delivered_before_the_first_cal
         text=source,
         files=("app.py",),
         source_evidence=(delivered,),
-        source_snapshot=snapshot,
         snapshot_files=("app.py", "service.py"),
     )
 

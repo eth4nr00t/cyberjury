@@ -90,7 +90,6 @@ def write_attempt(benchmark_project):
                     "line": 2,
                     "title": f"Claim {identity}",
                     "category": "missing-authorization",
-                    "candidate_id": identity,
                 }
                 for identity in candidates
             ],

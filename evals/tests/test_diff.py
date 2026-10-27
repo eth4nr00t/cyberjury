@@ -36,7 +36,7 @@ def scripted_model(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
 
     def install(findings=(), *, error: BaseException | None = None) -> MockProvider:
-        def respond(system, _messages):
+        def respond(system, _prompt):
             if error is not None:
                 raise error
             return _finder_reply([dict(item) for item in findings])
@@ -78,7 +78,6 @@ def test_run_reviews_the_pinned_range_through_the_product_command(
 
     assert (record["case"], record["attempt"], record["complete"], record["error"]) == (case.name, 1, True, "")
     [finding] = record["findings"]
-    assert finding["candidate_id"] == finding["id"]
     assert {key: finding[key] for key in ("title", "entrypoint", "file", "line", "evidence", "attack_path")} == {
         "title": "Create saves without an owner",
         "entrypoint": "POST /create",
@@ -89,7 +88,7 @@ def test_run_reviews_the_pinned_range_through_the_product_command(
     }
     assert finding["change_anchor"] == {"file": "views.py", "line": 2, "side": "new"}
     assert {call["model"] for call in provider.calls} == {"override"}
-    assert "+    return save(owner=None)" in provider.calls[0]["messages"][0].content
+    assert "+    return save(owner=None)" in provider.calls[0]["prompt"]
     [attempt] = (tmp_path / "reviews").glob("demo/*/run-01/reviews/*/attempts/*")
     assert json.loads((attempt / "model-calls.json").read_text())["usage"]["model_requests"] == len(provider.calls)
 

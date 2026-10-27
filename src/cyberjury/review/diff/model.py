@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import re
-import shlex
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cache, cached_property
@@ -14,12 +13,12 @@ from typing import Literal
 from cyberjury.numbering import HUNK_HEADER, split_lines
 from cyberjury.review.context import GroundingContext
 from cyberjury.review.definitions import DefinitionUnitPlan
-from cyberjury.review.detection import Detection, load_detection
+from cyberjury.review.detection import Detection
 from cyberjury.review.result import SkippedFile
 from cyberjury.review.selection import decodes_as_utf8
 from cyberjury.review.unit_plans import UnitPlanRecord, UnitSourceSlice
 
-_QUOTED_GIT_HEADER_RE = re.compile(r'^diff --git "(?:\\.|[^"])*" ("(?:\\.|[^"])*")$')
+_QUOTED_TARGET_RE = re.compile(r' ("(?:\\.|[^"])*")$')
 
 type ChangedLineRanges = dict[str, tuple[tuple[int, int], ...]]
 
@@ -48,7 +47,7 @@ class DiffUnit:
     @cached_property
     def line_ranges(self) -> DiffLineRanges:
         """Return the unit's post change hunk lines and exact old and new change anchors."""
-        return diff_line_ranges(self.diff, load_detection())
+        return diff_line_ranges(self.diff)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -81,7 +80,7 @@ def split_diff_by_file(diff: str) -> list[str]:
         current.append(line)
     if current:
         chunks.append("".join(current))
-    return chunks or ([diff] if diff.strip() else [])
+    return chunks
 
 
 @cache
@@ -120,35 +119,29 @@ def chunk_path(chunk: str) -> str:
     plus = minus = git = ""
     for line in split_lines(chunk):
         if line.startswith("+++ ") and not plus:
-            plus = line[4:].strip()
+            plus = line[4:]
         elif line.startswith("--- ") and not minus:
-            minus = line[4:].strip()
+            minus = line[4:]
         elif line.startswith("diff --git ") and not git:
             git = line
         if plus and minus and git:
             break
     for candidate in (plus, minus):
-        if candidate and candidate != "/dev/null":
-            return _decode_git_path(candidate)
+        if path := _decode_git_path(candidate):
+            return path
     return _git_header_path(git)
 
 
 def _git_header_path(header: str) -> str:
-    quoted = _QUOTED_GIT_HEADER_RE.match(header)
+    quoted = _QUOTED_TARGET_RE.search(header)
     if quoted:
         return _decode_git_path(quoted.group(1))
-    try:
-        fields = shlex.split(header)
-    except ValueError:
-        fields = []
-    if len(fields) == 4 and fields[:2] == ["diff", "--git"]:
-        return _decode_git_path(fields[3])
     _, separator, tail = header.rpartition(" b/")
-    return _decode_git_path(f"b/{tail}") if separator else ""
+    return tail if separator else ""
 
 
 def _decode_git_path(raw: str) -> str:
-    value = raw.strip()
+    value = raw.removesuffix("\t")
     if not value or value == "/dev/null":
         return ""
     if value.startswith('"'):
@@ -162,8 +155,6 @@ def _decode_git_path(raw: str) -> str:
             value = decoded.encode("latin-1").decode("utf-8")
         except (UnicodeEncodeError, UnicodeDecodeError):
             value = decoded
-    else:
-        value = value.split("\t", 1)[0]
     return value[2:] if value[:2] in ("a/", "b/") else value
 
 
@@ -194,25 +185,22 @@ def _is_submodule_chunk(chunk: str) -> bool:
     for line in split_lines(chunk):
         if line.startswith("@@"):
             return False
-        if line.startswith(
-            ("index ", "new file mode ", "deleted file mode ", "old mode ", "new mode ")
-        ) and line.endswith(" 160000"):
+        if line.startswith(("index ", "new file mode ", "deleted file mode ")) and line.endswith(" 160000"):
             return True
     return False
 
 
 def _hunkless_reason(chunk: str) -> str:
-    header = split_lines(chunk)
-    if any(line.startswith(("Binary files ", "GIT binary patch")) for line in header):
+    lines = split_lines(chunk)
+    if any(line.startswith("Binary files ") for line in lines):
         return "binary"
     for prefix, reason in (
         ("new file mode", "empty_new_file"),
         ("deleted file mode", "empty_deleted_file"),
         ("rename from", "rename_only"),
-        ("copy from", "copy_only"),
         ("old mode", "mode_only"),
     ):
-        if any(line.startswith(prefix) for line in header):
+        if any(line.startswith(prefix) for line in lines):
             return reason
     return "no_hunk"
 
@@ -227,15 +215,15 @@ def strip_unreviewable_files(diff: str, detection: Detection, *, root: Path) -> 
     skipped: list[SkippedFile] = []
     for chunk in split_diff_by_file(diff):
         path = chunk_path(chunk)
-        if path and _is_submodule_chunk(chunk):
+        if _is_submodule_chunk(chunk):
             skipped.append(SkippedFile(path=path, reason="submodule"))
-        elif path and detection.is_noise_path(path):
+        elif detection.is_noise_path(path):
             skipped.append(SkippedFile(path=path, reason="noise"))
         elif path in detection.oversized_files:
             skipped.append(SkippedFile(path=path, reason="too_large"))
-        elif path and _not_utf8(root / path):
+        elif _not_utf8(root / path):
             skipped.append(SkippedFile(path=path, reason="not_utf8"))
-        elif path and not _parsed_hunks(chunk):
+        elif not _parsed_hunks(chunk):
             skipped.append(SkippedFile(path=path, reason=_hunkless_reason(chunk)))
         else:
             kept.append(chunk)
@@ -326,20 +314,13 @@ def _render_hunk(old_start: int, new_start: int, lines: tuple[HunkLine, ...]) ->
     return f"@@ -{old_start},{old_count} +{new_start},{new_count} @@\n{body}"
 
 
-def reviewable_changed_paths(diff: str, detection: Detection) -> tuple[str, ...]:
-    """Return every changed path retained by the noise boundary."""
-    return tuple(path for path in diff_paths(diff) if not detection.is_noise_path(path))
-
-
-def changed_line_ranges(diff: str, detection: Detection) -> ChangedLineRanges:
-    """Return current line anchors of additions, replacements, and deletions in every reviewable file."""
+def changed_line_ranges(diff: str) -> ChangedLineRanges:
+    """Return current line anchors of additions, replacements, and deletions in every file of the diff."""
     anchors: dict[str, list[tuple[int, int]]] = {
-        path: list(ranges) for path, ranges in diff_line_ranges(diff, detection).new.items()
+        path: list(ranges) for path, ranges in diff_line_ranges(diff).new.items()
     }
     for chunk in split_diff_by_file(diff):
         path = chunk_path(chunk)
-        if not path or detection.is_noise_path(path):
-            continue
         for hunk in _parsed_hunks(chunk):
             pending_deletions: list[int] = []
             for line in hunk.lines:
@@ -368,12 +349,7 @@ def _flush_deletion_anchors(
     pending.clear()
 
 
-def _append_line(output: dict[str, list[tuple[int, int]]], path: str, line: int, detection: Detection) -> None:
-    if path and not detection.is_noise_path(path):
-        output.setdefault(path, []).append((line, line))
-
-
-def diff_line_ranges(diff: str, detection: Detection) -> DiffLineRanges:
+def diff_line_ranges(diff: str) -> DiffLineRanges:
     """Return post change hunk lines and exact old and new change anchors."""
     current: dict[str, list[tuple[int, int]]] = {}
     old: dict[str, list[tuple[int, int]]] = {}
@@ -385,12 +361,11 @@ def diff_line_ranges(diff: str, detection: Detection) -> DiffLineRanges:
         for hunk in _parsed_hunks(chunk):
             for line in hunk.lines:
                 if line.kind == "add":
-                    _append_line(new, new_path, line.new_line, detection)
-                    _append_line(current, new_path, line.new_line, detection)
-                elif line.kind == "context":
-                    _append_line(current, new_path, line.new_line, detection)
+                    new.setdefault(new_path, []).append((line.new_line, line.new_line))
+                if line.kind == "delete":
+                    old.setdefault(old_path, []).append((line.old_line, line.old_line))
                 else:
-                    _append_line(old, old_path, line.old_line, detection)
+                    current.setdefault(new_path, []).append((line.new_line, line.new_line))
     return DiffLineRanges(
         current={path: tuple(_merge_ranges(ranges)) for path, ranges in current.items()},
         old={path: tuple(_merge_ranges(ranges)) for path, ranges in old.items()},

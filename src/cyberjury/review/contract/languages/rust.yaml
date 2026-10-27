@@ -19,10 +19,10 @@ syntax:
      (trait_item name: (type_identifier) @name)
      (type_item name: (type_identifier) @name)] @type
   calls: |
-    (call_expression function: (identifier) @callee arguments: (arguments) @arguments) @call
+    (call_expression function: (identifier) @callee arguments: (arguments)) @call
     (call_expression function: (field_expression value: (_) @receiver field: (field_identifier) @member)
-      arguments: (arguments) @arguments) @call
+      arguments: (arguments)) @call
     (call_expression function: (scoped_identifier path: (_) @receiver name: (identifier) @member)
-      arguments: (arguments) @arguments) @call
+      arguments: (arguments)) @call
   qualified_uses: |
     (scoped_identifier path: (identifier) @qualifier name: (identifier) @name)

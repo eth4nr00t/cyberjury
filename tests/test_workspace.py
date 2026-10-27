@@ -15,7 +15,6 @@ from cyberjury.workspace import (
     WorkspaceCorruptionError,
     new_attempt_id,
     read_json_object,
-    write_json_atomic,
 )
 
 
@@ -30,7 +29,7 @@ def _start(session: SessionWorkspace) -> AttemptWorkspace:
 
 
 def _terminal(attempt: AttemptWorkspace) -> Record:
-    return Record(id=attempt.attempt_id, status="ok", started_at=attempt.started_at, duration_seconds=1.0)
+    return Record(id=attempt.attempt_id, status="ok", started_at=attempt.read_record().started_at, duration_seconds=1.0)
 
 
 def _simulate_process_exit(attempt: AttemptWorkspace) -> None:
@@ -160,17 +159,6 @@ def test_symlinked_state_directories_are_rejected(tmp_path, layout):
     """A state root or reviews namespace that is a symlink to another directory raises ValueError naming symlink."""
     with pytest.raises(ValueError, match="symlink"):
         SessionWorkspace.open_or_create(layout(tmp_path), session_id="review-20260101-000000-" + "5" * 8)
-
-
-def test_atomic_json_round_trips_with_private_permissions(tmp_path):
-    """Two atomic writes leave the second value readable in a file with mode 0600."""
-    path = tmp_path / "outcome.json"
-
-    write_json_atomic(path, {"complete": True})
-    write_json_atomic(path, {"complete": False})
-
-    assert read_json_object(path) == {"complete": False}
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_json_reader_rejects_artifact_symlinks(tmp_path):

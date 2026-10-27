@@ -16,7 +16,6 @@ from cyberjury.review.prompts import PromptPlan, fenced_source, inline_source, o
 
 if TYPE_CHECKING:
     from cyberjury.review.navigation import SourceNavigator
-    from cyberjury.sources.snapshot import SourceSnapshot
 
 
 _EVIDENCE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -180,18 +179,10 @@ def evidence_index(items: tuple[EvidenceItem, ...]) -> str:
 def select_evidence(
     items: tuple[EvidenceItem, ...],
     requested: Iterable[str],
-    *,
-    target_chars: int,
 ) -> EvidenceSelection:
-    """Resolve ids validated by `evidence_request_ids` against the catalog, failing on any unpublished id."""
-    ids = tuple(dict.fromkeys(requested))
+    """Render the published evidence of the given distinct ids, which the caller checked against the catalog."""
     catalog = {item.id: item for item in items}
-    unknown = tuple(item for item in ids if item not in catalog)
-    if unknown:
-        raise UnknownEvidenceRequest(unknown)
-    selected = tuple(catalog[item] for item in ids)
-    if len(selected) > 1 and sum(len(item.text) for item in selected) > target_chars:
-        raise EvidenceBudgetError(f"evidence request exceeds the {target_chars} character target")
+    selected = tuple(catalog[item] for item in requested)
     return EvidenceSelection(
         text="\n\n".join(
             f"Read evidence `{item.id}` {one_line_source(item.label)}:\n{fenced_source(item.text)}" for item in selected
@@ -307,7 +298,6 @@ class GroundingContext:
     source_spans: tuple[SourceSpan, ...] = ()
     source_evidence: tuple[SourceEvidence, ...] = ()
     navigator: SourceNavigator | None = None
-    source_snapshot: SourceSnapshot | None = None
     snapshot_files: tuple[str, ...] = ()
 
     @property
@@ -330,33 +320,6 @@ class GroundingContext:
 def delivered_source_block(item: SourceEvidence) -> str:
     """Label source the review agent delivered before the model requested anything."""
     return f"Initial source `{item.id}`, delivered by the review agent:\n{fenced_source(item.text)}"
-
-
-def with_source_evidence(
-    context: GroundingContext,
-    evidence: tuple[SourceEvidence, ...],
-) -> GroundingContext:
-    """Extend one unit with exact source read by its navigation session."""
-    by_id = {item.id: item for item in context.source_evidence}
-    delivered_items = tuple({item.id: item for item in evidence}.values())
-    by_id.update((item.id, item) for item in delivered_items)
-    delivered = GroundingCoverage(
-        included=tuple(dict.fromkeys(item.identity for item in delivered_items)),
-        references=tuple(item.id for item in delivered_items),
-    )
-    snapshot_files = context.snapshot_files
-    if snapshot_files:
-        snapshot_files = tuple(
-            dict.fromkeys(
-                (*snapshot_files, *(item.source_span.file for item in delivered_items if item.source_span is not None))
-            )
-        )
-    return replace(
-        context,
-        source_evidence=tuple(by_id.values()),
-        coverage=merge_grounding_coverage((context.coverage, delivered)),
-        snapshot_files=snapshot_files,
-    )
 
 
 def cited_location_file(

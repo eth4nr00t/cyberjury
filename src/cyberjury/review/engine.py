@@ -15,13 +15,9 @@ from cyberjury.review.context import (
     GroundingContext,
     GroundingCoverage,
     SourceEvidence,
-    merge_grounding_coverage,
-    with_source_evidence,
 )
-from cyberjury.review.exchange import EvidenceJudgment
 from cyberjury.review.failures import ReviewUnitFailure, exception_reason
 from cyberjury.review.finding import Finding
-from cyberjury.review.navigation import SourceNavigationSession
 from cyberjury.review.union import FindingAccumulator
 
 
@@ -70,28 +66,6 @@ class ReviewOutcome:
     def complete(self) -> bool:
         """Require every unit to finish clean."""
         return not self.failures
-
-
-def run_grounded_judgment(
-    context: GroundingContext,
-    *,
-    run_judgment: Callable[[SourceNavigationSession | None], EvidenceJudgment],
-) -> ReviewCycle:
-    """Run one grounded judgment per unit and keep candidates produced before a failure."""
-    navigation = context.navigator.session() if context.navigator is not None else None
-    try:
-        judgment = run_judgment(navigation)
-    except ProviderAccessError:
-        raise
-    except Exception as exc:
-        judgment = EvidenceJudgment(findings=[], failure_reason=exception_reason(exc))
-    final = with_source_evidence(context, judgment.source_evidence)
-    return ReviewCycle(
-        findings=judgment.findings,
-        failure_reason=judgment.failure_reason,
-        grounding=merge_grounding_coverage((final.coverage, judgment.grounding)),
-        source_evidence=final.source_evidence,
-    )
 
 
 def run_review_units[U: ReviewUnit](

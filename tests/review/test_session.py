@@ -51,7 +51,10 @@ def _finish(attempt) -> None:
     attempt.bind(findings_artifact([], (), unfinished=frozenset()))
     attempt.finish(
         Record(
-            id=attempt.workspace.attempt_id, status="ok", started_at=attempt.workspace.started_at, duration_seconds=1.0
+            id=attempt.workspace.attempt_id,
+            status="ok",
+            started_at=attempt.workspace.read_record().started_at,
+            duration_seconds=1.0,
         )
     )
 

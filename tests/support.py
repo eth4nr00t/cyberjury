@@ -5,7 +5,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from cyberjury.providers.base import CompletionResult, Message, Provider, ResponseSchema
+from cyberjury.providers.base import CompletionResult, Provider, ResponseSchema
 
 EMPTY_SCHEMA = ResponseSchema(
     name="reply", schema={"type": "object", "additionalProperties": False, "properties": {}, "required": []}
@@ -26,7 +26,7 @@ def git(cwd: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-type MockResponder = Callable[[str, list[Message]], str]
+type MockResponder = Callable[[str, str], str]
 
 
 class MockProvider(Provider):
@@ -49,7 +49,7 @@ class MockProvider(Provider):
         self,
         *,
         system: str,
-        messages: list[Message],
+        prompt: str,
         model: str,
         max_tokens: int,
         response_schema: ResponseSchema,
@@ -60,18 +60,17 @@ class MockProvider(Provider):
         self.calls.append(
             {
                 "system": system,
-                "messages": messages,
+                "prompt": prompt,
                 "model": model,
                 "cache_prefix": cache_prefix,
                 "cache_segments": cache_segments,
-                "max_tokens": max_tokens,
                 "response_schema": response_schema,
             }
         )
         text = (
             self._responses.pop(0)
             if self._responses
-            else self._responder(system, messages)
+            else self._responder(system, prompt)
             if self._responder is not None
             else self._default
         )

@@ -21,7 +21,6 @@ def plan_diff_units(diff: str, shared: SharedGrounding, skipped: tuple[SkippedFi
     units = build_diff_units(
         diff,
         root=shared.root,
-        detection=shared.detection,
         definitions=shared.facts.relationships.definitions,
     )
     return ReviewPlan(

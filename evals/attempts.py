@@ -65,7 +65,7 @@ def load_attempt(path: str | Path) -> Attempt:
         or not all(isinstance(item, dict) for item in data["findings"])
     ):
         raise ValueError(f"{path} is not an attempt record")
-    findings = {item.get("candidate_id"): item for item in data["findings"]}
+    findings = {item.get("id"): item for item in data["findings"]}
     if len(findings) != len(data["findings"]) or not all(
         isinstance(identity, str) and _CANDIDATE.fullmatch(identity) for identity in findings
     ):
@@ -140,7 +140,7 @@ def recorded_attempt(case: BenchmarkCase, directory: Path, number: int, *, error
         "attempt": number,
         "complete": complete,
         "error": "" if complete else reason or record.status,
-        "findings": [{**item, "candidate_id": item["id"]} for item in findings["findings"]],
+        "findings": findings["findings"],
         "issues": findings["issues"],
     }
 

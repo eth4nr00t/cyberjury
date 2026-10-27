@@ -7,7 +7,6 @@ from typing import Any
 from cyberjury.providers.base import (
     REQUEST_TIMEOUT_SECONDS,
     CompletionResult,
-    Message,
     Provider,
     ResponseSchema,
     Usage,
@@ -22,13 +21,12 @@ class AnthropicProvider(Provider):
         *,
         api_base: str | None = None,
         client: Any | None = None,
-        temperature: float | None = 0.0,
         timeout: float = REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         """Store Anthropic connection settings without constructing the client eagerly."""
         self._api_base = api_base
         self._client = client
-        self._temperature = temperature
+        self._temperature: float | None = 0.0
         self._timeout = timeout
 
     def _get_client(self) -> Any:
@@ -45,7 +43,7 @@ class AnthropicProvider(Provider):
         self,
         *,
         system: str,
-        messages: list[Message],
+        prompt: str,
         model: str,
         max_tokens: int,
         response_schema: ResponseSchema,
@@ -53,14 +51,12 @@ class AnthropicProvider(Provider):
         cache_segments: tuple[str, ...] = (),
     ) -> CompletionResult:
         """Send one Messages API request with cached system and prefix blocks, and return its text and usage."""
-        api_messages = [{"role": m.role, "content": m.content} for m in messages]
-        _mark_cache_prefix(api_messages, cache_prefix, cache_segments)
         request: dict[str, Any] = {
             "model": model,
             "max_tokens": max_tokens,
             "timeout": self._timeout,
             "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-            "messages": api_messages,
+            "messages": [{"role": "user", "content": _user_content(prompt, cache_prefix, cache_segments)}],
             "output_config": {"format": {"type": "json_schema", "schema": response_schema.schema}},
         }
         response = self._create(request)
@@ -79,16 +75,15 @@ class AnthropicProvider(Provider):
             return client.messages.create(**request)
 
 
-def _mark_cache_prefix(api_messages: list[dict], cache_prefix: str, cache_segments: tuple[str, ...]) -> None:
+def _user_content(prompt: str, cache_prefix: str, cache_segments: tuple[str, ...]) -> str | list[dict]:
     if not cache_prefix:
-        return
-    content = api_messages[0]["content"]
+        return prompt
     blocks: list[dict] = [{"type": "text", "text": text} for text in (cache_prefix, *cache_segments)]
     blocks[0]["cache_control"] = blocks[-1]["cache_control"] = {"type": "ephemeral"}
-    remainder = content[len(cache_prefix) + sum(len(segment) for segment in cache_segments) :]
+    remainder = prompt[len(cache_prefix) + sum(len(segment) for segment in cache_segments) :]
     if remainder:
         blocks.append({"type": "text", "text": remainder})
-    api_messages[0]["content"] = blocks
+    return blocks
 
 
 def _is_temperature_rejected(exc: Exception) -> bool:

@@ -96,7 +96,6 @@ def locate(
 
 
 DIFF_TARGET = ReviewTarget[DiffUnit](
-    kind="diff",
     role="diff finder",
     response_schema=FINDER_RESPONSE_SCHEMA,
     system=diff_finder_system,

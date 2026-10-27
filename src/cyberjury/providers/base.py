@@ -4,23 +4,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Literal
-
-Role = Literal["user", "assistant"]
 
 REQUEST_TIMEOUT_SECONDS = 240.0
 
 
 class ProviderAccessError(RuntimeError):
     """The provider rejected the credentials, the permission, or the model of a request, so no retry can succeed."""
-
-
-@dataclass(frozen=True, kw_only=True)
-class Message:
-    """One chat message passed to a provider backend."""
-
-    role: Role
-    content: str
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -58,11 +47,11 @@ class Provider(ABC):
         self,
         *,
         system: str,
-        messages: list[Message],
+        prompt: str,
         model: str,
         max_tokens: int,
         response_schema: ResponseSchema,
         cache_prefix: str = "",
         cache_segments: tuple[str, ...] = (),
     ) -> CompletionResult:
-        """Return one completion of the messages under the closed response schema."""
+        """Return one completion of the user prompt under the closed response schema."""

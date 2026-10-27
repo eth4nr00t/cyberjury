@@ -19,7 +19,6 @@
     "slug": {
       "type": "string",
       "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
-      "minLength": 1,
       "maxLength": 80
     },
     "gitCommit": {
@@ -27,9 +26,9 @@
       "pattern": "^[0-9a-f]{40}$"
     },
     "repositoryPath": {
-      "description": "A repository-root-relative POSIX path such as src/documents/views.py, without a leading ./ or / and without backslashes or .. segments.",
+      "description": "A normalized repository-root-relative POSIX path such as src/documents/views.py: no leading or trailing /, no empty, . or .. segment, and no backslash.",
       "type": "string",
-      "pattern": "^(?!\\./)(?!/)[^\\\\]+$"
+      "pattern": "^(?!.*\\\\)(?:(?!\\.\\.?/)[^/]+/)*(?!\\.\\.?$)[^/]+$"
     },
     "repository": {
       "description": "The reviewed git repository, named by exactly one of url and local_path, and the commit the repository case reviews.",
@@ -37,8 +36,8 @@
       "additionalProperties": false,
       "required": ["commit"],
       "properties": {
-        "url": {"type": "string", "pattern": "^https://", "format": "uri", "minLength": 1},
-        "local_path": {"type": "string", "pattern": "^/", "minLength": 1},
+        "url": {"type": "string", "pattern": "^https://"},
+        "local_path": {"type": "string", "pattern": "^/"},
         "commit": {"$ref": "#/$defs/gitCommit"}
       },
       "oneOf": [

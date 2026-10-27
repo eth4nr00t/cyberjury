@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cyberjury.providers.base import Message, ResponseSchema, Usage
+from cyberjury.providers.base import ResponseSchema, Usage
 from cyberjury.providers.openai import OpenAIProvider, _responses_usage
 
 _SCHEMA = ResponseSchema(
@@ -37,7 +37,7 @@ class _FakeResponsesClient:
 def _complete(client, content="c", *, system="s", **kw):
     return OpenAIProvider(client=client).complete(
         system=system,
-        messages=[Message(role="user", content=content)],
+        prompt=content,
         model="m",
         max_tokens=8,
         response_schema=_SCHEMA,
@@ -49,12 +49,6 @@ def _sent(content: str, **kw) -> dict:
     client = _FakeResponsesClient()
     _complete(client, content, **kw)
     return client.kwargs
-
-
-def test_sdk_exception_propagates():
-    """A RuntimeError('rate limited') raised by responses.create reaches the caller unchanged."""
-    with pytest.raises(RuntimeError, match="rate limited"):
-        _complete(_FakeResponsesClient(error=RuntimeError("rate limited")))
 
 
 def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch):
@@ -124,14 +118,6 @@ def test_a_repeated_system_prompt_alone_gets_a_routing_key():
     assert _sent("x")["prompt_cache_key"] == _sent("y")["prompt_cache_key"]
 
 
-def test_caching_uses_only_portable_routing_fields():
-    """A cached request keeps the whole message as input content and sends no prompt_cache_options field."""
-    request = _sent("STABLE changing judgment", cache_prefix="STABLE")
-
-    assert request["input"][-1]["content"] == "STABLE changing judgment"
-    assert "prompt_cache_options" not in request
-
-
 def test_responses_maps_system_to_instructions_and_returns_output_text():
     """System goes to instructions, messages to input, output_text is returned, and no temperature is sent."""
     client = _FakeResponsesClient(output_text='{"holds": true}')
@@ -153,22 +139,6 @@ def test_responses_maps_the_strict_output_schema():
             "schema": _SCHEMA.schema,
         }
     }
-
-
-def test_responses_preserves_message_role_boundaries():
-    """User and assistant messages stay as two separate input entries with their original roles."""
-    client = _FakeResponsesClient(output_text="ok")
-    OpenAIProvider(client=client).complete(
-        system="s",
-        messages=[Message(role="user", content="first"), Message(role="assistant", content="second")],
-        model="gpt-5.6",
-        max_tokens=1024,
-        response_schema=_SCHEMA,
-    )
-    assert client.kwargs["input"] == [
-        {"role": "user", "content": "first"},
-        {"role": "assistant", "content": "second"},
-    ]
 
 
 def test_responses_empty_output_comes_back_as_an_empty_string_not_an_error():

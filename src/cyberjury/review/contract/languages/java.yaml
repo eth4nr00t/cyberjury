@@ -29,6 +29,6 @@ syntax:
         name: (identifier) @owner_name
         interfaces: (super_interfaces (type_list (type_identifier) @reference @target_name))) @owner
   calls: |
-    (method_invocation !object name: (identifier) @callee arguments: (argument_list) @arguments) @call
-    (method_invocation object: (_) @receiver name: (identifier) @member arguments: (argument_list) @arguments) @call
-    (object_creation_expression type: (type_identifier) @callee arguments: (argument_list) @arguments) @call
+    (method_invocation !object name: (identifier) @callee arguments: (argument_list)) @call
+    (method_invocation object: (_) @receiver name: (identifier) @member arguments: (argument_list)) @call
+    (object_creation_expression type: (type_identifier) @callee arguments: (argument_list)) @call

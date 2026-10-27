@@ -14,7 +14,7 @@ def _system(navigation: bool = True) -> str:
 
 
 def test_system_carries_scope_boundary_kernel_rubric_evidence_and_field_meanings():
-    """The system prompt has the injection warning, old:new gutter, KERNEL-X, RUBRIC-X, and every field."""
+    """The system prompt has the injection warning, old:new gutter, KERNEL-X, RUBRIC-X, every field, no JSON example."""
     system = _system()
 
     for text in (
@@ -29,15 +29,7 @@ def test_system_carries_scope_boundary_kernel_rubric_evidence_and_field_meanings
         "where the fix must be applied",
     ):
         assert text in system
-    for field in (*DIFF_FINDING_SCHEMA["properties"], "evidence_requests", "source_queries"):
-        assert f"`{field}`" in system
-
-
-def test_system_explains_each_schema_field_without_an_example():
-    """The diff finder prompt names every response and finding field in backticks and gives no JSON example."""
-    system = diff_finder_system(review_brief="", severity_rubric="", navigation="")
     root = FINDER_RESPONSE_SCHEMA.schema["properties"]
-
     for field in (*root, *root["findings"]["items"]["properties"]):
         assert f"`{field}`" in system
     assert '{"findings"' not in system

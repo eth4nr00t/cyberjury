@@ -16,7 +16,7 @@ _DETECTION = load_detection()
 
 def test_diff_unit_planners_return_an_empty_worklist_for_empty_input(tmp_path):
     """An empty diff string with no definitions plans no units."""
-    assert build_diff_units("", root=tmp_path, detection=_DETECTION, definitions=()) == []
+    assert build_diff_units("", root=tmp_path, definitions=()) == []
 
 
 def test_changed_definition_mapping_keeps_deletion_and_enclosing_definitions(tmp_path):
@@ -36,7 +36,7 @@ def test_changed_definition_mapping_keeps_deletion_and_enclosing_definitions(tmp
         "         return sensitive()\n"
     )
 
-    changed = changed_definitions(tmp_path, ("view.py",), changed_line_ranges(diff, _DETECTION), definitions)
+    changed = changed_definitions(tmp_path, ("view.py",), changed_line_ranges(diff), definitions)
 
     assert [item.name for item in changed] == ["View", "handle"]
 
@@ -52,21 +52,21 @@ def test_adjacent_definition_end_does_not_claim_the_next_line(tmp_path):
     )
     diff = "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -3 +3 @@\n-def b():\n+def b(x):\n"
 
-    changed = changed_definitions(tmp_path, ("app.py",), changed_line_ranges(diff, _DETECTION), definitions)
+    changed = changed_definitions(tmp_path, ("app.py",), changed_line_ranges(diff), definitions)
 
     assert [item.name for item in changed] == ["b"]
 
 
 def test_definition_unit_planner_groups_seeds_by_file_in_seed_order():
-    """Seeds View, post, get yield a views.py plan (View, get) then other.py (post) with no seed files."""
+    """Seeds View, post, get yield a views.py plan (View, get) then an other.py plan (post)."""
     view = definition("views.py", "View", 0, 100)
     method = definition("views.py", "get", 20, 60)
     other = definition("other.py", "post", 0, 80)
 
-    plans = plan_definition_units((view, other, method), seed_files=("views.py",))
+    plans = plan_definition_units((view, other, method))
 
     assert [plan.seeds for plan in plans] == [(view, method), (other,)]
-    assert [plan.seed_files for plan in plans] == [("views.py",), ()]
+    assert [plan.seed_files for plan in plans] == [("views.py",), ("other.py",)]
 
 
 def _two_changed_files(tmp_path, body_chars):
@@ -85,7 +85,7 @@ def test_diff_surface_packing_does_not_charge_lazy_seed_definitions_to_context_b
     diff, definitions = _two_changed_files(tmp_path, 100_000)
     monkeypatch.setattr(planning, "_SETTINGS", replace(planning._SETTINGS, target_patch_chars_per_unit=1_000))
 
-    units = build_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=definitions)
+    units = build_diff_units(diff, root=tmp_path, definitions=definitions)
 
     assert [unit.definition_plan.seeds for unit in units] == [definitions]
 
@@ -95,7 +95,7 @@ def test_diff_surface_packing_bounds_the_lazy_definition_catalog(tmp_path, monke
     diff, definitions = _two_changed_files(tmp_path, 100)
     monkeypatch.setattr(planning, "_SETTINGS", replace(planning._SETTINGS, max_definition_evidence_items_per_unit=1))
 
-    units = build_diff_units(diff, root=tmp_path, detection=_DETECTION, definitions=definitions)
+    units = build_diff_units(diff, root=tmp_path, definitions=definitions)
 
     assert [unit.definition_plan.seeds for unit in units] == [(definitions[0],), (definitions[1],)]
 
@@ -107,7 +107,7 @@ def test_an_unreadable_changed_source_fails_planning_instead_of_hiding_its_defin
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-def old():\n+def app():\n"
 
     with pytest.raises(BackendUnavailable, match=r"diff planning could not read source app\.py"):
-        changed_definitions(tmp_path, ("app.py",), changed_line_ranges(diff, _DETECTION), definitions)
+        changed_definitions(tmp_path, ("app.py",), changed_line_ranges(diff), definitions)
 
 
 def test_a_deleted_changed_source_has_no_changed_definitions(tmp_path):
@@ -115,4 +115,4 @@ def test_a_deleted_changed_source_has_no_changed_definitions(tmp_path):
     definitions = (definition("gone.py", "gone", 0, 10),)
     diff = "diff --git a/gone.py b/gone.py\n--- a/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-def gone():\n"
 
-    assert changed_definitions(tmp_path, ("gone.py",), changed_line_ranges(diff, _DETECTION), definitions) == ()
+    assert changed_definitions(tmp_path, ("gone.py",), changed_line_ranges(diff), definitions) == ()

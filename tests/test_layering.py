@@ -48,12 +48,11 @@ def test_only_the_cli_depends_on_the_review_package():
 
 
 def test_syntax_facts_use_one_way_stage_dependencies():
-    """Syntax extraction coordinates analyzer, source selection, and graph work only in its facts module."""
+    """Syntax extraction coordinates analyzer and graph work only in its facts module."""
     allowed = {
         "analyzer.py": set(),
-        "sources.py": {"analyzer"},
-        "graph.py": {"analyzer", "sources"},
-        "facts.py": {"analyzer", "sources", "graph"},
+        "graph.py": {"analyzer"},
+        "facts.py": {"analyzer", "graph"},
     }
     for module, expected in allowed.items():
         imported = {
@@ -64,14 +63,17 @@ def test_syntax_facts_use_one_way_stage_dependencies():
         assert imported <= expected
 
 
-def test_native_tool_imports_stop_at_the_analyzer_boundary():
-    """Only syntax/analyzer.py imports tree_sitter, and sources.py and graph.py do not."""
-    analyzer_imports = _imports(_SYNTAX_ROOT / "analyzer.py")
-    assert any(name == "tree_sitter" or name.startswith("tree_sitter.") for name in analyzer_imports)
+def test_only_the_analyzer_imports_tree_sitter():
+    """The native parser stays behind syntax/analyzer.py so the rest of the package sees analyzed values only."""
+    violations = {
+        str(path.relative_to(_PACKAGE_ROOT)): sorted(
+            module for module in _imports(path) if module == "tree_sitter" or module.startswith("tree_sitter.")
+        )
+        for path in _PACKAGE_ROOT.rglob("*.py")
+        if path != _SYNTAX_ROOT / "analyzer.py"
+    }
 
-    for module in ("sources.py", "graph.py"):
-        imports = _imports(_SYNTAX_ROOT / module)
-        assert not any(name == "tree_sitter" or name.startswith("tree_sitter.") for name in imports)
+    assert not {path: modules for path, modules in violations.items() if modules}
 
 
 def test_shared_review_modules_do_not_depend_on_target_implementations():

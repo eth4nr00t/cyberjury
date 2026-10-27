@@ -267,7 +267,7 @@ class SessionWorkspace(_JsonDirectory):
                 if path.is_dir() and not path.is_symlink():
                     shutil.rmtree(path)
             for path in sorted(attempts.glob("attempt-*")):
-                AttemptWorkspace.open(path, session_id=self.session_id).interrupt_stale()
+                AttemptWorkspace.open(path).interrupt_stale()
             temporary_path = Path(tempfile.mkdtemp(prefix=f".{attempt_id}.", dir=attempts))
         except BaseException:
             fcntl.flock(session_lock.fileno(), fcntl.LOCK_UN)
@@ -276,18 +276,12 @@ class SessionWorkspace(_JsonDirectory):
         try:
             os.chmod(temporary_path, 0o700)
             write_json_atomic(temporary_path / "request.json", request)
-            attempt = AttemptWorkspace(
-                path=temporary_path,
-                session_id=self.session_id,
-                attempt_id=attempt_id,
-                started_at=started_at,
-                _session_lock=session_lock,
-            )
+            attempt = AttemptWorkspace(path=temporary_path, attempt_id=attempt_id, _session_lock=session_lock)
             attempt._write(
                 Record(
                     id=attempt_id,
                     status="running",
-                    started_at=attempt.started_at,
+                    started_at=started_at,
                     duration_seconds=None,
                     attributes=dict(attributes),
                 )
@@ -313,20 +307,16 @@ class AttemptWorkspace(_JsonDirectory):
     """One invocation whose lifecycle state is its record, one atomically replaced file."""
 
     path: Path
-    session_id: str
     attempt_id: str
-    started_at: str
     _session_lock: TextIO | None = field(default=None, repr=False)
 
     @classmethod
-    def open(cls, path: str | Path, *, session_id: str) -> AttemptWorkspace:
-        """Open one published attempt directory and validate its record."""
+    def open(cls, path: str | Path) -> AttemptWorkspace:
+        """Open one published attempt directory."""
         raw_path = Path(path)
         if raw_path.is_symlink() or not is_attempt_id(raw_path.name):
             raise WorkspaceCorruptionError("attempt path is invalid")
-        attempt = cls(path=raw_path.resolve(), session_id=session_id, attempt_id=raw_path.name, started_at="")
-        attempt.started_at = attempt.read_record().started_at
-        return attempt
+        return cls(path=raw_path.resolve(), attempt_id=raw_path.name)
 
     def read_record(self) -> Record:
         """Return the attempt record."""
@@ -354,12 +344,12 @@ class AttemptWorkspace(_JsonDirectory):
         record = self.read_record()
         if record.status != "running":
             return
-        started = parse_timestamp(self.started_at)
+        started = parse_timestamp(record.started_at)
         self._write(
             Record(
                 id=self.attempt_id,
                 status="interrupted",
-                started_at=self.started_at,
+                started_at=record.started_at,
                 duration_seconds=max(0.0, round((datetime.now(UTC) - started).total_seconds(), 3)),
                 metrics=record.metrics,
                 attributes={**record.attributes, "reason": "prior process ended without a terminal state"},

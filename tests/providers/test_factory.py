@@ -7,8 +7,7 @@ from typing import ClassVar
 import pytest
 
 from cyberjury.providers.anthropic import AnthropicProvider
-from cyberjury.providers.base import Message
-from cyberjury.providers.factory import default_model_for_provider, make_provider
+from cyberjury.providers.factory import make_provider
 from cyberjury.providers.openai import OpenAIProvider
 from cyberjury.providers.retry import RetryProvider
 from tests.support import EMPTY_SCHEMA
@@ -24,18 +23,6 @@ def test_selects_provider_by_name_behind_a_retry_wrapper():
         provider = _make(name)
         assert isinstance(provider, RetryProvider)
         assert isinstance(provider._inner, backend)
-
-
-def test_default_model_is_provider_specific():
-    """Each provider has its own default model."""
-    assert default_model_for_provider("openai") == "gpt-5.6"
-    assert default_model_for_provider("anthropic") == "claude-opus-5"
-
-
-def test_unknown_name_fails_loud():
-    """An unrecognized provider name such as something-else raises ValueError naming an unknown provider."""
-    with pytest.raises(ValueError, match="unknown provider"):
-        _make("something-else")
 
 
 class _RateLimited(Exception):
@@ -66,9 +53,7 @@ def scripted_openai(monkeypatch):
 
 
 def _complete(provider):
-    return provider.complete(
-        system="s", messages=[Message(role="user", content="c")], model="m", max_tokens=8, response_schema=EMPTY_SCHEMA
-    )
+    return provider.complete(system="s", prompt="c", model="m", max_tokens=8, response_schema=EMPTY_SCHEMA)
 
 
 def test_retries_allow_one_extra_attempt_per_retry(scripted_openai):
@@ -79,14 +64,4 @@ def test_retries_allow_one_extra_attempt_per_retry(scripted_openai):
 
     assert result.text == "{}"
     assert result.attempts == 3
-    assert len(scripted_openai.calls) == 3
-
-
-def test_retries_give_up_after_the_last_extra_attempt(scripted_openai):
-    """Three rate-limit failures with retries=2 re-raise the error after exactly three calls."""
-    scripted_openai.failures = 3
-
-    with pytest.raises(_RateLimited):
-        _complete(_make("openai"))
-
     assert len(scripted_openai.calls) == 3

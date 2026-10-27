@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
 from cyberjury.canonical import text_sha256
 
-type DefinitionKind = Literal["function", "method", "type", "file"]
+type DefinitionKind = Literal["function", "type", "file"]
 type ObservationKind = Literal["syntax_call", "import_declaration", "namespace_declaration"]
 type StructuralRelationKind = Literal["import", "namespace", "inheritance", "reference"]
 type RelationshipTargetStatus = Literal["candidate", "unresolved"]
@@ -143,42 +144,6 @@ class CallsiteEvidence:
 
 
 @dataclass(frozen=True, order=True, kw_only=True)
-class CallRelationshipEvidence:
-    """Expose one call target question without claiming a callee binding."""
-
-    id: str
-    callsite_id: str
-    target_status: RelationshipTargetStatus
-    candidate_callee_definition_ids: tuple[str, ...] = ()
-
-    @classmethod
-    def create(
-        cls,
-        *,
-        callsite_id: str,
-        candidate_callee_definition_ids: tuple[str, ...] = (),
-    ) -> CallRelationshipEvidence:
-        """Build one deterministic candidate or unresolved call relationship."""
-        candidates = tuple(sorted(set(candidate_callee_definition_ids)))
-        status: RelationshipTargetStatus = "candidate" if candidates else "unresolved"
-        return cls(
-            id=_stable_id("callrel", callsite_id, status, candidates),
-            callsite_id=callsite_id,
-            target_status=status,
-            candidate_callee_definition_ids=candidates,
-        )
-
-    def to_dict(self) -> dict[str, object]:
-        """Serialize one explicit call target state."""
-        return {
-            "id": self.id,
-            "callsite_id": self.callsite_id,
-            "target_status": self.target_status,
-            "candidate_callee_definition_ids": list(self.candidate_callee_definition_ids),
-        }
-
-
-@dataclass(frozen=True, order=True, kw_only=True)
 class AnalysisObservation:
     """Record one producer clue without promoting it to a relationship."""
 
@@ -290,15 +255,11 @@ class RelationshipEvidenceBundle:
     callsites: tuple[CallsiteEvidence, ...] = ()
     observations: tuple[AnalysisObservation, ...] = ()
     structural_relationships: tuple[StructuralRelationshipEvidence, ...] = ()
-    call_relationships: tuple[CallRelationshipEvidence, ...] = field(init=False)
+    call_candidates: Mapping[str, tuple[str, ...]] = field(init=False)
 
     def __post_init__(self) -> None:
-        """Derive one target state per callsite."""
-        object.__setattr__(
-            self,
-            "call_relationships",
-            _call_relationships(self.definitions, self.callsites),
-        )
+        """Derive each callsite's candidate callee definitions from the definitions sharing its callee name."""
+        object.__setattr__(self, "call_candidates", _call_candidates(self.definitions, self.callsites))
 
     def canonical(self) -> RelationshipEvidenceBundle:
         """Return the same evidence in the stable record order of its receipt."""
@@ -337,21 +298,16 @@ class RelationshipEvidenceBundle:
         }
 
 
-def _call_relationships(
+def _call_candidates(
     definitions: tuple[DefinitionEvidence, ...],
     callsites: tuple[CallsiteEvidence, ...],
-) -> tuple[CallRelationshipEvidence, ...]:
+) -> dict[str, tuple[str, ...]]:
     definitions_by_name: dict[str, set[str]] = {}
     for definition in definitions:
         if definition.kind == "file":
             continue
         definitions_by_name.setdefault(_candidate_name(definition.name), set()).add(definition.id)
-    return tuple(
-        CallRelationshipEvidence.create(
-            callsite_id=callsite.id,
-            candidate_callee_definition_ids=tuple(
-                definitions_by_name.get(_candidate_name(callsite.callee_spelling), set())
-            ),
-        )
+    return {
+        callsite.id: tuple(sorted(definitions_by_name.get(_candidate_name(callsite.callee_spelling), ())))
         for callsite in callsites
-    )
+    }

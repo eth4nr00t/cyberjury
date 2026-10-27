@@ -3,7 +3,6 @@
 import re
 from contextlib import nullcontext
 
-from cyberjury.providers.base import Message
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
 from cyberjury.review.context import (
     EvidenceItem,
@@ -14,7 +13,7 @@ from cyberjury.review.exchange import run_evidence_judgment
 from cyberjury.review.navigation import SourceBudgetError, SourceNavigator
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.union import MERGE_RULE
-from tests.review.support import navigator_from_callgraph, stub_finding
+from tests.review.support import navigator_from_definitions, stub_finding
 from tests.support import EMPTY_SCHEMA, MockProvider
 
 
@@ -539,11 +538,9 @@ def test_source_navigation_searches_then_reads_before_forming_a_finding(tmp_path
     """A search_symbols query yields a src- id that is read before the finding cites models.py Record."""
     source = "class Record:\n    owner = 'user'\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
-    navigator = navigator_from_callgraph(
+    navigator = navigator_from_definitions(
         tmp_path,
-        {
-            "callgraph": {"models.py": {"Record": [{"range": [0, len(source)], "calls": []}]}},
-        },
+        {"models.py": {"Record": [(0, len(source))]}},
     )
     prompts = []
     read_target = []
@@ -593,9 +590,9 @@ def test_oversized_source_query_batch_gets_one_bounded_correction(tmp_path):
     """Nine source queries in one reply get a single "at most 8" correction and the run stays clean."""
     source = "class Record:\n    owner = 'user'\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
-    navigator = navigator_from_callgraph(
+    navigator = navigator_from_definitions(
         tmp_path,
-        {"callgraph": {"models.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
+        {"models.py": {"Record": [(0, len(source))]}},
     )
     assert navigator is not None
     prompts = []
@@ -631,9 +628,9 @@ def test_oversized_source_query_correction_preserves_findings(tmp_path):
     """A finding returned alongside nine source queries is kept after the oversized-batch correction."""
     source = "class Record:\n    owner = 'user'\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
-    navigator = navigator_from_callgraph(
+    navigator = navigator_from_definitions(
         tmp_path,
-        {"callgraph": {"models.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
+        {"models.py": {"Record": [(0, len(source))]}},
     )
     assert navigator is not None
     finding = stub_finding("missing owner scope", "models.py:1", evidence_refs=("seed",))
@@ -661,9 +658,9 @@ def test_repeated_source_query_gets_one_bounded_correction(tmp_path):
     """Repeating the search_symbols "Record" query gets one correction that does not echo the query text."""
     source = "class Record:\n    owner = 'user'\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
-    navigator = navigator_from_callgraph(
+    navigator = navigator_from_definitions(
         tmp_path,
-        {"callgraph": {"models.py": {"Record": [{"range": [0, len(source)], "calls": []}]}}},
+        {"models.py": {"Record": [(0, len(source))]}},
     )
     assert navigator is not None
     prompts = []
@@ -738,11 +735,9 @@ def test_source_search_reference_is_read_before_the_finding_is_accepted(tmp_path
     """A finding citing a src- id from search results is read first and grounding ends complete."""
     source = "class Record:\n    owner = 'user'\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
-    navigator = navigator_from_callgraph(
+    navigator = navigator_from_definitions(
         tmp_path,
-        {
-            "callgraph": {"models.py": {"Record": [{"range": [0, len(source)], "calls": []}]}},
-        },
+        {"models.py": {"Record": [(0, len(source))]}},
     )
     calls = 0
     read_target = []
@@ -779,11 +774,9 @@ def test_source_navigation_round_limit_is_incomplete(tmp_path):
     """Repeating the same symbol search after the budget runs out fails with a repeated-query reason."""
     source = "class Record:\n    pass\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
-    navigator = navigator_from_callgraph(
+    navigator = navigator_from_definitions(
         tmp_path,
-        {
-            "callgraph": {"models.py": {"Record": [{"range": [0, len(source)], "calls": []}]}},
-        },
+        {"models.py": {"Record": [(0, len(source))]}},
     )
     prompts = []
 
@@ -810,11 +803,9 @@ def test_one_exchange_over_the_shared_budget_delivers_what_fits_and_names_the_re
     """Evidence plus a source read over the 500-character target delivers the evidence and names the held read."""
     source = "def Record():\n" + "    value = 1\n" * 18
     (tmp_path / "model.py").write_text(source, encoding="utf-8")
-    navigator = navigator_from_callgraph(
+    navigator = navigator_from_definitions(
         tmp_path,
-        {
-            "callgraph": {"model.py": {"Record": [{"range": [0, len(source)], "calls": []}]}},
-        },
+        {"model.py": {"Record": [(0, len(source))]}},
     )
     evidence = EvidenceItem.create(
         identity="policy.py:guard:0:300",
@@ -1039,7 +1030,7 @@ def test_each_finder_call_records_what_the_engine_did_with_its_reply():
     def ask(_prompt):
         provider.complete(
             system="system",
-            messages=[Message(role="user", content="prompt")],
+            prompt="prompt",
             model="m",
             max_tokens=8,
             response_schema=EMPTY_SCHEMA,
@@ -1096,3 +1087,25 @@ def test_oversized_navigation_read_uses_the_same_bounded_correction():
 
     assert result.failure_reason == ""
     assert "Return a smaller batch" in prompts[1].controls
+
+
+def test_a_full_request_batch_beside_a_cited_unread_id_is_delivered_in_order():
+    """64 requested ids plus a finding citing a 65th unread id deliver the cited one first instead of failing."""
+    items = tuple(EvidenceItem.create(identity=f"a.py:item{index}:0:1", label="item", text="x") for index in range(65))
+    finding = stub_finding("guard missing", "a.py:1", evidence_refs=(items[64].id,))
+    replies = iter(
+        (
+            {"findings": [finding], "evidence_requests": [item.id for item in items[:64]]},
+            {"findings": [], "evidence_requests": []},
+        )
+    )
+    prompts = []
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return next(replies)
+
+    result = _judge(GroundingContext(text="seed", evidence=items), ask=ask, target_chars=10_000, max_followups=2)
+
+    assert result.failure_reason == ""
+    assert f"Read evidence `{items[64].id}`" in prompts[1].controls

@@ -15,7 +15,6 @@ def _context_record(unit_id: str, context: GroundingContext) -> dict[str, object
     controls = context.prompt.controls
     semantic = {
         "unit_id": unit_id,
-        "source_snapshot_id": context.source_snapshot.snapshot_id,
         "files": list(context.files),
         "snapshot_files": list(context.snapshot_files),
         "source_spans": [span.to_dict() for span in context.source_spans],
@@ -66,7 +65,6 @@ class GroundingReceipt:
 def _receipt_semantic(unit_plan_receipt_sha256: str, contexts: tuple[dict[str, object], ...]) -> dict[str, object]:
     return {
         "unit_plan_receipt_sha256": unit_plan_receipt_sha256,
-        "context_count": len(contexts),
         "contexts": list(contexts),
     }
 

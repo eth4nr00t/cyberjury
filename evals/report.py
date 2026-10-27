@@ -13,10 +13,6 @@ from evals.adjudication import VERDICTS, Adjudication, adjudicate
 from evals.attempts import find_attempts, read_json
 from evals.benchmarks.cases import BenchmarkCase
 
-PRECISION_DEFINITION = (
-    "precision = supported / (supported + not_actionable), and duplicate and needs_review reports are excluded "
-    "from the ratio and counted separately"
-)
 _TOKENS = ("input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens")
 
 
@@ -36,7 +32,6 @@ class RunSummary:
     reports: int
     issues: dict[str, int]
     precision: float | None
-    precision_definition: str
     ledger_rounds: list[tuple[str, str]]
     cost: dict[str, object]
     adjudications: list[Adjudication]
@@ -89,7 +84,6 @@ def summarize(cases: dict[str, BenchmarkCase], runs: Path, calls: Sequence[Path]
             "mixed_issues": sum(item.mixed_issues for item in adjudicated),
         },
         precision=round(counts["supported"] / judged, 4) if judged and not pending else None,
-        precision_definition=PRECISION_DEFINITION,
         ledger_rounds=sorted({(item.round_id, item.rubric_sha256) for item in adjudicated}),
         cost=_cost(calls),
         adjudications=adjudicated,
@@ -144,7 +138,6 @@ def format_summary(summary: RunSummary) -> str:
     """Render one run for the terminal."""
     recall = summary.recall
     precision = "unknown" if summary.precision is None else f"{summary.precision:.1%}"
-    verdicts = ", ".join(f"{name} {count}" for name, count in summary.verdicts.items())
     lines = [
         f"=== run: {summary.runs} ===",
         f"  cases {summary.cases}, adjudicated attempts {summary.attempts}, "
@@ -165,8 +158,6 @@ def format_summary(summary: RunSummary) -> str:
         f"  report precision {precision} = supported {counts['supported']} / (supported {counts['supported']} "
         f"+ not_actionable {counts['not_actionable']}), over {summary.reports} reports",
         f"    excluded from precision: duplicate {counts['duplicate']}, needs_review {counts['needs_review']}",
-        f"    {summary.precision_definition}",
-        f"  verdicts: {verdicts}",
         f"  issues {summary.issues['issues']}: duplicate issues {summary.issues['duplicate_issues']}, "
         f"mixed issues {summary.issues['mixed_issues']}",
     ]

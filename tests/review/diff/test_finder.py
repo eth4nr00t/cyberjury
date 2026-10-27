@@ -79,7 +79,7 @@ def test_diff_review_corrects_one_anchor_that_is_not_an_exact_changed_line():
     assert len(findings) == 1
     assert findings[0].change_anchor is not None
     assert findings[0].change_anchor.line == 1
-    assert "Exact changed ranges for `app.py` are: new lines 1" in provider.calls[1]["messages"][0].content
+    assert "Exact changed ranges for `app.py` are: new lines 1" in provider.calls[1]["prompt"]
 
 
 def test_diff_review_preserves_a_valid_sibling_during_anchor_correction():
@@ -105,7 +105,7 @@ def test_diff_review_preserves_a_valid_sibling_during_anchor_correction():
     findings = _run(finder(provider), SQL_DIFF)
 
     assert [finding.evidence for finding in findings] == ["first unsafe operation", "second unsafe operation"]
-    correction = provider.calls[1]["messages"][0].content
+    correction = provider.calls[1]["prompt"]
     assert f"cannot be edited or withdrawn. {MERGE_RULE} Return only new findings." in correction
     assert '"title": "unsafe changed operation"' in correction
 

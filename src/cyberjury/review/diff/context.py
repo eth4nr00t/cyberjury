@@ -22,7 +22,6 @@ from cyberjury.review.diff.model import (
     ChangedLineRanges,
     DiffUnit,
     changed_line_ranges,
-    reviewable_changed_paths,
 )
 from cyberjury.review.diff.prompts import diff_seed
 from cyberjury.review.paths import read_repository_source
@@ -41,19 +40,16 @@ def ground_diff_unit(unit: DiffUnit, shared: SharedGrounding) -> GroundingContex
     diff, definition_plan = unit.diff, unit.definition_plan
     root = shared.root
     relationships = shared.facts.relationships
-    paths = reviewable_changed_paths(diff, shared.detection)
+    paths = unit.paths
     seed = diff_seed(diff)
-    ranges = changed_line_ranges(diff, shared.detection)
+    ranges = changed_line_ranges(diff)
     evidence = definition_evidence(root, definition_plan)
     candidate = (
         candidate_call_context(
             root,
             definition_plan,
             relationships,
-            max_chars=min(
-                _SETTINGS.max_relationship_chars_per_unit,
-                _SETTINGS.target_repository_context_chars_per_unit,
-            ),
+            max_chars=_SETTINGS.target_repository_context_chars_per_unit,
             callsite_ids=_callsite_ids_in_ranges(root, relationships, ranges),
             catalog=evidence,
             deliver_chars=_EXECUTION.max_initial_candidate_source_chars,
@@ -83,7 +79,6 @@ def ground_diff_unit(unit: DiffUnit, shared: SharedGrounding) -> GroundingContex
             max_chars_per_file=_EXECUTION.max_syntax_hint_chars_per_file,
         ),
         navigator=shared.navigator,
-        source_snapshot=shared.snapshot,
     )
     planned_scope_files = tuple(
         dict.fromkeys((*files, *definition_plan_source_files(definition_plan), *candidate.source_files))

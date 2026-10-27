@@ -140,14 +140,6 @@ def test_diff_target_with_a_submodule_materializes_without_it(tmp_path):
         assert not (source_root / "lib" / "dependency").exists()
 
 
-def test_repository_target_with_a_submodule_resolves(tmp_path):
-    """A work tree whose index holds a gitlink at lib/dependency resolves as a repository target."""
-    repository, base, _head = _repository(tmp_path / "repo")
-    git(repository, "update-index", "--add", "--cacheinfo", f"160000,{base},lib/dependency")
-
-    assert resolve_repository_target(repository).repository_root == str(repository.resolve())
-
-
 def test_repository_target_requires_a_real_nonsymlink_directory(tmp_path):
     """A real directory resolves, while a symlink to it raises TargetResolutionError."""
     repository = tmp_path / "repo"

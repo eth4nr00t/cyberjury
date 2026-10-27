@@ -10,14 +10,14 @@ from typing import Literal, Protocol
 
 from cyberjury.canonical import canonical_sha256
 from cyberjury.numbering import numbered_source, split_lines
-from cyberjury.providers.base import Message, Provider, ProviderAccessError, ResponseSchema
+from cyberjury.providers.base import Provider, ProviderAccessError, ResponseSchema
 from cyberjury.providers.metering import model_call_context, model_call_scope
 from cyberjury.record import Record, RecordError, error_message, utc_timestamp
 from cyberjury.review.failures import exception_reason
 from cyberjury.review.finding import Finding, report_order
 from cyberjury.review.items import ItemStore
-from cyberjury.review.paths import normalized_location_path, resolve_source_path
-from cyberjury.review.prompts import CLAIM_FIELDS, UNTRUSTED_SOURCE_RULE, fenced_source, finding_claim
+from cyberjury.review.paths import resolve_source_path
+from cyberjury.review.prompts import UNTRUSTED_SOURCE_RULE, fenced_source, one_line_source
 from cyberjury.review.recorder import Recorder
 from cyberjury.review.replies import parse_role_response
 from cyberjury.review.schemas import closed_object
@@ -52,7 +52,7 @@ class Issue:
 
 
 def _group_key(finding: Finding) -> tuple[str, int, str]:
-    return (normalized_location_path(finding.file), finding.line, finding.category)
+    return (finding.file, finding.line, finding.category)
 
 
 def group_issues(findings: Sequence[Finding], links: Iterable[tuple[str, str]]) -> tuple[Issue, ...]:
@@ -91,8 +91,9 @@ def group_issues(findings: Sequence[Finding], links: Iterable[tuple[str, str]]) 
 
 
 def _covers(finding: Finding, other: Finding) -> bool:
-    file = normalized_location_path(other.file)
-    return any(span.file == file and span.start_line <= other.line <= span.end_line for span in finding.cited_spans)
+    return any(
+        span.file == other.file and span.start_line <= other.line <= span.end_line for span in finding.cited_spans
+    )
 
 
 def _shares_cited_source(first: Finding, second: Finding) -> bool:
@@ -145,12 +146,29 @@ _RESPONSE_SCHEMA = ResponseSchema(
 )
 
 
+_CLAIM_FIELDS = ("title", "category", "entrypoint", "location", "claimed evidence", "claimed attack path")
+
+
+def _claim(heading: str, finding: Finding) -> str:
+    values = (
+        finding.title,
+        finding.category,
+        finding.entrypoint,
+        f"{finding.file}:{finding.line}",
+        finding.evidence,
+        finding.attack_path,
+    )
+    return "\n".join(
+        (heading, *(f"- {label}: {one_line_source(value)}" for label, value in zip(_CLAIM_FIELDS, values, strict=True)))
+    )
+
+
 class IssueLinkError(RuntimeError):
     """An issue link judgment produced no usable decision."""
 
 
 def _source_window(root: str, finding: Finding) -> str:
-    path = resolve_source_path(root, normalized_location_path(finding.file))
+    path = resolve_source_path(root, finding.file)
     if path is None:
         raise IssueLinkError(f"source of {finding.file} is unavailable for the issue link judgment")
     try:
@@ -168,8 +186,8 @@ def _source_window(root: str, finding: Finding) -> str:
 def link_prompt(first: Finding, second: Finding, root: str) -> str:
     """Build the stable same-fix question for one candidate pair in candidate id order."""
     return _PROMPT_TEMPLATE.format(
-        first=finding_claim("Finding A:", first),
-        second=finding_claim("Finding B:", second),
+        first=_claim("Finding A:", first),
+        second=_claim("Finding B:", second),
         first_code=_source_window(root, first),
         second_code=_source_window(root, second),
     )
@@ -221,7 +239,7 @@ class ModelIssueJudge:
                 "model": self._model,
                 "max_tokens": _SETTINGS.max_output_tokens,
                 "system": _SYSTEM,
-                "finding_fields": list(CLAIM_FIELDS),
+                "finding_fields": list(_CLAIM_FIELDS),
                 "prompt_template": _PROMPT_TEMPLATE,
                 "response_schema": _RESPONSE_SCHEMA.schema,
             }
@@ -232,7 +250,7 @@ class ModelIssueJudge:
         with model_call_context(role="issue linker", trigger="issue_link", candidate_id=pair[0]):
             result = self._provider.complete(
                 system=_SYSTEM,
-                messages=[Message(role="user", content=prompt)],
+                prompt=prompt,
                 model=self._model,
                 max_tokens=_SETTINGS.max_output_tokens,
                 response_schema=_RESPONSE_SCHEMA,

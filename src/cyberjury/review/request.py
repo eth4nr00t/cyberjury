@@ -124,22 +124,16 @@ class ReviewAttemptRequest:
     @property
     def judgment_configuration_sha256(self) -> str:
         """Identify policy that controls reusable repository judgment results."""
-        providers = self.providers.to_dict()
-        semantic = {
-            "provider_seat": providers["seat"],
-            "engine_version": self.engine_version,
-        }
-        return canonical_sha256(semantic)
+        return canonical_sha256({"provider_seat": self.providers.seat.to_dict(), "engine_version": self.engine_version})
 
     def semantic_dict(self) -> dict[str, object]:
         """Return the command fields that request_sha256 covers."""
-        semantic = {
+        return {
             "engine_version": self.engine_version,
             "concurrency": self.concurrency.to_dict(),
             "fresh": self.fresh,
             "providers": self.providers.to_dict(),
         }
-        return semantic
 
     def to_dict(self) -> dict[str, object]:
         """Return the complete strict attempt request."""

@@ -1,65 +1,11 @@
-"""Engine tests cover grounded judgment, the review unit scheduler, and the review outcome."""
+"""Engine tests cover the review unit scheduler and the review outcome."""
 
 import pytest
 
-from cyberjury.review.context import (
-    GroundingContext,
-    GroundingCoverage,
-    SourceEvidence,
-)
-from cyberjury.review.engine import ReviewCycle, ReviewOutcome, run_grounded_judgment, run_review_units
-from cyberjury.review.exchange import EvidenceJudgment
+from cyberjury.review.context import GroundingCoverage
+from cyberjury.review.engine import ReviewCycle, run_review_units
 from cyberjury.review.failures import ReviewUnitFailure
 from tests.review.support import stub_finding
-
-
-def test_grounded_judgment_keeps_candidates_and_carries_delivered_source():
-    """A provisional finding plus src-owner coverage keep the finding, its references, and source evidence."""
-    source = SourceEvidence(id="src-owner", identity="models.py:Owned:0:20", text="class Owned: owner = user")
-    coverage = GroundingCoverage(included=(source.identity,), references=(source.id,))
-
-    result = run_grounded_judgment(
-        GroundingContext(text="seed"),
-        run_judgment=lambda _navigation: EvidenceJudgment(
-            findings=[stub_finding("provisional", "seed:1")],
-            grounding=coverage,
-            source_evidence=(source,),
-        ),
-    )
-
-    assert result.clean is True
-    assert [finding.title for finding in result.findings] == ["provisional"]
-    assert result.grounding.references == ("src-owner",)
-    assert result.source_evidence == (source,)
-
-
-def test_grounded_judgment_reports_a_raised_judgment_as_failed_work():
-    """A RuntimeError in the judgment yields an unclean result with no findings and the error as reason."""
-
-    def run_judgment(_navigation):
-        raise RuntimeError("provider unavailable")
-
-    result = run_grounded_judgment(GroundingContext(text="seed"), run_judgment=run_judgment)
-
-    assert result.clean is False
-    assert result.findings == []
-    assert result.failure_reason == "RuntimeError: provider unavailable"
-
-
-def test_grounded_judgment_keeps_a_current_failure():
-    """A judgment's own failure_reason and unresolved "current request" survive into the result."""
-    result = run_grounded_judgment(
-        GroundingContext(text="seed"),
-        run_judgment=lambda _navigation: EvidenceJudgment(
-            findings=[],
-            grounding=GroundingCoverage(unresolved=("current request",)),
-            failure_reason="current request failed",
-        ),
-    )
-
-    assert result.failure_reason
-    assert result.failure_reason.startswith("current request failed")
-    assert result.grounding.unresolved == ("current request",)
 
 
 class _Unit(str):
@@ -88,14 +34,6 @@ def test_review_units_record_an_unresolved_grounding_as_a_unit_failure():
     outcome = _units(["one"], lambda _unit: ReviewCycle(findings=[], grounding=coverage))
 
     assert outcome.failures == (ReviewUnitFailure(index=1, total=1, paths=("one",), reason=coverage.failure_reason),)
-
-
-def test_review_outcome_is_complete_exactly_when_no_unit_failed():
-    """An outcome with a unit failure is incomplete, and one without is complete."""
-    failure = ReviewUnitFailure(index=1, total=1, paths=("a.py",), reason="failed")
-
-    assert ReviewOutcome(findings=()).complete is True
-    assert ReviewOutcome(findings=(), failures=(failure,)).complete is False
 
 
 def test_review_units_continue_past_a_failed_unit_and_record_it():

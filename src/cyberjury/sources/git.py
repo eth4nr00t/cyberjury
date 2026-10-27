@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -19,7 +18,6 @@ from cyberjury.sources.paths import (
     safe_link_target,
 )
 
-OBJECT_ID = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _MAX_GIT_BLOB_BYTES = 100_000_000
 _MAX_GIT_TREE_BYTES = 2_000_000_000
 _MAX_GIT_SYMLINK_BYTES = 4096
@@ -28,10 +26,10 @@ _MAX_PATCH_BYTES = 100_000_000
 _MAX_GIT_ERROR_BYTES = 1_000_000
 _GIT_ENV_OVERRIDES = {
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_DIR",
     "GIT_CONFIG_COUNT",
-    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_PARAMETERS",
     "GIT_CONFIG_SYSTEM",
+    "GIT_DIR",
     "GIT_INDEX_FILE",
     "GIT_OBJECT_DIRECTORY",
     "GIT_WORK_TREE",
@@ -57,19 +55,11 @@ def _git_environment() -> dict[str, str]:
 
 
 def _git(repository: str | Path, *arguments: str) -> str:
+    output = _git_limited_bytes(repository, arguments, limit=_MAX_GIT_LIST_BYTES, label="Git output")
     try:
-        return subprocess.run(
-            ["git", "--no-replace-objects", "-C", str(repository), *arguments],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="strict",
-            env=_git_environment(),
-        ).stdout
-    except (OSError, subprocess.CalledProcessError, UnicodeError) as exc:
-        detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
-        raise GitSourceError(f"Git source acquisition failed: {detail}") from exc
+        return output.decode("utf-8")
+    except UnicodeError as exc:
+        raise GitSourceError(f"Git source acquisition failed: {exc}") from exc
 
 
 def _git_limited_bytes(
@@ -81,7 +71,7 @@ def _git_limited_bytes(
 ) -> bytes:
     try:
         completed = subprocess.run(
-            ["git", "--no-replace-objects", "-C", str(repository), *arguments],
+            ["git", "-C", str(repository), *arguments],
             check=True,
             capture_output=True,
             env=_git_environment(),
@@ -101,10 +91,7 @@ def resolve_root(repository: str | Path) -> Path:
     requested = Path(repository).expanduser()
     if requested.is_symlink():
         raise GitSourceError("diff repository cannot be a symlink")
-    root = Path(_git(requested, "rev-parse", "--show-toplevel").strip()).resolve()
-    if not root.is_dir():
-        raise GitSourceError("Git top level is not an accessible directory")
-    return root
+    return Path(_git(requested, "rev-parse", "--show-toplevel").strip()).resolve()
 
 
 def object_format(repository: str | Path) -> str:
@@ -117,10 +104,7 @@ def object_format(repository: str | Path) -> str:
 
 def resolve_commit(repository: str | Path, revision: str) -> str:
     """Resolve one explicit revision to one immutable commit id."""
-    value = _git(repository, "rev-parse", "--verify", "--end-of-options", f"{revision}^{{commit}}").strip()
-    if not OBJECT_ID.fullmatch(value):
-        raise GitSourceError(f"Git revision did not resolve to one commit: {revision}")
-    return value
+    return _git(repository, "rev-parse", "--verify", "--end-of-options", f"{revision}^{{commit}}").strip()
 
 
 def merge_bases(repository: str | Path, left: str, right: str) -> tuple[str, ...]:
@@ -176,6 +160,8 @@ def canonical_patch(repository: str | Path, base_revision: str, head_revision: s
         "diff.mnemonicPrefix=false",
         "-c",
         "diff.noprefix=false",
+        "-c",
+        "diff.suppressBlankEmpty=false",
         "diff",
         "--no-ext-diff",
         "--no-textconv",
@@ -242,7 +228,7 @@ def _git_blobs(repository: str, revision: str) -> tuple[_GitBlob, ...]:
 
 
 def _write_git_blobs(repository: str, blobs: tuple[_GitBlob, ...], source_root: Path) -> None:
-    command = ["git", "--no-replace-objects", "-C", repository, "cat-file", "--batch"]
+    command = ["git", "-C", repository, "cat-file", "--batch"]
     try:
         process = subprocess.Popen(
             command,
@@ -265,7 +251,7 @@ def _write_git_blobs(repository: str, blobs: tuple[_GitBlob, ...], source_root: 
                 size = int(header[2])
             except ValueError as exc:
                 raise GitSourceError(f"Git blob size is invalid for {blob.path!r}") from exc
-            if size < 0 or size > _MAX_GIT_BLOB_BYTES:
+            if size > _MAX_GIT_BLOB_BYTES:
                 raise GitSourceError(f"Git blob exceeds the byte limit: {blob.path!r}")
             total_bytes += size
             if total_bytes > _MAX_GIT_TREE_BYTES:

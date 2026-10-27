@@ -45,9 +45,9 @@ def _source(root, file="views.py", lines=40):
 
 
 def test_findings_at_one_line_with_one_category_form_one_issue_and_keep_every_member():
-    """Two line-2 views.py reports (one as ./views.py) fold by location, and the line-9 report stays alone."""
+    """Two line-2 views.py reports fold by location, and the line-9 report stays alone."""
     first = _finding("save skips the owner check", line=2)
-    second = _finding("record save lacks authorization", file="./views.py", line=2)
+    second = _finding("record save lacks authorization", line=2)
     other = _finding("load skips the owner check", line=9)
 
     issues = group_issues([first, second, other], ())
@@ -188,7 +188,7 @@ def test_the_model_judge_asks_one_closed_schema_question_from_structured_fields_
     links = _link([view, model], judge, tmp_path)
 
     (call,) = provider.calls
-    prompt = call["messages"][0].content
+    prompt = call["prompt"]
     first, second = sorted((view, model), key=lambda item: item.candidate_id)
     assert prompt == link_prompt(first, second, str(tmp_path))
     assert prompt.startswith("Finding A:\n- title: ")

@@ -14,7 +14,6 @@ class DiffReviewSettings:
     max_full_source_chars_per_context_file: int = 12_000
     max_changed_source_prefix_chars: int = 3_000
     hunk_context_lines_per_side: int = 5
-    max_relationship_chars_per_unit: int = 60_000
     max_definition_evidence_items_per_unit: int = 64
 
 

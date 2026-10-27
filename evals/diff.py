@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 
 from cyberjury.review.command import ReviewCommand, run_review_command
@@ -16,25 +15,6 @@ from evals.benchmarks.cases import BenchmarkCase, validate_change_anchors
 from evals.benchmarks.targets import ensure_git_target_refs, git_target_root
 
 type Progress = Callable[[str], None]
-
-
-@dataclass(frozen=True, kw_only=True)
-class _CaseProgress:
-    progress: Progress
-    prefix: str
-    started: float
-
-    def say(self, text: str) -> None:
-        self.progress(f"{self.prefix} {text}")
-
-    def failed(self, error: str) -> None:
-        self.say(f"failed after {self._elapsed()}s: {error}")
-
-    def finished(self, reports: int) -> None:
-        self.say(f"finished in {self._elapsed()}s, reports={reports}")
-
-    def _elapsed(self) -> float:
-        return round(time.monotonic() - self.started, 3)
 
 
 def case_workspace(workspace: Path, case: BenchmarkCase, number: int) -> Path:
@@ -56,18 +36,15 @@ def run(
     records = []
     for number in range(1, runs + 1):
         for index, case in enumerate(cases, 1):
-            run_prefix = f"run {number}/{runs} " if runs > 1 else ""
-            status = _CaseProgress(
-                progress=progress,
-                prefix=f"{run_prefix}[{index}/{len(cases)}] {case.name}",
-                started=time.monotonic(),
-            )
-            status.say("started")
+            prefix = f"{f'run {number}/{runs} ' if runs > 1 else ''}[{index}/{len(cases)}] {case.name}"
+            progress(f"{prefix} started")
+            started = time.monotonic()
             record = _review_case(case, number, case_workspace(workspace, case, number), concurrency)
+            seconds = round(time.monotonic() - started, 3)
             if record["complete"]:
-                status.finished(len(record["findings"]))
+                progress(f"{prefix} finished in {seconds}s, reports={len(record['findings'])}")
             else:
-                status.failed(str(record["error"]))
+                progress(f"{prefix} failed after {seconds}s: {record['error']}")
             records.append(record)
             on_attempt(record)
     return records

@@ -1,4 +1,4 @@
-"""Relationship evidence keeps stable ids and rejects inconsistent source coordinates."""
+"""Relationship evidence keeps stable ids, explicit source hashes, and derived call candidates."""
 
 from cyberjury.review.relationships import (
     AnalysisObservation,
@@ -51,9 +51,8 @@ def test_relationship_evidence_has_stable_ids_and_explicit_source_hashes():
 
     assert bundle == _bundle()
     data = bundle.to_dict()
-    assert bundle.call_relationships[0].target_status == "candidate"
-    assert bundle.call_relationships[0].candidate_callee_definition_ids == (
-        next(item.id for item in bundle.definitions if item.name == "load"),
-    )
+    assert list(bundle.call_candidates.values()) == [
+        (next(item.id for item in bundle.definitions if item.name == "load"),)
+    ]
     assert len(data["definitions"][0]["source"]["content_sha256"]) == 64
     assert bundle.canonical().to_dict() == data

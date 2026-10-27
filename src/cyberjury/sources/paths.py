@@ -16,7 +16,7 @@ def portable_paths(files: Iterable[str]) -> tuple[str, ...]:
     """Return sorted unique canonical POSIX relative paths that stay inside their root."""
     normalized: list[str] = []
     for value in files:
-        if not isinstance(value, str) or not value or "\\" in value:
+        if not value or "\\" in value:
             raise SourceSnapshotError("snapshot file paths must be nonempty POSIX relative paths")
         path = PurePosixPath(value)
         try:

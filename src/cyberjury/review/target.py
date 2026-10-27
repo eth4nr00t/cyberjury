@@ -124,8 +124,8 @@ def resolve_repository_target(repository: str | Path) -> ResolvedTarget:
 
 
 def _parse_git_range(value: str) -> tuple[str, str, str]:
-    if not isinstance(value, str) or value != value.strip() or not value:
-        raise TargetResolutionError("git range must be a nonempty trimmed string")
+    if not value:
+        raise TargetResolutionError("git range must be nonempty")
     if any(character.isspace() or ord(character) < 32 for character in value):
         raise TargetResolutionError("git range cannot contain whitespace or control characters")
     if value.startswith("-"):
@@ -142,7 +142,7 @@ def _parse_git_range(value: str) -> tuple[str, str, str]:
         separator = "two-dot"
     else:
         raise TargetResolutionError("git range must use A..B or A...B")
-    if not left or not right or left.startswith("-") or right.startswith("-"):
+    if not left or not right or right.startswith("-"):
         raise TargetResolutionError("git range requires two explicit non-option endpoints")
     return left, right, separator
 
@@ -168,7 +168,7 @@ def resolve_diff_target(repository: str | Path, git_range: str) -> ResolvedTarge
         patch_text = canonical_patch(root, base_revision, head_revision)
     except GitSourceError as exc:
         raise TargetResolutionError(str(exc)) from exc
-    target = ResolvedTarget(
+    return ResolvedTarget(
         kind="diff",
         repository_root=str(root),
         git=GitTarget(
@@ -181,7 +181,6 @@ def resolve_diff_target(repository: str | Path, git_range: str) -> ResolvedTarge
         ),
         patch=PatchArtifact.from_text(patch_text),
     )
-    return target
 
 
 @contextlib.contextmanager

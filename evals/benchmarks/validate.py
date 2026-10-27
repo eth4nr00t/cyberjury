@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 
 import yaml
-from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema import Draft202012Validator
 
 _SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
 BENCHMARK_SCHEMA = "benchmark-v1.schema.json"
@@ -17,7 +17,7 @@ BENCHMARK_SCHEMA = "benchmark-v1.schema.json"
 def validate_document(data: object, schema_name: str, where: object) -> None:
     """Reject a document that its closed versioned schema does not accept."""
     schema = json.loads((_SCHEMA_DIR / schema_name).read_text(encoding="utf-8"))
-    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    validator = Draft202012Validator(schema)
     errors = sorted(validator.iter_errors(data), key=lambda error: list(error.absolute_path))
     if errors:
         detail = "; ".join(
@@ -59,12 +59,6 @@ def _validate_checks(case: dict) -> None:
     check_ids = [str(check["id"]) for check in case["checks"]]
     if len(check_ids) != len(set(check_ids)):
         raise ValueError(f"case {case['id']} has duplicate check ids")
-    for check in case["checks"]:
-        where = f"case {case['id']} check {check['id']}"
-        for index, location in enumerate(check["locations"]):
-            _normalized_path(location["file"], f"{where}.locations[{index}].file")
-        for index, anchor in enumerate(check.get("change_anchors", ())):
-            _normalized_path(anchor["file"], f"{where}.change_anchors[{index}].file")
 
 
 def _validate_source_locations(cases: list[dict], source_root: Path) -> None:
@@ -77,12 +71,6 @@ def _validate_source_locations(cases: list[dict], source_root: Path) -> None:
                 path = (source_root / rel).resolve()
                 if not path.is_file() or not path.is_relative_to(resolved_root):
                     raise ValueError(f"case {case['id']} check {check['id']} location does not exist: {rel}")
-
-
-def _normalized_path(value: str, where: str) -> None:
-    path = PurePosixPath(value)
-    if path.is_absolute() or ".." in path.parts or path.as_posix() != value or value == ".":
-        raise ValueError(f"{where} is not a normalized repository-relative path")
 
 
 def benchmark_path(path: str | Path) -> Path:

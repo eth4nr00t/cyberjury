@@ -39,20 +39,15 @@ def gather_context(unit: RepositoryUnit) -> GroundingContext:
 def ground_repository_unit(unit: RepositoryUnit, shared: SharedGrounding) -> GroundingContext:
     """Bind one planned unit to its complete initial evidence envelope."""
     context = gather_context(unit)
-    navigator = shared.navigator
     source_files = tuple(dict.fromkeys((*context.files, *definition_plan_source_files(unit.definition_plan))))
-    candidate = (
-        candidate_call_context(
-            unit.root,
-            unit.definition_plan,
-            navigator.relationship_evidence,
-            max_chars=_SETTINGS.max_relationship_chars_per_unit,
-            deliver_chars=_EXECUTION.max_initial_candidate_source_chars,
-        )
-        if navigator is not None
-        else None
+    candidate = candidate_call_context(
+        unit.root,
+        unit.definition_plan,
+        shared.facts.relationships,
+        max_chars=_SETTINGS.max_relationship_chars_per_unit,
+        deliver_chars=_EXECUTION.max_initial_candidate_source_chars,
     )
-    if candidate is not None and candidate.text:
+    if candidate.text:
         context = replace(
             context,
             text=candidate.text,
@@ -69,7 +64,6 @@ def ground_repository_unit(unit: RepositoryUnit, shared: SharedGrounding) -> Gro
             shared.facts.by_file,
             max_chars_per_file=_EXECUTION.max_syntax_hint_chars_per_file,
         ),
-        navigator=navigator,
-        source_snapshot=shared.snapshot,
+        navigator=shared.navigator,
         snapshot_files=source_files,
     )

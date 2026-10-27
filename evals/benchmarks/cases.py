@@ -91,12 +91,15 @@ def validate_change_anchors(case: BenchmarkCase, diff: str) -> None:
     """Reject change anchors absent from the patch the review reads."""
     if not any(check.change_anchors for check in case.checks):
         return
-    ranges = diff_line_ranges(diff, load_detection())
+    ranges = diff_line_ranges(diff)
+    detection = load_detection()
     sides = {"old": ranges.old, "new": ranges.new}
     for check in case.checks:
         for anchor in check.change_anchors:
             line_ranges = sides[anchor.side].get(anchor.file, ())
-            if any(start <= anchor.line <= end for start, end in line_ranges):
+            if not detection.is_noise_path(anchor.file) and any(
+                start <= anchor.line <= end for start, end in line_ranges
+            ):
                 continue
             raise ValueError(
                 f"diff case {case.name!r} check {check.id!r} change anchor "

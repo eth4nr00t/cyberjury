@@ -64,9 +64,9 @@ def finder_reply(
     )
 
 
-def prompt_unit(messages) -> str:
+def prompt_unit(prompt: str) -> str:
     """Return the source file of the code under review in one finder prompt."""
-    match = _SEED_FILE.search(messages[-1].content)
+    match = _SEED_FILE.search(prompt)
     if match is None:
         raise AssertionError("finder prompt has no code under review")
     return match.group(1)
@@ -75,8 +75,8 @@ def prompt_unit(messages) -> str:
 def unit_provider(reply_for: Callable[[str], UnitReply]) -> MockProvider:
     """Answer each finder call from its reviewed file, raising a returned exception."""
 
-    def respond(_system, messages):
-        reply = reply_for(prompt_unit(messages))
+    def respond(_system, prompt):
+        reply = reply_for(prompt_unit(prompt))
         if isinstance(reply, BaseException):
             raise reply
         return finder_reply(reply)

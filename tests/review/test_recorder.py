@@ -4,7 +4,7 @@ import io
 
 import pytest
 
-from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
+from cyberjury.providers.base import CompletionResult, Provider, Usage
 from cyberjury.providers.metering import MeteringProvider, UsageMeter, model_call_context, model_call_scope
 from cyberjury.record import RecordError
 from cyberjury.review import recorder as recorder_module
@@ -19,7 +19,7 @@ class _Provider(Provider):
 
 def _call(meter: UsageMeter) -> None:
     MeteringProvider(_Provider(), meter).complete(
-        system="s", messages=[Message(role="user", content="u")], model="m", max_tokens=8, response_schema=EMPTY_SCHEMA
+        system="s", prompt="u", model="m", max_tokens=8, response_schema=EMPTY_SCHEMA
     )
 
 

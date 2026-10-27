@@ -10,7 +10,7 @@ from threading import Lock
 from time import perf_counter
 
 from cyberjury.canonical import canonical_sha256
-from cyberjury.providers.base import CompletionResult, Message, Provider, ResponseSchema
+from cyberjury.providers.base import CompletionResult, Provider, ResponseSchema
 
 MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v1"
 
@@ -21,9 +21,9 @@ type ExchangeUpdate = Callable[[dict[str, object]], None]
 @dataclass(kw_only=True)
 class _ModelCallContext:
     role: str
-    trigger: str = "provider_request"
-    unit_id: str = ""
-    candidate_id: str = ""
+    trigger: str
+    unit_id: str
+    candidate_id: str
     record_parse: ParseUpdate | None = None
     record_exchange: ExchangeUpdate | None = None
 
@@ -125,7 +125,7 @@ class MeteringProvider(Provider):
         self,
         *,
         system: str,
-        messages: list[Message],
+        prompt: str,
         model: str,
         max_tokens: int,
         response_schema: ResponseSchema,
@@ -142,12 +142,12 @@ class MeteringProvider(Provider):
             "candidate_id": context.candidate_id if context is not None else "",
             "attempt": 1,
             "model": model,
-            "prompt_chars": len(system) + sum(len(message.content) for message in messages),
+            "prompt_chars": len(system) + len(prompt),
         }
         try:
             result = self._inner.complete(
                 system=system,
-                messages=messages,
+                prompt=prompt,
                 model=model,
                 max_tokens=max_tokens,
                 response_schema=response_schema,

@@ -17,10 +17,6 @@ def _normalized_file(file: str) -> str:
     return file.strip().replace("\\", "/")
 
 
-def _normalized_category(category: str) -> str:
-    return category.strip().lower().replace("_", "-")
-
-
 def _anchor_text(anchor: tuple[str, int, str] | None) -> str:
     return "\x1e".join(map(str, anchor)) if anchor is not None else ""
 
@@ -51,7 +47,7 @@ def candidate_identity(
             target,
             _normalized_file(file),
             str(line),
-            _normalized_category(category),
+            category,
             normalized_cause,
             attack_path_id,
             _anchor_text(anchor),
@@ -63,7 +59,5 @@ def candidate_identity(
 
 def location_fingerprint(*, file: str, line: int, category: str, anchor: tuple[str, int, str] | None) -> str:
     """Identify one problem across runs by its location, class, and change anchor, independent of its wording."""
-    material = "\x1f".join(
-        ("fingerprint-v1", _normalized_file(file), str(line), _normalized_category(category), _anchor_text(anchor))
-    )
+    material = "\x1f".join(("fingerprint-v1", _normalized_file(file), str(line), category, _anchor_text(anchor)))
     return f"fingerprint-{hashlib.sha256(material.encode('utf-8')).hexdigest()[:20]}"

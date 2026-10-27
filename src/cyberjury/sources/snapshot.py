@@ -73,8 +73,6 @@ def source_snapshot_files(root: str | Path) -> tuple[str, ...]:
         for name in sorted(names):
             path = current_path / name
             relative = path.relative_to(base)
-            if len(relative.parts) == 1 and relative.name == ".git":
-                continue
             if path.is_symlink():
                 if not _contained_file(base, path):
                     continue

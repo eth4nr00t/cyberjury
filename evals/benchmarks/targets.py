@@ -10,8 +10,6 @@ from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
 
-EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-
 
 def target_repository(target: Mapping[str, str]) -> Path:
     """Return the local repository path of a git target without touching it."""
@@ -35,7 +33,7 @@ def ensure_git_target_refs(target: Mapping[str, str], root: Path) -> None:
     if not target.get("url"):
         return
     for ref in (target.get("base"), target.get("commit")):
-        if ref and ref != EMPTY_TREE:
+        if ref:
             _ensure_commit(root, ref)
 
 

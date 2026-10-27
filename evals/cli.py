@@ -23,10 +23,6 @@ _EPILOG = (
 )
 
 
-def _cases(args) -> dict:
-    return load_cases(args.benchmark)
-
-
 def _write_new(path: Path, document: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8") as output:
@@ -38,7 +34,7 @@ def _progress(line: str) -> None:
 
 
 def _cmd_diff(args) -> int:
-    cases = [case for case in _cases(args).values() if case.kind == "diff"]
+    cases = [case for case in load_cases(args.benchmark).values() if case.kind == "diff"]
     if args.case:
         cases = [case for case in cases if case.name == args.case]
         if not cases:
@@ -92,7 +88,7 @@ def _cmd_repository(args) -> int:
 
 def _cmd_packets(args) -> int:
     counts = build_packets(
-        _cases(args),
+        load_cases(args.benchmark),
         [Path(path) for path in args.runs],
         Path(args.out),
         groups=args.groups,
@@ -118,7 +114,7 @@ def _cmd_packets(args) -> int:
 
 def _cmd_ledger(args) -> int:
     written, rejected = write_ledgers(
-        _cases(args),
+        load_cases(args.benchmark),
         Path(args.packets),
         mapping_path=Path(args.mapping) if args.mapping else None,
         supersede=args.supersede,
@@ -130,7 +126,7 @@ def _cmd_ledger(args) -> int:
 
 
 def _cmd_report(args) -> int:
-    summary = summarize(_cases(args), Path(args.runs), [Path(path) for path in args.calls])
+    summary = summarize(load_cases(args.benchmark), Path(args.runs), [Path(path) for path in args.calls])
     fails = failures(summary, precision_floor=args.precision_floor)
     print(format_summary(summary))
     print("report PASS" if not fails else f"report FAIL, {len(fails)} blocking")
@@ -142,7 +138,7 @@ def _cmd_report(args) -> int:
 
 
 def _cmd_list(args) -> int:
-    for case in _cases(args).values():
+    for case in load_cases(args.benchmark).values():
         print(f"{case.name:40} {case.kind:10} checks={len(case.checks)}")
     return 0
 
@@ -212,10 +208,12 @@ def main(argv: list[str] | None = None) -> int:
     packets_parser.add_argument(
         "--mapping", default=None, help="new private mapping path outside --out, default <out>.private/mapping.json"
     )
-    packets_parser.add_argument("--groups", type=int, default=1, help="number of packets to split the cases into")
+    packets_parser.add_argument(
+        "--groups", type=positive_int, default=1, help="number of packets to split the cases into"
+    )
     packets_parser.add_argument(
         "--max-reports",
-        type=int,
+        type=positive_int,
         default=None,
         help="split a case with more reports into entries of at most this many, each listing the others",
     )
@@ -277,7 +275,3 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     return args.func(args)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

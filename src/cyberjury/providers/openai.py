@@ -8,7 +8,6 @@ from typing import Any
 from cyberjury.providers.base import (
     REQUEST_TIMEOUT_SECONDS,
     CompletionResult,
-    Message,
     Provider,
     ResponseSchema,
     Usage,
@@ -46,7 +45,7 @@ class OpenAIProvider(Provider):
         self,
         *,
         system: str,
-        messages: list[Message],
+        prompt: str,
         model: str,
         max_tokens: int,
         response_schema: ResponseSchema,
@@ -57,7 +56,7 @@ class OpenAIProvider(Provider):
         response = self._get_client().responses.create(
             model=model,
             instructions=system,
-            input=[{"role": message.role, "content": message.content} for message in messages],
+            input=[{"role": "user", "content": prompt}],
             max_output_tokens=max(max_tokens, _RESPONSES_MIN_OUTPUT_TOKENS),
             timeout=self._timeout,
             prompt_cache_key=hashlib.sha256(f"{system}\x00{cache_prefix}".encode()).hexdigest()[:32],

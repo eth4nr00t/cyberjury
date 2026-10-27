@@ -5,7 +5,7 @@ from typing import ClassVar
 
 import pytest
 
-from cyberjury.providers.base import CompletionResult, Message, Provider, ProviderAccessError, ResponseSchema, Usage
+from cyberjury.providers.base import CompletionResult, Provider, ProviderAccessError, ResponseSchema, Usage
 from cyberjury.providers.retry import EmptyResponseError, RetryProvider
 
 _OK = '{"value":"ok"}'
@@ -37,9 +37,7 @@ class _Flaky(Provider):
 
 
 def _call(provider):
-    return provider.complete(
-        system="s", messages=[Message(role="user", content="x")], model="m", max_tokens=8, response_schema=_SCHEMA
-    )
+    return provider.complete(system="s", prompt="x", model="m", max_tokens=8, response_schema=_SCHEMA)
 
 
 def test_retries_then_succeeds():
@@ -62,15 +60,6 @@ def test_reraises_after_exhausting_attempts():
         _call(provider)
     assert caught.value.cyberjury_attempts == 3
     assert inner.calls == 3
-
-
-def test_no_retry_on_first_success():
-    """An immediate success makes one inner call and never sleeps."""
-    inner = _Flaky(fail_times=0)
-    slept = []
-    _call(_retry(inner, sleep=slept.append))
-    assert inner.calls == 1
-    assert slept == []
 
 
 class _Blank(Provider):

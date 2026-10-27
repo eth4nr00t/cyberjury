@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from cyberjury.review.definitions import DefinitionUnitPlan, definitions_by_name
-from cyberjury.review.detection import Detection
 from cyberjury.review.diff.model import (
     ChangedLineRanges,
     DiffUnit,
@@ -26,47 +25,22 @@ def build_diff_units(
     diff: str,
     *,
     root: Path,
-    detection: Detection,
     definitions: tuple[DefinitionEvidence, ...],
 ) -> list[DiffUnit]:
     """Plan diff units without reading or rendering their initial grounding."""
-    if not diff.strip():
-        return []
     paths = diff_paths(diff)
     chunks_by_path = {chunk_path(chunk): chunk for chunk in split_diff_by_file(diff)}
-    ranges = changed_line_ranges(diff, detection)
+    ranges = changed_line_ranges(diff)
     seeds = changed_definitions(root, paths, ranges, definitions)
-    plans = _pack_surface_plans(list(plan_definition_units(seeds, seed_files=paths)), chunks_by_path)
-    covered = {
-        file
-        for plan in plans
-        for file in (
-            *(seed.source.path for seed in plan.seeds),
-            *plan.seed_files,
-        )
-    }
+    plans = _pack_surface_plans(list(plan_definition_units(seeds)), chunks_by_path)
+    covered = {seed.source.path for plan in plans for seed in plan.seeds}
     fallback_diff = "".join(chunks_by_path[path] for path in paths if path not in covered)
     fallback_batches = pack_diff_chunks(fallback_diff, _SETTINGS.target_patch_chars_per_unit)
     provisional: list[tuple[str, tuple[str, ...], DefinitionUnitPlan]] = []
     for plan in plans:
-        unit_paths = tuple(
-            dict.fromkeys(
-                file
-                for file in (
-                    *(seed.source.path for seed in plan.seeds),
-                    *plan.seed_files,
-                )
-                if file in chunks_by_path
-            )
-        )
-        unit_diff = "".join(chunks_by_path[path] for path in unit_paths)
-        if unit_diff:
-            batches = (
-                pack_diff_chunks(unit_diff, _SETTINGS.target_patch_chars_per_unit)
-                if len(unit_paths) == 1
-                else [unit_diff]
-            )
-            provisional.extend((batch, diff_paths(batch), plan) for batch in batches)
+        unit_diff = "".join(chunks_by_path[path] for path in dict.fromkeys(seed.source.path for seed in plan.seeds))
+        batches = pack_diff_chunks(unit_diff, _SETTINGS.target_patch_chars_per_unit)
+        provisional.extend((batch, diff_paths(batch), plan) for batch in batches)
     provisional.extend(
         (batch, diff_paths(batch), DefinitionUnitPlan(seed_files=diff_paths(batch))) for batch in fallback_batches
     )
@@ -83,25 +57,15 @@ def build_diff_units(
     ]
 
 
-def plan_definition_units(
-    seeds: tuple[DefinitionEvidence, ...],
-    *,
-    seed_files: tuple[str, ...],
-) -> tuple[DefinitionUnitPlan, ...]:
+def plan_definition_units(seeds: tuple[DefinitionEvidence, ...]) -> tuple[DefinitionUnitPlan, ...]:
     """Build one plan per seed file, in seed order, holding that file's seed definitions."""
-    plans = []
-    for anchor in dict.fromkeys(seed.source.path for seed in seeds):
-        anchor_seeds = tuple(seed for seed in seeds if seed.source.path == anchor)
-        plans.append(
-            DefinitionUnitPlan(
-                seeds=anchor_seeds,
-                seed_files=(anchor,) if anchor in seed_files else (),
-            )
-        )
-    return tuple(plans)
+    return tuple(
+        DefinitionUnitPlan(seeds=tuple(seed for seed in seeds if seed.source.path == anchor), seed_files=(anchor,))
+        for anchor in dict.fromkeys(seed.source.path for seed in seeds)
+    )
 
 
-def merge_definition_unit_plans(
+def _merge_definition_unit_plans(
     left: DefinitionUnitPlan,
     right: DefinitionUnitPlan,
 ) -> DefinitionUnitPlan:
@@ -122,9 +86,10 @@ def _pack_surface_plans(
         if current is None:
             current = plan
             continue
-        candidate = merge_definition_unit_plans(current, plan)
-        candidate_paths = tuple(dict.fromkeys((*(seed.source.path for seed in candidate.seeds), *candidate.seed_files)))
-        patch_chars = sum(len(chunks_by_path.get(path, "")) for path in candidate_paths)
+        candidate = _merge_definition_unit_plans(current, plan)
+        patch_chars = sum(
+            len(chunks_by_path[path]) for path in dict.fromkeys(seed.source.path for seed in candidate.seeds)
+        )
         if (
             patch_chars > _SETTINGS.target_patch_chars_per_unit
             or len(candidate.seeds) > _SETTINGS.max_definition_evidence_items_per_unit

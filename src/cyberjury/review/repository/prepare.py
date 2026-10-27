@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from cyberjury.review.detection import detection_for
 from cyberjury.review.prepare import PreparedReview, ReviewPlan, SharedGrounding, prepare_review
 from cyberjury.review.recorder import Recorder
 from cyberjury.review.repository.context import ground_repository_unit
@@ -21,4 +22,10 @@ def plan_repository_units(shared: SharedGrounding) -> ReviewPlan[RepositoryUnit]
 
 def prepare_repository_review(snapshot: SourceSnapshot, *, recorder: Recorder) -> PreparedReview[RepositoryUnit]:
     """Extract facts, plan bounded units, and ground every unit of one captured repository source."""
-    return prepare_review(snapshot, plan=plan_repository_units, ground=ground_repository_unit, recorder=recorder)
+    return prepare_review(
+        snapshot,
+        plan=plan_repository_units,
+        ground=ground_repository_unit,
+        detection=detection_for(snapshot.root, snapshot.files),
+        recorder=recorder,
+    )

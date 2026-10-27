@@ -5,37 +5,36 @@ description = "AI-assisted security review for code diffs and repositories."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
-license-files = ["LICENSE"]
 authors = [{ name = "eth4nr00t" }]
 keywords = ["appsec", "security", "code review", "llm"]
 classifiers = [
-    "Intended Audience :: Developers",
-    "Topic :: Security",
-    "Topic :: Software Development :: Quality Assurance",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
-    "Operating System :: OS Independent",
+  "Intended Audience :: Developers",
+  "Topic :: Security",
+  "Topic :: Software Development :: Quality Assurance",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Operating System :: OS Independent",
 ]
 dependencies = [
-    "pyyaml>=6.0",
-    "anthropic>=0.40",
-    "openai>=1.0",
-    "python-dotenv>=1.0,<2",
-    "tree-sitter>=0.25",
-    "tree-sitter-python>=0.23",
-    "tree-sitter-javascript>=0.23",
-    "tree-sitter-typescript>=0.23",
-    "tree-sitter-go>=0.23",
-    "tree-sitter-rust>=0.23",
-    "tree-sitter-java>=0.23",
-    "tree-sitter-c>=0.23",
-    "tree-sitter-cpp>=0.23",
-    "tree-sitter-solidity>=1.2.13",
+  "anthropic>=0.40",
+  "openai>=1.0",
+  "python-dotenv>=1.0,<2",
+  "pyyaml>=6.0",
+  "tree-sitter>=0.25",
+  "tree-sitter-c>=0.23",
+  "tree-sitter-cpp>=0.23",
+  "tree-sitter-go>=0.23",
+  "tree-sitter-java>=0.23",
+  "tree-sitter-javascript>=0.23",
+  "tree-sitter-python>=0.23",
+  "tree-sitter-rust>=0.23",
+  "tree-sitter-solidity>=1.2.13",
+  "tree-sitter-typescript>=0.23",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.16", "pre-commit>=3.5", "jsonschema>=4.0"]
+dev = ["jsonschema>=4.0", "pre-commit>=3.5", "pytest>=8.0", "ruff>=0.16"]
 
 [project.scripts]
 cyberjury = "cyberjury.cli:main"
@@ -54,9 +53,9 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 cyberjury = [
-    "review/contract/*.md",
-    "review/contract/detection.yaml",
-    "review/contract/languages/*.yaml",
+  "review/contract/*.md",
+  "review/contract/detection.yaml",
+  "review/contract/languages/*.yaml",
 ]
 
 [tool.pytest.ini_options]

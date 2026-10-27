@@ -54,7 +54,7 @@ class Detection:
 
     def is_test_path(self, path: str) -> bool:
         """Return whether a path matches a test directory or file naming convention."""
-        parts = path.replace("\\", "/").split("/")
+        parts = path.split("/")
         if any(p in self.test_dirs for p in parts[:-1]):
             return True
         name = parts[-1].lower()
@@ -69,7 +69,6 @@ class Detection:
 
     def is_noise_path(self, path: str) -> bool:
         """Return whether a path is excluded from security review."""
-        path = path.replace("\\", "/")
         name = PurePosixPath(path).name
         return (
             self.is_ignored(path)

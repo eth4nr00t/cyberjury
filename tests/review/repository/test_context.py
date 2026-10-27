@@ -8,6 +8,7 @@ from cyberjury.review.facts import FactLimitation, Facts
 from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.relationships import (
     DefinitionEvidence,
+    RelationshipEvidenceBundle,
     SourceReference,
 )
 from cyberjury.review.repository.context import (
@@ -23,7 +24,8 @@ from tests.support import MockProvider
 
 
 def _ground(unit, *, facts_by_file, limitations, navigator, snapshot):
-    facts = Facts(by_file=facts_by_file, limitations=limitations)
+    relationships = navigator.relationship_evidence if navigator is not None else RelationshipEvidenceBundle()
+    facts = Facts(by_file=facts_by_file, relationships=relationships, limitations=limitations)
     shared = shared_grounding(Path(unit.root), facts=facts, navigator=navigator, snapshot=snapshot)
     return replace(unit, grounding=ground_repository_unit(unit, shared))
 
@@ -130,7 +132,7 @@ def test_repository_reviewer_keeps_embedded_markdown_fence_in_source(tmp_path):
 
     review(finder(provider), source_unit(tmp_path, "app.py", name="app.py"))
 
-    prompt = provider.calls[0]["messages"][0].content
+    prompt = provider.calls[0]["prompt"]
     assert "Code under review, cited as `seed`:\n~~~\n# file: app.py" in prompt
     assert 'marker = "```"' in prompt
 
@@ -142,13 +144,13 @@ def test_repository_prompt_never_carries_the_unit_name(tmp_path):
 
     review(finder(provider), source_unit(tmp_path, "app.py", name="app`unit\nnext heading"))
 
-    prompt = provider.calls[0]["messages"][0].content
+    prompt = provider.calls[0]["prompt"]
     assert "app`unit" not in prompt
     assert "next heading" not in prompt
 
 
 def _prompt_of(prov):
-    return prov.calls[0]["messages"][0].content
+    return prov.calls[0]["prompt"]
 
 
 def _grounded(tmp_path, name, facts_by_file):
@@ -225,15 +227,6 @@ def test_reviewer_adds_no_facts_block_without_a_map(tmp_path):
     prov = MockProvider(default=EMPTY_REPLY)
     review(finder(prov), _grounded(tmp_path, "v.py", {}))
     assert "syntax hints" not in _prompt_of(prov)
-
-
-def test_grounding_does_not_guess_facts_from_a_matching_basename(tmp_path):
-    """Facts keyed by src/views.py are not applied to a root-level views.py unit."""
-    (tmp_path / "views.py").write_text("def show():\n    return 1\n")
-
-    grounded = _grounded(tmp_path, "views.py", {"src/views.py": "def show()  marker"})
-
-    assert grounded.grounding.syntax_hints == ""
 
 
 def test_grounding_uses_only_the_exact_facts_path_when_basenames_repeat(tmp_path):

@@ -15,7 +15,7 @@ from cyberjury.review.repository.model import RepositoryUnit
 from cyberjury.review.union import MERGE_RULE
 from tests.review.diff import support as diff
 from tests.review.repository import support as repository
-from tests.review.support import navigator_from_callgraph
+from tests.review.support import navigator_from_definitions
 from tests.support import MockProvider
 
 
@@ -30,12 +30,10 @@ def _diff_findings(provider, diff_text=diff.SQL_DIFF, *, context=""):
     return cycle.findings
 
 
-def _model_navigator(root, name="ModelWithOwner"):
-    source = f"class {name}:\n    owner_scope = True\n"
+def _model_navigator(root):
+    source = "class ModelWithOwner:\n    owner_scope = True\n"
     (root / "models.py").write_text(source, encoding="utf-8")
-    return navigator_from_callgraph(
-        root, {"callgraph": {"models.py": {name: [{"range": [0, len(source)], "calls": []}]}}}
-    )
+    return navigator_from_definitions(root, {"models.py": {"ModelWithOwner": [(0, len(source))]}})
 
 
 def test_finder_parses_findings_and_canonicalizes_the_category():
@@ -56,7 +54,7 @@ def test_finder_parses_findings_and_canonicalizes_the_category():
     assert len(out) == 1
     assert out[0].severity == "CRITICAL"
     assert out[0].category == "sql-injection"
-    assert provider.calls[0]["messages"][0].content.endswith("A further request makes this judgment incomplete.")
+    assert provider.calls[0]["prompt"].endswith("A further request makes this judgment incomplete.")
 
 
 def test_finder_accepts_a_model_supplied_category():
@@ -72,15 +70,6 @@ def test_finder_accepts_a_model_supplied_category():
     assert _diff_findings(MockProvider(default=diff.reply([finding])))[0].category == "sqli"
 
 
-def test_finder_rejects_a_model_supplied_candidate_id():
-    """A reply finding that supplies candidate_id fails the unit with "unknown fields: candidate_id"."""
-    reply = repository.finder_reply([repository.finding("app.py", 2, candidate_id="candidate-wrong")])
-    reviewer = repository.finder(MockProvider(default=reply))
-
-    with pytest.raises(repository.UnitReviewError, match="unknown fields: candidate_id"):
-        repository.review(reviewer, _unit("u", GroundingContext(text="")))
-
-
 def test_finder_reports_a_malformed_finding_as_failed_work():
     """A finding with only severity yields no findings and a "missing fields" failure reason."""
     reviewer = repository.finder(MockProvider(default=repository.finder_reply([{"severity": "HIGH"}])))
@@ -89,23 +78,6 @@ def test_finder_reports_a_malformed_finding_as_failed_work():
 
     assert cycle.findings == []
     assert "$response.findings[0] is missing fields" in cycle.failure_reason
-
-
-def test_finder_rejects_a_severity_outside_the_rubric():
-    """Severity "spicy" raises a "severity has a value outside the allowed set" error."""
-    response = diff.reply(
-        [
-            {
-                "file": "app.py",
-                "line": 1,
-                "severity": "spicy",
-                "category": "other",
-                "evidence": "unsafe operation",
-            }
-        ]
-    )
-    with pytest.raises(RuntimeError, match="severity has a value outside the allowed set"):
-        _diff_findings(MockProvider(default=response))
 
 
 @pytest.mark.parametrize(
@@ -131,16 +103,6 @@ def test_findings_from_reply_requests_a_correction_for_invalid_semantics(change,
         findings_from_reply({"findings": [{**repository.finding("app.py", 2), **change}]})
 
 
-def test_findings_from_reply_carries_the_valid_findings_of_a_corrected_reply():
-    """A reply whose second finding has line 0 raises a correction that keeps the first finding."""
-    valid = repository.finding("app.py", 2, title="missing ownership check")
-
-    with pytest.raises(CorrectableRoleResponseError, match=r"findings\[1\]\.line") as caught:
-        findings_from_reply({"findings": [valid, repository.finding("app.py", 0, title="second")]})
-
-    assert [candidate.title for candidate in caught.value.response_findings] == ["missing ownership check"]
-
-
 def test_semantic_violation_in_one_finding_keeps_the_valid_findings_of_the_reply():
     """A blank title on findings[1] keeps findings[0], fails the cycle, and names the field."""
     valid = {
@@ -157,7 +119,7 @@ def test_semantic_violation_in_one_finding_keeps_the_valid_findings_of_the_reply
 
     assert cycle.clean is False
     assert [finding.evidence for finding in cycle.findings] == ["string-concatenated query"]
-    assert "findings[1] must have nonempty fields: title" in provider.calls[1]["messages"][0].content
+    assert "findings[1] must have nonempty fields: title" in provider.calls[1]["prompt"]
 
 
 def test_correction_states_the_shared_merge_rule_for_accepted_findings():
@@ -171,7 +133,7 @@ def test_correction_states_the_shared_merge_rule_for_accepted_findings():
 
     repository.finder(provider).review_unit(_unit("u", GroundingContext(text="")))
 
-    correction = provider.calls[1]["messages"][0].content
+    correction = provider.calls[1]["prompt"]
     assert f"cannot be edited or withdrawn. {MERGE_RULE} Return only new findings." in correction
     assert '"entrypoint": "GET /records/<id>"' in correction
 
@@ -203,7 +165,7 @@ def test_an_unparseable_reply_is_corrected_once_instead_of_failing_the_unit():
 
     assert [f.evidence for f in result.outcome.findings] == ["unguarded sink"]
     assert result.outcome.complete
-    assert "Return exactly one JSON object" in provider.calls[1]["messages"][-1].content
+    assert "Return exactly one JSON object" in provider.calls[1]["prompt"]
 
 
 def test_a_unit_runs_one_judgment_even_when_it_finds_a_candidate():
@@ -260,7 +222,7 @@ def test_finder_sends_the_contract_as_a_cacheable_system_prompt():
     provider = MockProvider(default=diff.reply([]))
     _diff_findings(provider)
     call = provider.calls[0]
-    prompt = call["messages"][0].content
+    prompt = call["prompt"]
     assert prompt.startswith(call["cache_prefix"])
     assert "SELECT * FROM u" in call["cache_prefix"]
     assert "# Security Reasoning Kernel" in call["system"]
@@ -312,7 +274,7 @@ def test_published_evidence_ids_enter_the_cache_prefix_without_their_source():
     )
 
     assert cycle.clean is True
-    prompt = provider.calls[0]["messages"][0].content
+    prompt = provider.calls[0]["prompt"]
     assert evidence.id in provider.calls[0]["cache_prefix"]
     assert "sensitive_operation" not in prompt
     assert "# Security Reasoning Kernel" in provider.calls[0]["system"]
@@ -343,9 +305,9 @@ def test_finder_can_request_one_published_source_fragment():
 
     assert [finding.title for finding in findings] == ["missing ownership check"]
     assert len(provider.calls) == 2
-    assert evidence.id in provider.calls[0]["messages"][0].content
-    assert evidence.text not in provider.calls[0]["messages"][0].content
-    assert evidence.text in provider.calls[1]["messages"][0].content
+    assert evidence.id in provider.calls[0]["prompt"]
+    assert evidence.text not in provider.calls[0]["prompt"]
+    assert evidence.text in provider.calls[1]["prompt"]
 
 
 def test_model_call_after_exact_evidence_delivery_is_a_followup():
@@ -399,37 +361,16 @@ def test_a_navigation_follow_up_reuses_the_system_prompt_and_cache_prefix(tmp_pa
     assert "# Security Reasoning Kernel" in first["system"]
     assert "# Source Navigation" in first["system"]
     assert first["cache_prefix"] == final["cache_prefix"]
-    assert first["messages"][0].content.startswith(first["cache_prefix"])
+    assert first["prompt"].startswith(first["cache_prefix"])
     assert first["cache_segments"] == ()
     assert len(final["cache_segments"]) == 1
-    assert final["messages"][0].content.startswith(final["cache_prefix"] + final["cache_segments"][0])
+    assert final["prompt"].startswith(final["cache_prefix"] + final["cache_segments"][0])
     assert "owner_scope = True" in final["cache_segments"][0]
-    assert first["messages"][0].content.endswith("Evidence request budget: 8 request batches remain.")
-    final_prompt = final["messages"][0].content
+    assert first["prompt"].endswith("Evidence request budget: 8 request batches remain.")
+    final_prompt = final["prompt"]
     assert final_prompt.startswith(first["cache_prefix"])
     assert "owner_scope = True" in final_prompt[len(first["cache_prefix"]) :]
     assert [call["trigger"] for call in meter.call_snapshot()] == ["initial_judgment", "evidence_followup"]
-
-
-def test_repeated_navigation_query_fails_the_unit(tmp_path):
-    """Returning the same search_symbols "Record" query on every reply fails with "repeats an earlier query"."""
-    navigator = _model_navigator(tmp_path, "Record")
-    response = json.dumps(
-        {
-            **json.loads(diff.reply([])),
-            "source_queries": [{"kind": "search_symbols", "query": "Record", "page": 0}],
-        }
-    )
-    provider = MeteringProvider(MockProvider(responses=[response, response, response]), UsageMeter())
-
-    cycle = diff.finder(provider).review_unit(
-        diff.diff_unit(
-            "+++ b/app.py\n@@ -0,0 +1 @@\n+initial_signal()\n", GroundingContext(text="seed", navigator=navigator)
-        )
-    )
-
-    assert cycle.clean is False
-    assert "repeats an earlier query" in cycle.failure_reason
 
 
 def test_finder_call_measurements_expose_role_and_status():

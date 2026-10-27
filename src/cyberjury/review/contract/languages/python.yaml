@@ -22,9 +22,9 @@ syntax:
           [(identifier) @reference @target_name
            (attribute attribute: (identifier) @target_name) @reference])) @owner
   calls: |
-    (call function: (identifier) @callee arguments: (argument_list) @arguments) @call
+    (call function: (identifier) @callee arguments: (argument_list)) @call
     (call function: (attribute object: (_) @receiver attribute: (identifier) @member)
-      arguments: (argument_list) @arguments) @call
+      arguments: (argument_list)) @call
     (decorator (identifier) @callee) @call
   imports:
   - query: |

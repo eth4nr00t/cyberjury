@@ -73,6 +73,25 @@ def test_operator_git_diff_configuration_does_not_change_the_patch(tmp_path):
     assert canonical_patch(repo, base, head) == first
 
 
+@pytest.mark.parametrize("source", ["repository config", "parent git -c"])
+def test_suppress_blank_empty_never_drops_the_space_of_a_blank_context_line(monkeypatch, tmp_path, source):
+    """diff.suppressBlankEmpty from the repository config or a parent git -c keeps the blank context line marker."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "--quiet")
+    (repo / "app.py").write_text("a\n\nb\n", encoding="utf-8")
+    git(repo, "add", "app.py")
+    git(repo, "commit", "--quiet", "-m", "base")
+    (repo / "app.py").write_text("a\n\nc\n", encoding="utf-8")
+    git(repo, "commit", "--quiet", "-am", "head")
+    if source == "repository config":
+        git(repo, "config", "diff.suppressBlankEmpty", "true")
+    else:
+        monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'diff.suppressBlankEmpty'='true'")
+
+    assert "\n a\n \n-b\n+c\n" in canonical_patch(repo, "HEAD~1", "HEAD")
+
+
 def test_canonical_patch_keeps_the_default_rename_representation(tmp_path):
     """With diff.renames=false configured, the patch still shows rename from before.py to after.py."""
     repo = tmp_path / "repo"

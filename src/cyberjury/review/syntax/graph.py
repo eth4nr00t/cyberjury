@@ -21,19 +21,7 @@ from cyberjury.review.syntax.analyzer import (
 
 def facts_from_repository(repository: AnalyzedRepository) -> Facts:
     """Publish syntax evidence without claiming resolved relationships."""
-    if not repository.definitions and not any(
-        (
-            any(repository.imports.values()),
-            any(repository.namespaces.values()),
-            any(repository.qualified_uses.values()),
-        )
-    ):
-        return Facts()
-    return Facts(
-        by_file=render_by_file(repository),
-        relationships=relationship_evidence(repository).canonical(),
-        import_files=tuple(file for file, imports in repository.imports.items() if imports),
-    )
+    return Facts(by_file=render_by_file(repository), relationships=relationship_evidence(repository).canonical())
 
 
 def relationship_evidence(repository: AnalyzedRepository) -> RelationshipEvidenceBundle:
@@ -44,7 +32,7 @@ def relationship_evidence(repository: AnalyzedRepository) -> RelationshipEvidenc
     }
     calls: list[CallsiteEvidence] = []
     observations: list[AnalysisObservation] = []
-    extra_sources = _file_references(repository.sources)
+    extra_sources: dict[str, SourceReference] = {}
     for definition in definitions:
         analyzed = analyzed_by_id[definition.id]
         source = repository.sources[analyzed.file]
@@ -106,8 +94,7 @@ def _declaration_observations(
 ) -> tuple[AnalysisObservation, ...]:
     output: list[AnalysisObservation] = []
     for item in repository.imports.get(analyzed.file, ()):
-        local = item.local or item.imported
-        if not _owner_matches(item.owner, analyzed) or local not in {
+        if not _owner_matches(item.owner, analyzed) or item.local not in {
             callsite.callee_spelling,
             callsite.receiver_expression,
         }:
@@ -121,7 +108,7 @@ def _declaration_observations(
                 kind="import_declaration",
                 subject_ids=(callsite.id,),
                 provenance_source_ids=(definition.source.id, call_source.id, declaration.id),
-                label=f"{local} from {_module_name(item.module)}",
+                label=f"{item.local} from {_module_name(item.module)}",
             )
         )
     for item in repository.namespaces.get(analyzed.file, ()):
@@ -159,7 +146,7 @@ def _structural_relationships(
             relationship = StructuralRelationshipEvidence.create(
                 kind="import",
                 source=_source_reference(file, source, item.start, item.end),
-                reference=item.imported or item.local or _module_name(item.module),
+                reference=item.imported,
                 source_definition_id=_owner_id(file, item.owner, by_owner),
             )
             relationships.setdefault(relationship.id, relationship)
@@ -231,8 +218,6 @@ def _definition_evidences(
             kind = "file"
         elif definition.is_type:
             kind = "type"
-        elif definition.type_owner is not None or definition.has_receiver:
-            kind = "method"
         else:
             kind = "function"
         evidence = DefinitionEvidence.create(
@@ -246,16 +231,6 @@ def _definition_evidences(
         return evidence
 
     return tuple(build(definition) for definition in analyzed)
-
-
-def _file_references(sources: dict[str, str]) -> dict[str, SourceReference]:
-    references: dict[str, SourceReference] = {}
-    for path, content in sources.items():
-        if not content:
-            continue
-        reference = SourceReference.create(path=path, start=0, end=len(content), content=content)
-        references[reference.id] = reference
-    return references
 
 
 def _source_reference(path: str, source: str, start: int, end: int) -> SourceReference:
@@ -287,9 +262,7 @@ def render_by_file(repository: AnalyzedRepository) -> dict[str, str]:
             line += "  observes calls " + ", ".join(definition.calls)
         output.setdefault(definition.file, []).append(line)
     for file, imports in repository.imports.items():
-        values = tuple(
-            dict.fromkeys(f"{item.local or item.imported} from {_module_name(item.module)}" for item in imports)
-        )
+        values = tuple(dict.fromkeys(f"{item.local} from {_module_name(item.module)}" for item in imports))
         if values:
             output.setdefault(file, []).insert(0, "  observes imports " + ", ".join(values))
     for file, namespaces in repository.namespaces.items():

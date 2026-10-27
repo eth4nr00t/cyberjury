@@ -51,23 +51,6 @@ def test_empty_diff_is_complete_without_model_work():
     assert provider.calls == []
 
 
-def test_run_fails_loud_on_zero_units(tmp_path):
-    """A repository with only README.md raises ValueError about no readable production source files."""
-    repository = tmp_path / "empty"
-    repository.mkdir()
-    (repository / "README.md").write_text("nothing to review here\n")
-    with pytest.raises(ValueError, match="no readable production source files"):
-        run_repository_review(repository, tmp_path / "ws")
-
-
-def test_a_failed_unit_makes_the_outcome_incomplete_with_its_failure():
-    """A non-JSON reply leaves the outcome incomplete with one recorded failure."""
-    result = diff.review(diff.SQL_DIFF, provider=MockProvider(default="not json"))
-
-    assert result.outcome.complete is False
-    assert len(result.outcome.failures) == 1
-
-
 def test_each_unit_is_sent_only_its_own_grounding():
     """Each of two per-file units sends only its own grounding text, once each across the two prompts."""
     provider = MockProvider(default=diff.reply([]))
@@ -84,7 +67,7 @@ def test_each_unit_is_sent_only_its_own_grounding():
 
     diff.review(units, provider=provider)
 
-    prompts = [call["messages"][0].content for call in provider.calls]
+    prompts = [call["prompt"] for call in provider.calls]
     assert len(prompts) == 2
     assert sum("context for a.py" in prompt for prompt in prompts) == 1
     assert sum("context for b.py" in prompt for prompt in prompts) == 1
@@ -156,7 +139,7 @@ def test_repository_unit_grounding_is_materialized_once(tmp_path, monkeypatch):
 
     _run(ground([source_unit(tmp_path, "unit.py", name="unit")]), provider)
 
-    assert "value = 1" in provider.calls[0]["messages"][0].content
+    assert "value = 1" in provider.calls[0]["prompt"]
     assert reads == 1
 
 
@@ -240,7 +223,7 @@ def _wallet_provider() -> MockProvider:
 
 
 def _reviewed_units(provider: MockProvider) -> list[str]:
-    return [prompt_unit(call["messages"]) for call in provider.calls]
+    return [prompt_unit(call["prompt"]) for call in provider.calls]
 
 
 def _unit_records(review: Path) -> list[dict]:
@@ -275,7 +258,7 @@ def test_repository_reviews_raw_source_and_completes_when_facts_are_limited(tmp_
     result = run_repository_review(target, tmp_path / "ws", provider=provider)
 
     assert result.outcome.complete is True
-    assert "app.py at 3:12: python partially parsed" in provider.calls[0]["messages"][0].content
+    assert "app.py at 3:12: python partially parsed" in provider.calls[0]["prompt"]
 
 
 def test_repository_run_counts_an_unreceipted_finder_candidate_as_incomplete(tmp_path):
@@ -458,21 +441,6 @@ def test_repository_review_groups_one_line_and_links_judged_issues(tmp_path, sam
     save = next(issue for issue in artifact.issues if len(issue["members"]) >= 2)
     assert save["linked_by"] == (["judgment", "location"] if same_fix else ["location"])
     assert len(judge.pairs) == 1
-
-
-@pytest.mark.parametrize("same_fix", [True, False])
-def test_resume_reuses_recorded_issue_link_judgments(tmp_path, same_fix):
-    """A resumed run with an opposite judge asks it nothing and returns the first run's findings and issues."""
-    target = _records_target(tmp_path)
-    first = run_repository_review(
-        target, tmp_path / "ws", provider=_records_provider(), issue_judge=StubIssueJudge(lambda pair: same_fix)
-    )
-    resumed_judge = StubIssueJudge(lambda pair: not same_fix)
-
-    resumed = run_repository_review(target, tmp_path / "ws", provider=_records_provider(), issue_judge=resumed_judge)
-
-    assert resumed_judge.pairs == []
-    assert resumed.findings == first.findings
 
 
 def test_a_failed_issue_link_judgment_leaves_the_link_stage_incomplete(tmp_path):

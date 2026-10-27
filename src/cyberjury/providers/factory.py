@@ -17,10 +17,9 @@ def default_model_for_provider(provider: str) -> str:
 
 def make_provider(name: str, *, api_base: str | None, retries: int, timeout: float) -> Provider:
     """Build the named provider and wrap it with retries."""
-    if name == "openai":
-        provider: Provider = OpenAIProvider(api_base=api_base, timeout=timeout)
-    elif name == "anthropic":
-        provider = AnthropicProvider(api_base=api_base, timeout=timeout)
-    else:
-        raise ValueError(f"unknown provider: {name}")
+    provider: Provider = (
+        OpenAIProvider(api_base=api_base, timeout=timeout)
+        if name == "openai"
+        else AnthropicProvider(api_base=api_base, timeout=timeout)
+    )
     return RetryProvider(provider, max_attempts=retries + 1, hard_timeout=timeout)

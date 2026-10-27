@@ -34,7 +34,6 @@ def _findings_from_reply(_unit: RepositoryUnit, reply: RoleReply) -> list[Findin
 
 
 REPOSITORY_TARGET = ReviewTarget[RepositoryUnit](
-    kind="repository",
     role="unit finder",
     response_schema=FINDER_RESPONSE_SCHEMA,
     system=repository_finder_system,

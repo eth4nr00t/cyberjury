@@ -52,11 +52,9 @@ class AnalyzedDefinition:
     is_type: bool
     calls: tuple[str, ...] = ()
     owner: AnalyzedOwner | None = None
-    type_owner: AnalyzedOwner | None = None
     is_file_scope: bool = False
     callsites: tuple[AnalyzedCallsite, ...] = ()
     signature: str = ""
-    has_receiver: bool = False
 
 
 @dataclass(frozen=True, order=True, kw_only=True)
@@ -91,7 +89,6 @@ class LangSpec:
     type_definitions: str
     calls: str
     imports: tuple[ImportQuery, ...]
-    receivers: str = ""
     namespace_imports: tuple[str, ...] = ()
     qualified_uses: str = ""
     structural_relationships: tuple[StructuralQuery, ...] = ()
@@ -120,9 +117,9 @@ class AnalyzedImport:
     imported: str
     local: str
     module: str
-    owner: AnalyzedOwner | None = None
-    start: int = 0
-    end: int = 0
+    owner: AnalyzedOwner | None
+    start: int
+    end: int
 
 
 @dataclass(frozen=True, order=True, kw_only=True)
@@ -195,7 +192,6 @@ _SYNTAX_FIELDS = frozenset(
         "type_definitions",
         "calls",
         "imports",
-        "receivers",
         "namespace_imports",
         "qualified_uses",
         "structural_relationships",
@@ -204,11 +200,9 @@ _SYNTAX_FIELDS = frozenset(
 
 
 def load_specs() -> dict[str, LangSpec]:
-    """Load the grammar and syntax queries of every language that declares a grammar."""
+    """Load the grammar and syntax queries of every language."""
     specs: dict[str, LangSpec] = {}
     for name, language in load_languages().items():
-        if language.grammar is None:
-            continue
         config = language.syntax
         unknown = sorted(set(config) - _SYNTAX_FIELDS)
         if unknown:
@@ -220,15 +214,11 @@ def load_specs() -> dict[str, LangSpec]:
             module=module,
             accessor=accessor,
             definitions=config["definitions"].strip(),
-            type_definitions=config.get("type_definitions", "").strip(),
+            type_definitions=config["type_definitions"].strip(),
             calls=config["calls"].strip(),
             imports=tuple(
-                ImportQuery(item.strip())
-                if isinstance(item, str)
-                else ImportQuery(item["query"].strip(), item.get("imported", ""))
-                for item in config.get("imports", ())
+                ImportQuery(item["query"].strip(), item.get("imported", "")) for item in config.get("imports", ())
             ),
-            receivers=config.get("receivers", "").strip(),
             namespace_imports=tuple(item.strip() for item in config.get("namespace_imports", ())),
             qualified_uses=config.get("qualified_uses", "").strip(),
             structural_relationships=tuple(
@@ -280,7 +270,6 @@ def _check_queries(spec: LangSpec) -> None:
         spec.definitions,
         spec.type_definitions,
         spec.calls,
-        spec.receivers,
         spec.qualified_uses,
         *spec.namespace_imports,
         *(item.query for item in spec.imports),
@@ -299,16 +288,15 @@ def _check_queries(spec: LangSpec) -> None:
             raise AnalyzerConfigurationError(f"{spec.name} structural relationship query lacks required captures")
 
 
-def _matches(query: Query, node: Node) -> Iterator[tuple[int, dict[str, list[Node]]]]:
+def _matches(query: Query, node: Node) -> Iterator[dict[str, list[Node]]]:
     from tree_sitter import QueryCursor
 
-    for pattern, captures in QueryCursor(query).matches(node):
-        present = {
+    for _pattern, captures in QueryCursor(query).matches(node):
+        yield {
             name: kept
             for name, nodes in captures.items()
             if (kept := [item for item in nodes if item.start_byte < item.end_byte])
         }
-        yield pattern, present
 
 
 def character_offsets(source: bytes) -> dict[int, int] | None:
@@ -366,7 +354,7 @@ def _nearest_definition(node: Node, index: _DefinitionIndex) -> tuple[Node, Node
 
 def _definition_nodes(root: Node, spec: LangSpec) -> tuple[tuple[Node, Node], ...]:
     by_name_range: dict[tuple[int, int], tuple[Node, Node]] = {}
-    for _, captures in _matches(_compiled(spec, spec.definitions), root):
+    for captures in _matches(_compiled(spec, spec.definitions), root):
         node = (captures.get("def") or [None])[0]
         identifier = (captures.get("name") or [None])[0]
         if node is None or identifier is None:
@@ -398,7 +386,7 @@ def _definition_calls(
     file_scope: bool = False,
 ) -> tuple[tuple[str, ...], tuple[AnalyzedCallsite, ...]]:
     callsites: dict[tuple[int, int], AnalyzedCallsite] = {}
-    for _, captures in _matches(call_query, node):
+    for captures in _matches(call_query, node):
         call = (captures.get("call") or [None])[0]
         owner = _nearest_definition(call, definition_index) if call is not None else None
         belongs = owner is None if file_scope else owner is not None and owner[0] == node
@@ -463,31 +451,17 @@ def _definitions(tree: _ParsedTree, file: str) -> tuple[AnalyzedDefinition, ...]
     definition_nodes = tree.definitions
     definition_index = tree.definition_index
     call_query = _compiled(spec, spec.calls)
-    type_nodes: tuple[tuple[Node, Node], ...] = ()
-    if spec.type_definitions:
-        type_nodes = tuple(
-            (node, identifier)
-            for _, captures in _matches(_compiled(spec, spec.type_definitions), root)
-            if (node := (captures.get("type") or [None])[0]) is not None
-            and (identifier := (captures.get("name") or [None])[0]) is not None
-        )
-    receiver_ranges: set[tuple[int, int]] = set()
-    if spec.receivers:
-        receiver_ranges = {
-            (definition.start_byte, definition.end_byte)
-            for _, captures in _matches(_compiled(spec, spec.receivers), root)
-            if (definition := (captures.get("def") or [None])[0]) is not None
-            and (captures.get("receiver") or [None])[0] is not None
-        }
+    type_ranges = {
+        (node.start_byte, node.end_byte)
+        for captures in _matches(_compiled(spec, spec.type_definitions), root)
+        if (node := (captures.get("type") or [None])[0]) is not None and captures.get("name")
+    }
     definitions: list[AnalyzedDefinition] = []
-    type_index = _definition_index(type_nodes)
-    type_ranges = {(node.start_byte, node.end_byte) for node, _ in type_nodes}
     for node, identifier in definition_nodes:
         name = _text(source, identifier)
         is_type = (node.start_byte, node.end_byte) in type_ranges
         calls, callsites = _definition_calls(source, node, definition_index, call_query, offsets)
         start, end = _node_range(node, offsets)
-        type_owner = _lexical_owner(source, node, type_index, offsets)
         definitions.append(
             AnalyzedDefinition(
                 name=name,
@@ -497,10 +471,8 @@ def _definitions(tree: _ParsedTree, file: str) -> tuple[AnalyzedDefinition, ...]
                 calls=calls,
                 is_type=is_type,
                 owner=_lexical_owner(source, node, definition_index, offsets),
-                type_owner=type_owner,
                 callsites=callsites,
                 signature=_definition_signature(source, node, identifier),
-                has_receiver=not is_type and (node.start_byte, node.end_byte) in receiver_ranges,
             )
         )
     file_calls, file_callsites = _definition_calls(source, root, definition_index, call_query, offsets, file_scope=True)
@@ -547,7 +519,7 @@ def _imports(tree: _ParsedTree) -> tuple[AnalyzedImport, ...]:
     definition_index = tree.definition_index
     imports: list[AnalyzedImport] = []
     for import_query in spec.imports:
-        for _, captures in _matches(_compiled(spec, import_query.query), root):
+        for captures in _matches(_compiled(spec, import_query.query), root):
             modules = captures.get("module") or ()
             statements = captures.get("statement") or ()
             imported_nodes = captures.get("imported") or ()
@@ -593,7 +565,7 @@ def _namespaces(tree: _ParsedTree) -> tuple[AnalyzedNamespace, ...]:
     definition_index = tree.definition_index
     namespaces: list[AnalyzedNamespace] = []
     for query_text in spec.namespace_imports:
-        for _, captures in _matches(_compiled(spec, query_text), root):
+        for captures in _matches(_compiled(spec, query_text), root):
             modules = captures.get("module") or ()
             statements = captures.get("statement") or ()
             if not modules or not statements:
@@ -626,7 +598,7 @@ def _qualified_uses(tree: _ParsedTree) -> tuple[AnalyzedQualifiedUse, ...]:
         return ()
     definition_index = tree.definition_index
     uses: list[AnalyzedQualifiedUse] = []
-    for _, captures in _matches(_compiled(spec, spec.qualified_uses), root):
+    for captures in _matches(_compiled(spec, spec.qualified_uses), root):
         qualifiers = captures.get("qualifier") or ()
         names = captures.get("name") or ()
         if qualifiers and names:
@@ -654,7 +626,7 @@ def _structural_relationships(tree: _ParsedTree) -> tuple[AnalyzedStructuralRela
     by_identifier = {(identifier.start_byte, identifier.end_byte): node for node, identifier in tree.definitions}
     relationships: list[AnalyzedStructuralRelationship] = []
     for configured in spec.structural_relationships:
-        for _, captures in _matches(_compiled(spec, configured.query), root):
+        for captures in _matches(_compiled(spec, configured.query), root):
             owners = captures.get("owner") or ()
             owner_names = captures.get("owner_name") or ()
             references = captures.get("reference") or ()
@@ -727,14 +699,7 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
     from tree_sitter import Parser
 
     source = path.read_bytes()
-    try:
-        source.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise SourceParseError("not valid UTF-8") from exc
-    try:
-        tree = Parser(_language(spec)).parse(source)
-    except (ValueError, RuntimeError) as exc:
-        raise SourceParseError("unparsable") from exc
+    tree = Parser(_language(spec)).parse(source)
     syntax_error = _first_parse_problem(source, tree.root_node) if tree.root_node.has_error else None
     definitions = _definition_nodes(tree.root_node, spec)
     parsed = _ParsedTree(

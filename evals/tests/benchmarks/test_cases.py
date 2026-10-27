@@ -11,15 +11,9 @@ from evals.benchmarks.cases import checks_sha256, find_case, load_cases, validat
 from evals.benchmarks.contract import ChangeAnchor, Check, Location
 
 
-def test_public_projects_load_every_case_with_pinned_git_targets():
-    """Every bundled case has checks and a 40-char commit, and diff cases also have a 40-char base."""
-    loaded = load_cases()
-
-    for case in loaded.values():
-        assert len(case.target["commit"]) == 40
-        assert case.checks
-        if case.kind == "diff":
-            assert len(case.target["base"]) == 40
+def test_public_benchmarks_validate():
+    """Every bundled project benchmark passes the benchmark-v1 schema and the semantic checks."""
+    assert load_cases()
 
 
 def test_cases_carry_their_nested_checks_and_targets(benchmark_project):
@@ -78,4 +72,14 @@ def test_change_anchors_absent_from_the_reviewed_patch_are_rejected(benchmark_pr
     patch = canonical_patch(benchmark_project.repo, benchmark_project.base, benchmark_project.commit)
 
     with pytest.raises(ValueError, match=r"change anchor .* is absent from the reviewed patch"):
+        validate_change_anchors(replace(case, checks=(check,)), patch)
+
+
+def test_a_change_anchor_on_a_skipped_noise_file_is_rejected(benchmark_project):
+    """An anchor on a changed README.md line is rejected because the review skips that file as noise."""
+    case = find_case(benchmark_project.diff_case, [benchmark_project.benchmark])
+    check = replace(case.checks[0], change_anchors=(ChangeAnchor(file="README.md", line=1, side="new"),))
+    patch = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -0,0 +1 @@\n+# Title\n"
+
+    with pytest.raises(ValueError, match=r"README\.md:1:new is absent from the reviewed patch"):
         validate_change_anchors(replace(case, checks=(check,)), patch)

@@ -13,7 +13,9 @@ from cyberjury.review.recorder import TERMINATED
 from cyberjury.review.request import TargetInput
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
+UNFINISHED_EXIT = 1
 USAGE_EXIT = 2
+INTERNAL_EXIT = 3
 INTERRUPTED_EXIT = 130
 TERMINATED_EXIT = 143
 
@@ -41,29 +43,14 @@ def _add_workspace_arg(target) -> None:
     )
 
 
-def _add_concurrency_arg(target, work: str) -> None:
+def _add_concurrency_arg(target) -> None:
     target.add_argument(
         "--concurrency",
         type=positive_int,
         default=None,
-        help=f"{work} to run in parallel, default {DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency}",
+        help="unit reviews or issue link calls to run in parallel, default "
+        f"{DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency}",
     )
-
-
-def _add_diff_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--repository", required=True, help="repository containing the reviewed git range")
-    parser.add_argument("--git-range", required=True, help="git range to diff, e.g. origin/main...HEAD")
-    _add_concurrency_arg(parser, "diff unit reviews or issue link calls")
-    _add_workspace_arg(parser)
-
-
-def _add_repository_args(repository: argparse.ArgumentParser) -> None:
-    repository.add_argument("directory", help="target repository to review")
-    repository.add_argument(
-        "--fresh", action="store_true", help="start a new review session instead of resuming the active one"
-    )
-    _add_concurrency_arg(repository, "unit reviews or issue link calls")
-    _add_workspace_arg(repository)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -72,15 +59,21 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
     review = sub.add_parser("review", help="review code for security findings", allow_abbrev=False)
     review_subcommands = review.add_subparsers(dest="scope", metavar="{diff,repository}", required=True)
-    _add_diff_args(
-        review_subcommands.add_parser("diff", help="review a git range against its repository", allow_abbrev=False)
-    )
+    diff = review_subcommands.add_parser("diff", help="review a git range against its repository", allow_abbrev=False)
+    diff.add_argument("--repository", required=True, help="repository containing the reviewed git range")
+    diff.add_argument("--git-range", required=True, help="git range to diff, e.g. origin/main...HEAD")
     repository = review_subcommands.add_parser(
         "repository",
         help="review a whole repository and resume open work when re-run",
         allow_abbrev=False,
     )
-    _add_repository_args(repository)
+    repository.add_argument("directory", help="target repository to review")
+    repository.add_argument(
+        "--fresh", action="store_true", help="start a new review session instead of resuming the active one"
+    )
+    for scope in (diff, repository):
+        _add_concurrency_arg(scope)
+        _add_workspace_arg(scope)
     return parser
 
 
@@ -91,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help(sys.stderr)
         return USAGE_EXIT
-    return _review(args)
+    return _exit_code(run_review_command(_review_command(args), stdout=sys.stdout, stderr=sys.stderr))
 
 
 def _review_command(args: argparse.Namespace) -> ReviewCommand:
@@ -117,14 +110,9 @@ def _exit_code(record: Record) -> int:
         return 0
     if record.status == "interrupted":
         return TERMINATED_EXIT if record.attributes.get("reason") == TERMINATED else INTERRUPTED_EXIT
-    if record.status == "failed" and record.error is not None and record.error.code in {"config", "input"}:
+    code = record.error.code if record.error is not None else None
+    if record.status == "failed" and code in {"config", "input"}:
         return USAGE_EXIT
-    return 1
-
-
-def _review(args: argparse.Namespace) -> int:
-    return _exit_code(run_review_command(_review_command(args), stdout=sys.stdout, stderr=sys.stderr))
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    if record.status == "failed" and code == "internal":
+        return INTERNAL_EXIT
+    return UNFINISHED_EXIT

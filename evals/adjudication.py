@@ -24,11 +24,11 @@ class Adjudication:
     missed: tuple[str, ...]
     pending: tuple[str, ...]
     counts: dict[str, int]
-    issues: int = 0
-    duplicate_issues: int = 0
-    mixed_issues: int = 0
-    round_id: str = ""
-    rubric_sha256: str = ""
+    issues: int
+    duplicate_issues: int
+    mixed_issues: int
+    round_id: str
+    rubric_sha256: str
 
 
 def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Path | None) -> Adjudication:
@@ -36,7 +36,6 @@ def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Pa
     validate_document(ledger, "eval-ledger-v1.schema.json", attempt.ledger_path)
     if (
         ledger["case"] != case.name
-        or attempt.case != case.name
         or ledger["attempt"] != attempt.number
         or ledger["source_commit"] != case.target["commit"]
         or ledger["attempt_sha256"] != attempt.sha256
@@ -90,7 +89,7 @@ def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Pa
 def _source_line(root: Path, location: dict, identity: str) -> None:
     file, line = location["file"], location["line"]
     path = (root / file).resolve()
-    if Path(file).is_absolute() or not path.is_relative_to(root.resolve()) or not path.is_file():
+    if not path.is_relative_to(root.resolve()) or not path.is_file():
         raise ValueError(f"{identity} evidence file does not exist in the pinned source: {file}")
     with path.open(encoding="utf-8", errors="replace") as lines:
         if line > sum(1 for _ in lines):

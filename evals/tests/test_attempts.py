@@ -73,7 +73,7 @@ def test_recorded_repository_attempt_records_a_review_of_the_case_source(tmp_pat
     assert attempt["case"] == repository_case.name
     assert attempt["attempt"] == 3
     assert attempt["complete"] is True
-    assert [item["candidate_id"] for item in attempt["findings"]] == [A]
+    assert [item["id"] for item in attempt["findings"]] == [A]
     assert [issue["members"] for issue in attempt["issues"]] == [[A]]
 
 
@@ -124,18 +124,6 @@ def _diff_target(benchmark_project, base, ref):
         "repository_root": str(benchmark_project.repo),
         "git": {"patch_base_revision": base, "right_revision": ref},
     }
-
-
-def test_recorded_diff_attempt_has_the_same_finding_fields_as_a_repository_attempt(
-    tmp_path, benchmark_project, case, repository_case
-):
-    """A base..commit diff review records findings with the same keys as a repository review."""
-    diff_target = _diff_target(benchmark_project, benchmark_project.base, benchmark_project.commit)
-    diff = recorded_attempt(case, _review_attempt(tmp_path / "d", benchmark_project.repo, target=diff_target), 1)
-    repository = recorded_attempt(repository_case, _review_attempt(tmp_path / "r", benchmark_project.repo), 1)
-
-    assert diff["complete"] is True
-    assert [sorted(item) for item in diff["findings"]] == [sorted(item) for item in repository["findings"]]
 
 
 def test_recorded_diff_attempt_rejects_a_review_of_another_range(tmp_path, benchmark_project, case):

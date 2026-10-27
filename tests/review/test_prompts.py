@@ -1,6 +1,12 @@
 """Source fences remain intact, and every target sends one user message envelope."""
 
-from cyberjury.review.context import EvidencePromptContext, GroundingContext, SourceEvidence, SourceSpan
+from cyberjury.review.context import (
+    EvidenceItem,
+    EvidencePromptContext,
+    GroundingContext,
+    SourceEvidence,
+    SourceSpan,
+)
 from cyberjury.review.prompts import fenced_source, inline_source, one_line_source
 
 
@@ -27,7 +33,7 @@ def test_inline_source_and_labels_cannot_break_their_prompt_line():
 
 
 def test_every_target_sends_seed_notices_delivered_source_hints_then_catalog_before_the_controls():
-    """The stable prefix orders seed, notices, initial source, then hints, and the suffix is the follow-up."""
+    """The stable prefix orders seed, notices, initial source, hints, then catalog, and the suffix is the follow-up."""
     delivered = SourceEvidence(
         id="src-000000000001",
         identity="lib.py:helper:0:9",
@@ -39,6 +45,7 @@ def test_every_target_sends_seed_notices_delivered_source_hints_then_catalog_bef
         seed="SEED",
         syntax_hints="HINTS",
         source_evidence=(delivered,),
+        evidence=(EvidenceItem.create(identity="lib.py:other:10:20", label="lib.py:other", text="other()"),),
     )
     prompt = context.prompt
     plan = prompt.plan
@@ -46,7 +53,8 @@ def test_every_target_sends_seed_notices_delivered_source_hints_then_catalog_bef
     assert plan.stable_prefix.index("SEED") < plan.stable_prefix.index("NOTICES AND CALL CANDIDATES")
     assert plan.stable_prefix.index("NOTICES") < plan.stable_prefix.index("Initial source `src-000000000001`")
     assert plan.stable_prefix.index("Initial source") < plan.stable_prefix.index("HINTS")
-    assert plan.stable_prefix.endswith("HINTS\n\n")
+    assert plan.stable_prefix.index("HINTS") < plan.stable_prefix.index("Evidence catalog")
+    assert plan.stable_prefix.endswith("lib.py:other\n\n")
     assert plan.dynamic_suffix == prompt.followup
 
 

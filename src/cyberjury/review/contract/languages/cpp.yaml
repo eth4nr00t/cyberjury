@@ -39,10 +39,10 @@ syntax:
         name: (type_identifier) @owner_name
         (base_class_clause (type_identifier) @reference @target_name)) @owner
   calls: |
-    (call_expression function: (identifier) @callee arguments: (argument_list) @arguments) @call
+    (call_expression function: (identifier) @callee arguments: (argument_list)) @call
     (call_expression function: (field_expression argument: (_) @receiver field: (field_identifier) @member)
-      arguments: (argument_list) @arguments) @call
+      arguments: (argument_list)) @call
     (call_expression function: (qualified_identifier scope: (_) @receiver name: (identifier) @member)
-      arguments: (argument_list) @arguments) @call
+      arguments: (argument_list)) @call
   qualified_uses: |
     (qualified_identifier scope: (namespace_identifier) @qualifier name: (identifier) @name)

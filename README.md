@@ -8,18 +8,13 @@ The tool has two review paths:
 - **Repository Review** fans out across a repository, reviews focused units, and groups the
   findings into issues.
 
-Diff Review is fast and reports findings at post change lines shown in the patch or at repository
-source the finding cites. Every finding keeps an exact old or new change anchor, so added behavior and
-removed controls use one scope contract. Each diff unit is grounded with repository source context
-while every finding stays anchored to a changed line.
+Diff Review is fast. It reports a finding at a changed line or at repository source the finding
+cites, and every finding keeps the exact old or new changed line it is anchored to.
 Repository Review covers the complete repository as focused units, so a clean Diff Review does not
 by itself clear the repository.
 
-The review contract is data. One language-independent security reasoning kernel, one severity
-rubric, and the file classification rules live in `src/cyberjury/review/contract/`. Language
-support is one file per language in `src/cyberjury/review/contract/languages/`. A language
-without a file is still reviewed from its raw source. Each review records a hash of these files
-in `source/contract.json`.
+Syntax facts cover C, C++, Go, Java, JavaScript, Python, Rust, Solidity, TypeScript, and TSX. Files
+in other languages are still reviewed from their raw source.
 
 A Repository Review of a Git work tree covers the tracked files and the untracked files Git does not
 ignore, but not the contents of Git submodules. A plain directory is covered completely. Files that
@@ -59,13 +54,11 @@ A review that fails before its review directory exists prints the same records w
 | Exit code | Meaning |
 | :--- | :--- |
 | `0` | The review finished `ok`. |
-| `1` | The review is `incomplete`, or it failed with a `busy` or `internal` error. |
-| `2` | Invalid arguments, or the review failed with a `config` or `input` error, including a provider that rejects the key, permission, or model. |
+| `1` | The review did not finish, and running it again can: it is `incomplete`, or it failed `busy`. |
+| `2` | Invalid arguments, or the review failed with a `config` or `input` error, including a provider that rejects the key, permission, or model. Fix them before running again. |
+| `3` | The review failed with an `internal` error, which running it again does not fix. |
 | `130` | The operator interrupted the review. |
 | `143` | SIGTERM stopped the review. |
-
-Every finding the finder reports is kept, and the review does not run a second model to delete
-findings.
 
 `findings.json` also groups findings into `issues`: findings that one code change fixes. Grouping
 never removes a finding, and each finding names its `issue_id`. Findings of one category at the same
@@ -79,7 +72,7 @@ units that did not finish reported the finding.
 
 ## Install
 
-Requires Python 3.12 or newer. The base install includes tree-sitter and the grammar packages.
+Requires Python 3.12 or newer.
 
 ```bash
 pip install cyberjury

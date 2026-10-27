@@ -76,13 +76,6 @@ class _ParsedEvidenceReply:
     repeated_evidence_requests: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True, kw_only=True)
-class _DeliveredEvidence:
-    text: str
-    coverage: GroundingCoverage
-    source_evidence: tuple[SourceEvidence, ...]
-
-
 class _RejectedBatch(Exception):
     def __init__(
         self,
@@ -232,16 +225,13 @@ class _EvidenceExchange:
             return self.finish((f"model response {call_index + 1} failed",), exception_reason(exc))
 
     def accept(self, reply: _ParsedEvidenceReply) -> EvidenceJudgment | None:
-        requested = [
-            str(item)
-            for item in _implicit_reference_requests(
-                list(self.provisional.findings),
-                available=self.available_refs,
-                evidence_ids={item.id for item in self.context.evidence},
-                navigation=self.navigation,
-                evidence_requests=list(reply.requested),
-            )
-        ]
+        requested = _implicit_reference_requests(
+            list(self.provisional.findings),
+            available=self.available_refs,
+            evidence_ids={item.id for item in self.context.evidence},
+            navigation=self.navigation,
+            evidence_requests=list(reply.requested),
+        )
         self.turn.findings = len(reply.findings)
         self.turn.deferred = len(reply.deferred)
         self.turn.requested = requested
@@ -326,7 +316,7 @@ class _EvidenceExchange:
         )
         return None
 
-    def reject(self, rejected: _RejectedBatch, call_index: int) -> EvidenceJudgment | None:
+    def reject(self, rejected: _RejectedBatch) -> EvidenceJudgment | None:
         self.turn.correction = rejected.kind
         if self.corrections[rejected.kind] < 1:
             return self.finish(rejected.unresolved, rejected.failure_reason)
@@ -369,7 +359,7 @@ def run_evidence_judgment(
                 reply = exchange.read_reply(ask, call_index)
                 result = reply if isinstance(reply, EvidenceJudgment) else exchange.accept(reply)
             except _RejectedBatch as rejected:
-                result = exchange.reject(rejected, call_index)
+                result = exchange.reject(rejected)
             record_model_exchange(_exchange_record(exchange.turn, result))
         if result is not None:
             return result
@@ -554,9 +544,9 @@ def _parse_evidence_reply(
         available=available_refs,
         evidence_ids=evidence_ids,
         navigation=navigation,
-        evidence_requests=[*unread_evidence_ids],
+        evidence_requests=list(unread_evidence_ids),
     )
-    ids = list(evidence_request_ids(requested))
+    ids = list(dict.fromkeys(requested))
     accepted, deferred = _partition_evidence_bound_findings(
         findings,
         available=available_refs,
@@ -628,7 +618,7 @@ def _deliver_evidence_exchange(
     requested: list[str],
     source_queries: list[dict[str, object]],
     target_chars: int,
-) -> _DeliveredEvidence:
+) -> SourceNavigationResult:
     transaction = navigation.transaction() if navigation is not None else nullcontext()
     with transaction:
         exact = (
@@ -653,7 +643,7 @@ def _deliver_evidence_exchange(
         if len(text) > target_chars and not one_indivisible_item:
             raise EvidenceBudgetError(f"evidence exchange exceeds the {target_chars} character target")
     coverage = merge_grounding_coverage((exact.coverage, navigated.coverage))
-    return _DeliveredEvidence(
+    return SourceNavigationResult(
         text=text,
         coverage=coverage,
         source_evidence=(*exact.source_evidence, *navigated.source_evidence),
@@ -667,7 +657,7 @@ def _deliver_within_budget(
     requested: list[str],
     source_queries: list[dict[str, object]],
     target_chars: int,
-) -> tuple[_DeliveredEvidence, list[str], list[dict[str, object]]]:
+) -> tuple[SourceNavigationResult, list[str], list[dict[str, object]]]:
     capped = requested[:MAX_EVIDENCE_REQUESTS_PER_BATCH]
     for kept in range(len(capped) + len(source_queries), 0, -1):
         kept_ids, kept_queries = capped[:kept], source_queries[: max(0, kept - len(capped))]
@@ -709,7 +699,7 @@ def _deliver_exact_evidence(
     *,
     target_chars: int,
 ) -> SourceNavigationResult:
-    ids = evidence_request_ids(requested)
+    ids = tuple(requested)
     published_by_id = {item.id: item for item in context.evidence}
     published_ids = tuple(item for item in ids if item in published_by_id)
     source_ids = tuple(
@@ -720,7 +710,7 @@ def _deliver_exact_evidence(
     if unknown:
         raise UnknownEvidenceRequest(unknown)
 
-    selected = select_evidence(context.evidence, list(published_ids), target_chars=target_chars)
+    selected = select_evidence(context.evidence, published_ids)
     navigated = (
         navigation.read(list(source_ids), target_chars=target_chars)
         if navigation is not None and source_ids
