@@ -8,7 +8,7 @@ from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.selection import select_files
 from cyberjury.review.syntax import facts as facts_module
 from cyberjury.review.syntax.facts import extract_syntax_facts
-from tests.review.syntax.support import syntax_facts
+from tests.review.syntax.support import ignore_progress, syntax_facts
 
 
 def _write(root, files):
@@ -38,7 +38,9 @@ def test_vendored_files_are_not_parsed_into_facts(tmp_path):
     )
     detection = detection_for(tmp_path, files)
 
-    facts = extract_syntax_facts(tmp_path, files, select_files(tmp_path, files, detection).navigation_files, detection)
+    facts = extract_syntax_facts(
+        tmp_path, files, select_files(tmp_path, files, detection).navigation_files, detection, progress=ignore_progress
+    )
 
     assert set(facts.by_file) == {"app.py"}
 
@@ -54,7 +56,9 @@ def test_oversized_files_are_left_out_of_facts_without_a_limitation(tmp_path):
     )
     detection = detection_for(tmp_path, files)
 
-    facts = extract_syntax_facts(tmp_path, files, select_files(tmp_path, files, detection).navigation_files, detection)
+    facts = extract_syntax_facts(
+        tmp_path, files, select_files(tmp_path, files, detection).navigation_files, detection, progress=ignore_progress
+    )
 
     assert not facts.limitations
     assert set(facts.by_file) == {"app.py"}

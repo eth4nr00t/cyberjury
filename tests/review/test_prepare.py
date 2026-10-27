@@ -12,26 +12,27 @@ from cyberjury.review.selection import FileSelection
 from cyberjury.review.unit_plans import UnitPlanReceipt
 from cyberjury.sources.snapshot import capture_source_snapshot
 from tests.review.support import bound_artifacts, recorder
+from tests.review.syntax.support import ignore_progress
 
 
 def test_extract_facts_fails_loud_when_extraction_fails(tmp_path, monkeypatch):
     """A syntax extractor raising "parser missing" surfaces as BackendUnavailable "no grounding: ..."."""
 
-    def broken(*_args):
+    def broken(*_args, **_kwargs):
         raise RuntimeError("parser missing")
 
     monkeypatch.setattr(prepare, "extract_syntax_facts", broken)
     selection = FileSelection(review_files=(), navigation_files=(), skipped_files=())
 
     with pytest.raises(BackendUnavailable, match="no grounding: parser missing"):
-        prepare.extract_facts(capture_source_snapshot(tmp_path), selection, load_detection())
+        prepare.extract_facts(capture_source_snapshot(tmp_path), selection, load_detection(), progress=ignore_progress)
 
 
 def test_prepare_grounds_units_with_the_extracted_facts(tmp_path, monkeypatch):
     """Stubbed facts for app.py become the unit's fenced syntax hints and the grounding receipt matches."""
     calls = []
 
-    def extract(root, files, navigation_files, detection):
+    def extract(root, files, navigation_files, detection, *, progress):
         calls.append(root)
         return Facts(by_file={"app.py": "def f():\n    return 1"})
 

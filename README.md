@@ -50,9 +50,10 @@ review units and issue links in `review/items/` and `link/items/`. `artifacts` l
 hold a record's output, relative to the review directory. The findings of an attempt are in
 `attempts/<attempt>/findings.json`. Model usage metrics are `calls`, `input_tokens`, which includes
 the `cached_tokens` read from and the `cache_write_tokens` written to the prompt cache, and
-`output_tokens`. Stderr prints one line per record as it is written. When the review ends, stdout
-prints the stage records and then the attempt record, each exactly as stored. A review that fails
-before its review directory exists prints the same records without storing them.
+`output_tokens`. Stderr prints one line per record as it is written. A long stage also prints
+`running` lines, which are not stored, with its total `items` and the number `finished` so far. When
+the review ends, stdout prints the stage records and then the attempt record, each exactly as stored.
+A review that fails before its review directory exists prints the same records without storing them.
 
 | Exit code | Meaning |
 | :--- | :--- |

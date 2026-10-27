@@ -16,7 +16,7 @@ from cyberjury.review.languages import load_languages
 from cyberjury.review.relationships import StructuralRelationKind
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from tree_sitter import Language, Node, Query
 
@@ -764,8 +764,8 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
     )
 
 
-def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
-    """Analyze every reviewable source and retain file level limitations."""
+def analyze_repository(sources: list[AnalyzableSource], *, progress: Callable[[int, int], None]) -> AnalyzedRepository:
+    """Analyze every reviewable source, report each analyzed file, and retain file level limitations."""
     definitions: list[AnalyzedDefinition] = []
     imports: dict[str, list[AnalyzedImport]] = {}
     namespaces: dict[str, list[AnalyzedNamespace]] = {}
@@ -776,7 +776,7 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
     ordered_sources = sorted(sources, key=lambda item: item[1])
     for spec in {spec.name: spec for _path, _rel, spec in ordered_sources}.values():
         _check_queries(spec)
-    for path, rel, spec in ordered_sources:
+    for finished, (path, rel, spec) in enumerate(ordered_sources, 1):
         try:
             analyzed = parse_file(path, rel, spec)
         except SourceParseError as exc:
@@ -805,6 +805,7 @@ def analyze_repository(sources: list[AnalyzableSource]) -> AnalyzedRepository:
             qualified_uses.setdefault(rel, []).extend(analyzed.qualified_uses)
             structural_relationships.setdefault(rel, []).extend(analyzed.structural_relationships)
             normalized_sources[rel] = analyzed.source
+        progress(finished, len(ordered_sources))
     return AnalyzedRepository(
         definitions=tuple(definitions),
         imports=imports,

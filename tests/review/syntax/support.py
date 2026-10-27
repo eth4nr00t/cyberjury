@@ -9,11 +9,18 @@ from cyberjury.review.syntax.sources import reviewable_sources
 from cyberjury.sources.snapshot import capture_source_snapshot
 
 
+def ignore_progress(_finished: int, _items: int) -> None:
+    """Accept a progress report without showing it."""
+
+
 def syntax_facts(root) -> Facts:
     """Extract the syntax facts of every selected source under the root."""
     snapshot = capture_source_snapshot(root)
     facts, _receipt = extract_facts(
-        snapshot, select_files(snapshot.root, snapshot.files, load_detection()), load_detection()
+        snapshot,
+        select_files(snapshot.root, snapshot.files, load_detection()),
+        load_detection(),
+        progress=ignore_progress,
     )
     return facts
 
@@ -21,7 +28,9 @@ def syntax_facts(root) -> Facts:
 def callgraph(root) -> dict[str, dict[str, list[dict[str, object]]]]:
     """Map each analyzed file to its definitions' character ranges and bare callee names."""
     snapshot = capture_source_snapshot(root)
-    analyzed = analyze_repository(reviewable_sources(snapshot.root, snapshot.files, load_detection(), load_specs()))
+    analyzed = analyze_repository(
+        reviewable_sources(snapshot.root, snapshot.files, load_detection(), load_specs()), progress=ignore_progress
+    )
     graph: dict[str, dict[str, list[dict[str, object]]]] = {}
     for definition in analyzed.definitions:
         entry = {"range": [definition.start, definition.end], "calls": list(definition.calls)}

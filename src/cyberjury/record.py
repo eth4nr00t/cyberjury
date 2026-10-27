@@ -18,6 +18,7 @@ METRICS = (
     "skipped_files",
     "limitations",
     "items",
+    "finished",
     "restored",
     "failed",
     "findings",

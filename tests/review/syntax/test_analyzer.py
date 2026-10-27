@@ -13,7 +13,7 @@ from cyberjury.review.syntax.analyzer import (
     load_specs,
     spec_for,
 )
-from tests.review.syntax.support import callgraph, syntax_facts, write_call_chain
+from tests.review.syntax.support import callgraph, ignore_progress, syntax_facts, write_call_chain
 
 
 def test_specs_ship_a_grammar_and_every_query_per_language():
@@ -123,7 +123,7 @@ def test_a_structural_query_missing_a_capture_is_a_configuration_error(tmp_path)
     (tmp_path / "app.py").write_text("class Child(Base):\n    pass\n")
 
     with pytest.raises(AnalyzerConfigurationError, match="lacks required captures"):
-        analyze_repository([(tmp_path / "app.py", "app.py", specs["python"])])
+        analyze_repository([(tmp_path / "app.py", "app.py", specs["python"])], progress=ignore_progress)
 
 
 def _functions_only_python(tmp_path, files):
@@ -133,7 +133,7 @@ def _functions_only_python(tmp_path, files):
     for name, source in files.items():
         (tmp_path / name).write_text(source)
         inputs.append((tmp_path / name, name, python))
-    return analyze_repository(inputs)
+    return analyze_repository(inputs, progress=ignore_progress)
 
 
 def test_an_unexpected_structural_capture_in_one_file_becomes_its_limitation(tmp_path):
@@ -172,7 +172,7 @@ def test_a_structural_match_missing_a_capture_becomes_a_file_limitation(tmp_path
     )
     (tmp_path / "models.py").write_text("class Child(base.Base):\n    pass\n")
 
-    analyzed = analyze_repository([(tmp_path / "models.py", "models.py", spec)])
+    analyzed = analyze_repository([(tmp_path / "models.py", "models.py", spec)], progress=ignore_progress)
 
     assert [(item.source, item.reason) for item in analyzed.limitations] == [
         ("models.py", "structural relationship captures are incomplete")
@@ -187,7 +187,7 @@ def test_a_structural_reference_outside_its_owner_becomes_a_file_limitation(tmp_
     )
     (tmp_path / "models.py").write_text("class Child:\n    pass\nBase\n")
 
-    analyzed = analyze_repository([(tmp_path / "models.py", "models.py", spec)])
+    analyzed = analyze_repository([(tmp_path / "models.py", "models.py", spec)], progress=ignore_progress)
 
     assert [(item.source, item.reason) for item in analyzed.limitations] == [
         ("models.py", "structural relationship source is outside its owner")
@@ -204,7 +204,7 @@ def test_definition_target_query_rejects_an_unknown_grammar_node(tmp_path):
     (tmp_path / "app.py").write_text("def check():\n    return True\n")
 
     with pytest.raises(AnalyzerConfigurationError, match="invalid query"):
-        analyze_repository([(tmp_path / "app.py", "app.py", specs["python"])])
+        analyze_repository([(tmp_path / "app.py", "app.py", specs["python"])], progress=ignore_progress)
 
 
 @pytest.mark.parametrize(
@@ -541,7 +541,7 @@ def test_native_analyzer_recovers_the_cross_language_structure(tmp_path):
         assert spec is not None
         analyzer_inputs.append((path, name, spec))
 
-    analyzed = analyze_repository(list(reversed(analyzer_inputs)))
+    analyzed = analyze_repository(list(reversed(analyzer_inputs)), progress=ignore_progress)
     definitions = {(item.file, item.name): item for item in analyzed.definitions}
 
     assert set(definitions) == {
@@ -585,4 +585,20 @@ def test_native_analyzer_output_does_not_depend_on_input_enumeration(tmp_path):
         assert spec is not None
         inputs.append((path, name, spec))
 
-    assert analyze_repository(inputs) == analyze_repository(list(reversed(inputs)))
+    assert analyze_repository(inputs, progress=ignore_progress) == analyze_repository(
+        list(reversed(inputs)), progress=ignore_progress
+    )
+
+
+def test_analysis_reports_each_analyzed_file_against_the_total(tmp_path):
+    """Two Python sources report one and then two finished of two items."""
+    specs = load_specs()
+    sources = []
+    for name in ("a.py", "b.py"):
+        (tmp_path / name).write_text("def f():\n    return 1\n")
+        sources.append((tmp_path / name, name, specs["python"]))
+    reports = []
+
+    analyze_repository(sources, progress=lambda finished, items: reports.append((finished, items)))
+
+    assert reports == [(1, 2), (2, 2)]

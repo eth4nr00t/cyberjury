@@ -15,9 +15,11 @@ from cyberjury.record import Record, RecordError, error_message, utc_timestamp
 type Classify = Callable[[BaseException], RecordError]
 type Bind = Callable[[object], str]
 type Sink = Callable[[Record], None]
+type Progress = Callable[[int, int], None]
 
 
 INTERRUPTED = "operator interrupted the command"
+_PROGRESS_INTERVAL_SECONDS = 10.0
 
 
 def internal_error(exc: BaseException) -> RecordError:
@@ -39,9 +41,10 @@ def usage_metrics(calls: list[dict[str, object]]) -> dict[str, int]:
 
 @dataclass(kw_only=True)
 class Measure:
-    """What one stage reports while it runs: metrics, attributes, artifacts, and an incomplete verdict."""
+    """What one stage reports while it runs: progress, metrics, attributes, artifacts, and an incomplete verdict."""
 
     _bind: Callable[[object], str | None]
+    _progress: Progress
     metrics: dict[str, int] = field(default_factory=dict)
     attributes: dict[str, str | int | float | bool | None] = field(default_factory=dict)
     artifacts: list[str] = field(default_factory=list)
@@ -52,6 +55,10 @@ class Measure:
         path = self._bind(value)
         if path is not None and path not in self.artifacts:
             self.artifacts.append(path)
+
+    def progress(self, finished: int, items: int) -> None:
+        """Report how many of the stage's items have finished."""
+        self._progress(finished, items)
 
     def incomplete(self, message: str) -> None:
         """Finish the stage incomplete with the reason."""
@@ -118,7 +125,24 @@ class Recorder:
         """Time one stage, add its model usage when it calls models, and record how it ended."""
         started_at, started = utc_timestamp(), time.monotonic()
         calls_before = len(self.meter.call_snapshot())
-        measure = Measure(_bind=lambda value: self._bind_value(name, value))
+        reported = started
+
+        def progress(finished: int, items: int) -> None:
+            nonlocal reported
+            now = time.monotonic()
+            if now - reported < _PROGRESS_INTERVAL_SECONDS:
+                return
+            reported = now
+            running = Record(
+                id=name,
+                status="running",
+                started_at=started_at,
+                duration_seconds=None,
+                metrics={"items": items, "finished": finished},
+            )
+            self.emit(running, write=False)
+
+        measure = Measure(_bind=lambda value: self._bind_value(name, value), _progress=progress)
 
         def finish(status: str, error: RecordError | None) -> None:
             calls = self.meter.call_snapshot()[calls_before:]

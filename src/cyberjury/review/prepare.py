@@ -13,7 +13,7 @@ from cyberjury.review.facts import Facts, FactsReceipt
 from cyberjury.review.failures import BackendUnavailable
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.navigation import SourceNavigator
-from cyberjury.review.recorder import Recorder
+from cyberjury.review.recorder import Progress, Recorder
 from cyberjury.review.result import SkippedFile, SkippedFiles
 from cyberjury.review.selection import FileSelection, select_files
 from cyberjury.review.syntax.facts import extract_syntax_facts, syntax_backend_id
@@ -55,11 +55,13 @@ class PreparedReview[U: ReviewUnit]:
 
 
 def extract_facts(
-    snapshot: SourceSnapshot, selection: FileSelection, detection: Detection
+    snapshot: SourceSnapshot, selection: FileSelection, detection: Detection, *, progress: Progress
 ) -> tuple[Facts, FactsReceipt]:
     """Extract syntax facts with loud failure and bind them to the backend identity."""
     try:
-        facts = extract_syntax_facts(snapshot.root, snapshot.files, selection.navigation_files, detection)
+        facts = extract_syntax_facts(
+            snapshot.root, snapshot.files, selection.navigation_files, detection, progress=progress
+        )
     except Exception as exc:
         raise BackendUnavailable(f"facts extraction failed, so this review has no grounding: {exc}") from exc
     return facts, FactsReceipt.create(backend_id=syntax_backend_id(), facts=facts)
@@ -83,7 +85,7 @@ def prepare_review[U: ReviewUnit](
             detection = detection_for(snapshot.root, snapshot.files)
         selection = select_files(snapshot.root, snapshot.files, detection)
         if has_reviewable_source:
-            facts, receipt = extract_facts(snapshot, selection, detection)
+            facts, receipt = extract_facts(snapshot, selection, detection, progress=measure.progress)
             navigator = SourceNavigator.from_facts(
                 snapshot.root,
                 source_files=selection.navigation_files,

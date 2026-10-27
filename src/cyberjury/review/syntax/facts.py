@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, replace
 from functools import cache
 from importlib.metadata import version
@@ -31,11 +31,16 @@ def syntax_backend_id() -> str:
 
 
 def extract_syntax_facts(
-    root: str | Path, files: Sequence[str], navigation_files: Sequence[str], detection: Detection
+    root: str | Path,
+    files: Sequence[str],
+    navigation_files: Sequence[str],
+    detection: Detection,
+    *,
+    progress: Callable[[int, int], None],
 ) -> Facts:
     """Extract source evidence from the snapshot files and disclose source level limitations."""
     base = Path(root).resolve()
-    analyzed = analyze_repository(reviewable_sources(base, files, detection, load_specs()))
+    analyzed = analyze_repository(reviewable_sources(base, files, detection, load_specs()), progress=progress)
     navigation = collect_navigation_evidence(base, analyzed, navigation_files)
     facts = facts_from_repository(replace(analyzed, sources={**analyzed.sources, **navigation}))
     return replace(facts, limitations=analyzed.limitations)

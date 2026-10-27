@@ -7,6 +7,7 @@ import pytest
 from cyberjury.providers.base import CompletionResult, Message, Provider, Usage
 from cyberjury.providers.metering import MeteringProvider, UsageMeter, model_call_context, model_call_scope
 from cyberjury.record import RecordError
+from cyberjury.review import recorder as recorder_module
 from cyberjury.review.recorder import INTERRUPTED, Recorder
 from tests.support import EMPTY_SCHEMA
 
@@ -112,5 +113,31 @@ def test_each_record_prints_its_line_to_the_stream():
 
     with recorder.stage("plan"):
         pass
+
+    assert stream.getvalue() == recorder.stages[0].line() + "\n"
+
+
+def test_progress_prints_a_running_stage_line_without_writing_a_record(monkeypatch):
+    """A report past the interval prints facts running items=5 finished=2, and only the final record is written."""
+    monkeypatch.setattr(recorder_module, "_PROGRESS_INTERVAL_SECONDS", 0.0)
+    stream = io.StringIO()
+    recorder = Recorder(meter=UsageMeter(), stream=stream)
+    written = []
+    recorder.attach(bind=lambda value: "", sink=written.append)
+
+    with recorder.stage("facts") as measure:
+        measure.progress(2, 5)
+
+    assert stream.getvalue().splitlines()[0] == "facts running items=5 finished=2"
+    assert [(record.id, record.status) for record in written] == [("facts", "ok")]
+
+
+def test_progress_within_the_interval_prints_nothing():
+    """A progress report right after the stage starts prints only the final stage line."""
+    stream = io.StringIO()
+    recorder = Recorder(meter=UsageMeter(), stream=stream)
+
+    with recorder.stage("facts") as measure:
+        measure.progress(1, 5)
 
     assert stream.getvalue() == recorder.stages[0].line() + "\n"
