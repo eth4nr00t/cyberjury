@@ -339,6 +339,26 @@ def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, d
     assert not roots[0].exists()
 
 
+def test_a_dangling_symlink_outside_the_change_does_not_fail_a_diff_review(monkeypatch, tmp_path):
+    """A committed test/tool link to an untracked build output leaves the review ok with app.py as its one unit."""
+    seen = {}
+    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
+    repo = tmp_path / "repo"
+    (repo / "test").mkdir(parents=True)
+    git(repo, "init", "--quiet")
+    (repo / "test" / "tool").symlink_to("../build/bin/tool")
+    (repo / "app.py").write_text("def f(x):\n    return x\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "--quiet", "-m", "base")
+    (repo / "app.py").write_text("import os\n\ndef f(x):\n    return os.system(x)\n")
+    git(repo, "commit", "--quiet", "-am", "change")
+
+    run = _review(_diff(repo, "HEAD~1...HEAD"), tmp_path / "state")
+
+    assert run.record.status == "ok"
+    assert [unit.paths for unit in seen["units"]] == [("app.py",)]
+
+
 def test_hunkless_diff_sections_are_listed_as_skipped_files(tmp_path):
     """Mode-only, rename-only, and empty new files are skipped with reasons while the attempt stays ok."""
     repo = tmp_path / "repo"

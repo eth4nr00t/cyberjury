@@ -162,19 +162,28 @@ def test_a_relative_internal_symlink_is_materialized(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("target", "message"),
+    "target",
     [
-        pytest.param(b"/etc/passwd", "must be relative", id="absolute"),
-        pytest.param(b"../outside.py", "escapes or is broken", id="escaping"),
-        pytest.param(b"missing.py", "escapes or is broken", id="dangling"),
-        pytest.param(b"\xff.py", "not UTF-8", id="not-utf8"),
-        pytest.param(b"a" * 5000, "exceeds the byte limit", id="oversized"),
+        pytest.param(b"/etc/passwd", id="absolute"),
+        pytest.param(b"../outside.py", id="escaping"),
+        pytest.param(b"missing.py", id="dangling"),
+        pytest.param(b"\xff.py", id="not-utf8"),
     ],
 )
-def test_an_unsafe_symlink_fails_materialization_and_leaves_nothing_behind(monkeypatch, tmp_path, target, message):
-    """Absolute, escaping, dangling, non-UTF-8, or oversized targets raise and remove the temporary root."""
+def test_an_unsafe_or_dangling_symlink_is_left_out_of_the_materialized_tree(tmp_path, target):
+    """An absolute, escaping, dangling, or non-UTF-8 link.py is not written while app.py is."""
     repo = tmp_path / "repo"
     revision = _commit_symlink(repo, target)
+
+    with materialize_revision(repo, revision) as root:
+        assert not (root / "link.py").is_symlink()
+        assert (root / "app.py").read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_an_oversized_symlink_target_fails_materialization_and_leaves_nothing_behind(monkeypatch, tmp_path):
+    """A 5000 byte link target raises the byte limit error and removes the temporary root."""
+    repo = tmp_path / "repo"
+    revision = _commit_symlink(repo, b"a" * 5000)
     created = []
     make_temporary = gitmod.tempfile.mkdtemp
 
@@ -185,7 +194,7 @@ def test_an_unsafe_symlink_fails_materialization_and_leaves_nothing_behind(monke
     monkeypatch.setattr(gitmod.tempfile, "mkdtemp", recorded)
     yielded = []
 
-    with pytest.raises(GitSourceError, match=message), materialize_revision(repo, revision) as root:
+    with pytest.raises(GitSourceError, match="exceeds the byte limit"), materialize_revision(repo, revision) as root:
         yielded.append(root)
 
     assert yielded == []

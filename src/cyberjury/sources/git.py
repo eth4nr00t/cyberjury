@@ -7,16 +7,11 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury.sources.paths import (
-    SourceSnapshotError,
-    portable_paths,
-    require_contained_symlinks,
-    safe_link_target,
-)
+from cyberjury.sources.paths import SourceSnapshotError, portable_paths, safe_link_target
 
 _MAX_GIT_BLOB_BYTES = 100_000_000
 _MAX_GIT_TREE_BYTES = 2_000_000_000
@@ -267,11 +262,10 @@ def _write_git_blobs(repository: str, blobs: tuple[_GitBlob, ...], source_root: 
                         raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
                     try:
                         link_target = content.decode("utf-8")
-                    except UnicodeError as exc:
-                        raise GitSourceError(f"Git symlink target is not UTF-8: {blob.path!r}") from exc
-                    if not safe_link_target(link_target):
-                        raise GitSourceError(f"Git symlink target must be relative: {blob.path!r}")
-                    path.symlink_to(link_target)
+                    except UnicodeError:
+                        link_target = ""
+                    if safe_link_target(link_target):
+                        path.symlink_to(link_target)
                 else:
                     remaining = size
                     with path.open("xb") as stream:
@@ -294,17 +288,26 @@ def _write_git_blobs(repository: str, blobs: tuple[_GitBlob, ...], source_root: 
 
 @contextlib.contextmanager
 def materialize_revision(repository: str | Path, revision: str) -> Iterator[Path]:
-    """Materialize exact Git blobs without checkout filters, hooks, or line conversion."""
+    """Materialize exact Git blobs without filters, hooks, or line conversion, skipping unsafe or dangling symlinks."""
     temporary_root = Path(tempfile.mkdtemp(prefix="review-git-source-"))
     source_root = temporary_root / Path(repository).name
     try:
         source_root.mkdir(mode=0o700)
         blobs = _git_blobs(str(repository), revision)
         _write_git_blobs(str(repository), blobs, source_root)
-        try:
-            require_contained_symlinks(source_root, (blob.path for blob in blobs))
-        except SourceSnapshotError as exc:
-            raise GitSourceError(f"Git symlink escapes or is broken: {exc}") from exc
+        _drop_uncontained_symlinks(source_root, (blob.path for blob in blobs if blob.mode == "120000"))
         yield source_root
     finally:
         shutil.rmtree(temporary_root, ignore_errors=True)
+
+
+def _drop_uncontained_symlinks(source_root: Path, links: Iterable[str]) -> None:
+    root = source_root.resolve()
+    for relative in links:
+        path = source_root / relative
+        if not path.is_symlink():
+            continue
+        try:
+            path.resolve(strict=True).relative_to(root)
+        except (OSError, ValueError):
+            path.unlink()
