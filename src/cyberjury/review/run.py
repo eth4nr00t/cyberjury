@@ -177,7 +177,7 @@ def run_review[U: ReviewUnit](
     )
     with recorder.stage("result") as measure:
         issues = group_issues(findings, issue_links.links)
-        machine_findings = findings_artifact(findings, issues)
+        machine_findings = findings_artifact(findings, issues, unfinished=outcome.unfinished)
         measure.metrics.update(
             findings=len(machine_findings.findings),
             issues=len(machine_findings.issues),

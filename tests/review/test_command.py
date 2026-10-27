@@ -103,7 +103,7 @@ def _stub_review(*, incomplete: str = "", seen: dict | None = None):
         with recorder.stage("link"):
             pass
         with recorder.stage("result") as measure:
-            measure.bind(findings_artifact([], ()))
+            measure.bind(findings_artifact([], (), unfinished=frozenset()))
 
     return review
 
@@ -194,7 +194,7 @@ def test_stderr_prints_the_line_of_every_record_it_writes(diff_target, tmp_path)
 def test_every_record_kind_carries_its_fixed_metrics_and_attributes(diff_target, tmp_path):
     """Stages, review items, and the attempt each carry one fixed metric set in vocabulary order and attribute set."""
     state = tmp_path / "state"
-    usage = ["calls", "input_tokens", "cached_tokens", "output_tokens"]
+    usage = ["calls", "input_tokens", "cached_tokens", "cache_write_tokens", "output_tokens"]
 
     records = _records(_review(diff_target.target, state).out)
 

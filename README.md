@@ -48,9 +48,11 @@ Records are written under the review directory: the stages of an attempt in
 `attempts/<attempt>/stages/<stage>.json`, the attempt in `attempts/<attempt>/record.json`, and the
 review units and issue links in `review/items/` and `link/items/`. `artifacts` lists the files that
 hold a record's output, relative to the review directory. The findings of an attempt are in
-`attempts/<attempt>/findings.json`. Stderr prints one line per record as it is written. When the
-review ends, stdout prints the stage records and then the attempt record, each exactly as stored. A
-review that fails before its review directory exists prints the same records without storing them.
+`attempts/<attempt>/findings.json`. Model usage metrics are `calls`, `input_tokens`, which includes
+the `cached_tokens` read from and the `cache_write_tokens` written to the prompt cache, and
+`output_tokens`. Stderr prints one line per record as it is written. When the review ends, stdout
+prints the stage records and then the attempt record, each exactly as stored. A review that fails
+before its review directory exists prints the same records without storing them.
 
 | Exit code | Meaning |
 | :--- | :--- |
@@ -66,6 +68,11 @@ findings.
 never removes a finding, and each finding names its `issue_id`. Findings of one category at the same
 file and line form one issue. Other findings form one issue only when their cited source traces the
 other's location and the model answers that one code change fixes both.
+
+Each finding's `id` changes when the model rewords it. Its `fingerprint` is built only from the file,
+line, category, and change anchor, so it stays the same across runs while those stay the same, and
+findings that one issue groups by location share it. `unit_complete` is `false` when only review
+units that did not finish reported the finding.
 
 ## Install
 

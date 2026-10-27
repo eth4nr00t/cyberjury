@@ -66,7 +66,13 @@ def test_a_usage_stage_counts_only_the_model_calls_made_inside_it():
         _call(meter)
 
     [record] = recorder.stages
-    assert record.metrics == {"calls": 1, "input_tokens": 10, "cached_tokens": 0, "output_tokens": 2}
+    assert record.metrics == {
+        "calls": 1,
+        "input_tokens": 10,
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "output_tokens": 2,
+    }
 
 
 def test_unit_usage_counts_only_the_calls_of_that_unit():
@@ -80,6 +86,7 @@ def test_unit_usage_counts_only_the_calls_of_that_unit():
         "calls": 2,
         "input_tokens": 20,
         "cached_tokens": 0,
+        "cache_write_tokens": 0,
         "output_tokens": 4,
     }
 

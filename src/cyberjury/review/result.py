@@ -51,8 +51,10 @@ class FindingsArtifact:
         return {"schema": FINDINGS_SCHEMA, **semantic, "content_sha256": canonical_sha256(semantic)}
 
 
-def findings_artifact(findings: Iterable[Finding], issues: Sequence[Issue]) -> FindingsArtifact:
-    """Order the findings by severity and location, and list each issue in the order of its representative."""
+def findings_artifact(
+    findings: Iterable[Finding], issues: Sequence[Issue], *, unfinished: frozenset[str]
+) -> FindingsArtifact:
+    """Order the findings by severity and location, mark those only failed units reported, and list each issue."""
     issue_of = {member.candidate_id: issue.id for issue in issues for member in issue.members}
     ordered = sorted(findings, key=lambda item: (index(item.severity), item.file, item.line, item.candidate_id))
     position = {finding.candidate_id: number for number, finding in enumerate(ordered)}
@@ -60,6 +62,7 @@ def findings_artifact(findings: Iterable[Finding], issues: Sequence[Issue]) -> F
         findings=tuple(
             {
                 "id": finding.candidate_id,
+                "fingerprint": finding.fingerprint,
                 "title": finding.title,
                 "category": finding.category,
                 "severity": finding.severity,
@@ -71,6 +74,7 @@ def findings_artifact(findings: Iterable[Finding], issues: Sequence[Issue]) -> F
                 "evidence_refs": list(dict.fromkeys(finding.evidence_refs)),
                 "issue_id": issue_of[finding.candidate_id],
                 "change_anchor": finding.change_anchor.to_dict() if finding.change_anchor is not None else None,
+                "unit_complete": finding.candidate_id not in unfinished,
             }
             for finding in ordered
         ),

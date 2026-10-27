@@ -58,11 +58,12 @@ class ReviewCycle:
 
 @dataclass(frozen=True, kw_only=True)
 class ReviewOutcome:
-    """The finding union of one review, its failed units, and the findings without a valid location."""
+    """One review's finding union, failed units, unlocated findings, and the ids only failed units reported."""
 
     findings: tuple[Finding, ...]
     failures: tuple[ReviewUnitFailure, ...] = ()
     incomplete: tuple[Finding, ...] = ()
+    unfinished: frozenset[str] = frozenset()
 
     @property
     def complete(self) -> bool:
@@ -126,6 +127,7 @@ def run_review_units[U: ReviewUnit](
     accumulator = FindingAccumulator()
     for result in results:
         accumulator.add(result.findings)
+    finished = {finding.candidate_id for result in results if result.clean for finding in result.findings}
     return ReviewOutcome(
         findings=tuple(accumulator.findings),
         failures=tuple(
@@ -139,4 +141,11 @@ def run_review_units[U: ReviewUnit](
             if not result.clean
         ),
         incomplete=tuple(dict.fromkeys(item for result in results for item in result.incomplete)),
+        unfinished=frozenset(
+            finding.candidate_id
+            for result in results
+            if not result.clean
+            for finding in result.findings
+            if finding.candidate_id not in finished
+        ),
     )

@@ -48,7 +48,7 @@ def _start(session: ReviewSession, request: ReviewAttemptRequest):
 
 
 def _finish(attempt) -> None:
-    attempt.bind(findings_artifact([], ()))
+    attempt.bind(findings_artifact([], (), unfinished=frozenset()))
     attempt.finish(
         Record(
             id=attempt.workspace.attempt_id, status="ok", started_at=attempt.workspace.started_at, duration_seconds=1.0

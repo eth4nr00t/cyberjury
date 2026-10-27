@@ -30,6 +30,7 @@ METRICS = (
     "calls",
     "input_tokens",
     "cached_tokens",
+    "cache_write_tokens",
     "output_tokens",
 )
 _ATTEMPT_ID = re.compile(r"attempt-\d{8}-\d{6}-[0-9a-f]{8}")

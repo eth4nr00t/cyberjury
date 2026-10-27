@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
 from cyberjury.review.context import SourceSpan
-from cyberjury.review.identity import candidate_identity
+from cyberjury.review.identity import candidate_identity, location_fingerprint
 from cyberjury.severity import SEVERITIES
 
 
@@ -53,6 +53,17 @@ class Finding:
             anchor=(anchor.file, anchor.line, anchor.side) if anchor is not None else None,
             root_cause=self.title,
             source_operation_id=self.source_operation_id,
+        )
+
+    @property
+    def fingerprint(self) -> str:
+        """Return the identity of this problem across runs, which wording changes never move."""
+        anchor = self.change_anchor
+        return location_fingerprint(
+            file=self.file,
+            line=self.line,
+            category=self.category,
+            anchor=(anchor.file, anchor.line, anchor.side) if anchor is not None else None,
         )
 
     def reply_record(self) -> dict[str, object]:

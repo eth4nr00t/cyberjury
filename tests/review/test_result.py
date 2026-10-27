@@ -34,7 +34,9 @@ def test_findings_artifact_maps_every_target_onto_the_same_fields():
     )
     repository = _finding()
 
-    document = findings_artifact([repository, diff], (Issue(members=(diff,)), Issue(members=(repository,)))).to_dict()
+    document = findings_artifact(
+        [repository, diff], (Issue(members=(diff,)), Issue(members=(repository,))), unfinished=frozenset()
+    ).to_dict()
 
     assert document["schema"] == "cyberjury.findings/v1"
     assert [record["file"] for record in document["findings"]] == ["app.py", "views.py"]
@@ -42,6 +44,7 @@ def test_findings_artifact_maps_every_target_onto_the_same_fields():
     assert document["findings"][1]["change_anchor"] is None
     assert set(document["findings"][0]) == {
         "id",
+        "fingerprint",
         "title",
         "category",
         "severity",
@@ -53,6 +56,7 @@ def test_findings_artifact_maps_every_target_onto_the_same_fields():
         "evidence_refs",
         "issue_id",
         "change_anchor",
+        "unit_complete",
     }
 
 
@@ -62,7 +66,7 @@ def test_findings_artifact_records_every_member_of_a_grouped_issue_with_its_issu
     second = replace(first, title="share link creation lacks a document check")
     issue = Issue(members=(first, second), linked_by=("location",))
 
-    document = findings_artifact([first, second], (issue,)).to_dict()
+    document = findings_artifact([first, second], (issue,), unfinished=frozenset()).to_dict()
 
     assert [record["issue_id"] for record in document["findings"]] == [issue.id, issue.id]
     assert document["issues"] == [
@@ -80,7 +84,20 @@ def test_findings_artifact_hashes_its_content():
     """The content hash covers the findings, the issues, and the summary."""
     finding = _finding()
 
-    document = findings_artifact([finding], (Issue(members=(finding,)),)).to_dict()
+    document = findings_artifact([finding], (Issue(members=(finding,)),), unfinished=frozenset()).to_dict()
 
     content = {key: document[key] for key in ("findings", "issues", "summary")}
     assert document["content_sha256"] == canonical_sha256(content)
+
+
+def test_findings_artifact_marks_findings_only_failed_units_reported():
+    """A finding whose id is unfinished has unit_complete False, and the other finding has it True."""
+    finished, unfinished = _finding(), _finding(line=9)
+
+    document = findings_artifact(
+        [finished, unfinished],
+        (Issue(members=(finished,)), Issue(members=(unfinished,))),
+        unfinished=frozenset({unfinished.candidate_id}),
+    ).to_dict()
+
+    assert {record["line"]: record["unit_complete"] for record in document["findings"]} == {3: True, 9: False}

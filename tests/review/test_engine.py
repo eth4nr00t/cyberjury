@@ -163,3 +163,17 @@ def test_review_units_reuse_completed_units_and_retry_failed_units_keeping_their
     assert completed == [("failed", ["earlier", "new failed"]), ("open", ["new open"])]
     assert [finding.title for finding in outcome.findings] == ["done", "earlier", "new failed", "new open"]
     assert outcome.complete is True
+
+
+def test_review_units_name_the_findings_only_failed_units_reported():
+    """A finding from failed unit "one" is unfinished unless clean unit "two" reports it too."""
+    shared, failed_only = stub_finding("shared", "a:1"), stub_finding("failed only", "a:2")
+
+    def execute(unit):
+        if unit == "one":
+            return ReviewCycle(findings=[shared, failed_only], failure_reason="unavailable")
+        return ReviewCycle(findings=[shared])
+
+    outcome = _units(["one", "two"], execute)
+
+    assert outcome.unfinished == frozenset({failed_only.candidate_id})
