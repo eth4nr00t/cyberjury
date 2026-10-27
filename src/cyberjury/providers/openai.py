@@ -22,12 +22,12 @@ class OpenAIProvider(Provider):
     def __init__(
         self,
         *,
-        api_base: str | None = None,
+        base_url: str | None = None,
         client: Any | None = None,
         timeout: float = REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         """Store OpenAI connection settings without constructing the client eagerly."""
-        self._api_base = api_base
+        self._base_url = base_url
         self._client = client
         self._timeout = timeout
 
@@ -36,8 +36,8 @@ class OpenAIProvider(Provider):
             import openai
 
             kwargs: dict[str, Any] = {"max_retries": 0}
-            if self._api_base:
-                kwargs["base_url"] = self._api_base
+            if self._base_url:
+                kwargs["base_url"] = self._base_url
             self._client = openai.OpenAI(**kwargs)
         return self._client
 

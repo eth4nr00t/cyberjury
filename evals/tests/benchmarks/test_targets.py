@@ -1,10 +1,13 @@
-"""Benchmark git targets fetch the exact commits their cases pin."""
+"""Benchmark git targets fetch the exact commits their cases pin and report git's own errors."""
 
 from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from evals.benchmarks import targets
+from tests.support import git
 
 
 def test_git_url_targets_fetch_exact_commits(tmp_path, monkeypatch):
@@ -22,3 +25,16 @@ def test_git_url_targets_fetch_exact_commits(tmp_path, monkeypatch):
 
     assert ["git", "-C", str(tmp_path), "fetch", "origin", "abc123"] in calls
     assert ["git", "-C", str(tmp_path), "fetch", "origin", "def456"] in calls
+
+
+def test_a_failed_checkout_reports_the_git_error(tmp_path):
+    """Checking out a commit the repository lacks raises with git's own invalid reference message."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "--quiet")
+
+    with (
+        pytest.raises(RuntimeError, match="invalid reference"),
+        targets.source_root({"local_path": str(repo), "commit": "0" * 40}),
+    ):
+        pass

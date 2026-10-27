@@ -47,9 +47,9 @@ def test_prepare_assigns_downstream_logic_to_review_units(tmp_path):
 
 
 def test_prepare_records_binary_undecodable_and_empty_files_as_skipped(tmp_path):
-    """A PNG, a Latin-1 legacy.py, and an empty.py are skipped with reasons, and only app.py is planned."""
+    """A SQLite cache.db, a Latin-1 legacy.py, and an empty.py are skipped with reasons, and only app.py is planned."""
     target = _target(tmp_path)
-    (target / "banner.png").write_bytes(b"\x89PNG\r\n\x1a\n\0binary")
+    (target / "cache.db").write_bytes(b"SQLite format 3\0binary")
 
     (target / "legacy.py").write_bytes("name = 'caf\xe9'\n".encode("latin-1"))
     (target / "empty.py").write_text("")
@@ -61,7 +61,7 @@ def test_prepare_records_binary_undecodable_and_empty_files_as_skipped(tmp_path)
 
     assert [unit.file for unit in res.units] == ["app.py"]
     assert artifacts[SkippedFiles].files == (
-        SkippedFile(path="banner.png", reason="binary"),
+        SkippedFile(path="cache.db", reason="binary"),
         SkippedFile(path="empty.py", reason="empty_file"),
         SkippedFile(path="legacy.py", reason="not_utf8"),
     )

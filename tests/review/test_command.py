@@ -48,13 +48,12 @@ class _Run:
 
 def _review(
     target: TargetInput,
-    state_dir: Path,
+    state_dir: Path | None,
     *,
     fresh: bool | None = None,
-    concurrency: int | None = None,
 ) -> _Run:
     stdout, stderr = io.StringIO(), io.StringIO()
-    command = ReviewCommand(target=target, fresh=fresh, concurrency=concurrency, state_dir=str(state_dir))
+    command = ReviewCommand(target=target, fresh=fresh, state_dir=str(state_dir) if state_dir is not None else None)
     record = run_review_command(command, stdout=stdout, stderr=stderr)
     return _Run(record=record, out=stdout.getvalue(), err=stderr.getvalue())
 
@@ -272,6 +271,42 @@ def test_an_invalid_git_range_fails_the_target_stage_before_any_state_directory_
     assert not state.exists()
 
 
+@pytest.mark.parametrize("value", ["0", "two"])
+def test_an_invalid_concurrency_setting_fails_the_config_stage(monkeypatch, diff_target, tmp_path, value):
+    """A CYBERJURY_CONCURRENCY of 0 or two fails the config record with a config error naming the setting."""
+    monkeypatch.setenv("CYBERJURY_CONCURRENCY", value)
+    state = tmp_path / "state"
+
+    run = _review(diff_target.target, state)
+
+    config = _stage(_records(run.out), "config")
+    assert config["error"] == {"code": "config", "message": f"CYBERJURY_CONCURRENCY is not a positive integer: {value}"}
+    assert not state.exists()
+
+
+@pytest.mark.parametrize(
+    ("variables", "expected"),
+    [
+        ({"CYBERJURY_STATE_DIR": "state", "XDG_DATA_HOME": "data"}, "state"),
+        ({"XDG_DATA_HOME": "data"}, "data/cyberjury"),
+        ({}, "home/.local/share/cyberjury"),
+    ],
+)
+def test_the_state_directory_comes_from_the_environment_or_the_user_data_directory(
+    monkeypatch, diff_target, tmp_path, variables, expected
+):
+    """The session goes under CYBERJURY_STATE_DIR, else $XDG_DATA_HOME/cyberjury, else ~/.local/share/cyberjury."""
+    monkeypatch.setattr(commandmod, "run_review", _stub_review())
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    for name, value in variables.items():
+        monkeypatch.setenv(name, str(tmp_path / value))
+
+    assert _review(diff_target.target, None).record.status == "ok"
+
+    assert _attempt_dir(tmp_path / expected).is_dir()
+
+
 def test_a_state_directory_inside_the_repository_is_rejected_before_it_is_created(tmp_path):
     """A state directory inside the repository fails the target stage with an input error and is never created."""
     repository = tmp_path / "repo"
@@ -470,13 +505,15 @@ def test_a_review_whose_live_source_changes_keeps_its_result_and_says_so(tmp_pat
     assert attempt["attributes"] == {"source_changed": True}
 
 
-@pytest.mark.parametrize(("concurrency", "expected"), [(None, 8), (4, 4)])
-def test_repository_review_concurrency_uses_the_api_default(monkeypatch, tmp_path, concurrency, expected):
-    """Repository concurrency is 8 when unset and 4 when set to 4, on the finder seat."""
+@pytest.mark.parametrize(("concurrency", "expected"), [(None, 8), ("4", 4)])
+def test_repository_review_concurrency_comes_from_the_environment(monkeypatch, tmp_path, concurrency, expected):
+    """Repository concurrency is 8 when CYBERJURY_CONCURRENCY is unset and 4 when it is 4."""
     seen = {}
     monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
+    if concurrency is not None:
+        monkeypatch.setenv("CYBERJURY_CONCURRENCY", concurrency)
 
-    run = _review(_repository(_seed_source(tmp_path / "svc")), tmp_path / "state", concurrency=concurrency)
+    run = _review(_repository(_seed_source(tmp_path / "svc")), tmp_path / "state")
 
     assert run.record.status == "ok"
     assert seen["concurrency"] == expected
@@ -486,10 +523,11 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     """The request.json records the seat id and concurrency 5, model-calls.json is empty, and no key leaks."""
     seen = {}
     monkeypatch.setenv("OPENAI_API_KEY", "secret-canary")
+    monkeypatch.setenv("CYBERJURY_CONCURRENCY", "5")
     monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
     state = tmp_path / "state"
 
-    assert _review(diff_target.target, state, concurrency=5).record.status == "ok"
+    assert _review(diff_target.target, state).record.status == "ok"
 
     attempt = _attempt_dir(state)
     request = json.loads((attempt / "request.json").read_text())

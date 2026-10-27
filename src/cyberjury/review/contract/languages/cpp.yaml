@@ -1,9 +1,15 @@
 extensions: [.cc, .cpp, .cxx, .h, .hh, .hpp, .hxx]
 grammar: [tree_sitter_cpp, language]
 files:
-  dependency_dirs: [3rdparty, third_party]
-  test_name_patterns: ['*_test.cc', '*_test.cpp', '*_test.cxx', '*_unittest.cc', '*_unittest.cpp', '*_unittest.cxx']
-  lockfiles: [conan.lock]
+  test_name_patterns:
+    - "*_test.cc"
+    - "*_test.cpp"
+    - "*_test.cxx"
+    - "*_unittest.cc"
+    - "*_unittest.cpp"
+    - "*_unittest.cxx"
+  lockfiles:
+    - conan.lock
 syntax:
   definitions: |
     [(function_definition declarator: (function_declarator declarator: (identifier) @name))
@@ -28,16 +34,16 @@ syntax:
      (type_definition declarator: (type_identifier) @name)
      (alias_declaration name: (type_identifier) @name)] @type
   structural_relationships:
-  - kind: inheritance
-    query: |
-      (class_specifier
-        name: (type_identifier) @owner_name
-        (base_class_clause (type_identifier) @reference @target_name)) @owner
-  - kind: inheritance
-    query: |
-      (struct_specifier
-        name: (type_identifier) @owner_name
-        (base_class_clause (type_identifier) @reference @target_name)) @owner
+    - kind: inheritance
+      query: |
+        (class_specifier
+          name: (type_identifier) @owner_name
+          (base_class_clause (type_identifier) @reference @target_name)) @owner
+    - kind: inheritance
+      query: |
+        (struct_specifier
+          name: (type_identifier) @owner_name
+          (base_class_clause (type_identifier) @reference @target_name)) @owner
   calls: |
     (call_expression function: (identifier) @callee arguments: (argument_list)) @call
     (call_expression function: (field_expression argument: (_) @receiver field: (field_identifier) @member)

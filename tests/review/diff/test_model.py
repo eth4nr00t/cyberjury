@@ -121,12 +121,12 @@ def test_strip_unreviewable_files_skips_asset_changes_but_keeps_templates_and_qu
 
 
 def test_strip_unreviewable_files_skips_binary_changes(tmp_path):
-    """A binary logo.png change is skipped as binary while the app.py source chunk is kept."""
-    binary = "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n"
+    """A binary cache.db change is skipped as binary while the app.py source chunk is kept."""
+    binary = "diff --git a/cache.db b/cache.db\nBinary files a/cache.db and b/cache.db differ\n"
 
     kept, skipped = strip_unreviewable_files(binary + _SRC, _DETECTION, root=tmp_path)
 
-    assert [(item.path, item.reason) for item in skipped] == [("logo.png", "binary")]
+    assert [(item.path, item.reason) for item in skipped] == [("cache.db", "binary")]
     assert kept == _SRC
 
 

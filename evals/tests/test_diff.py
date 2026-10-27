@@ -22,7 +22,7 @@ def _finder_reply(findings: list[dict]) -> str:
 
 
 def _run(cases, state_dir, **values):
-    options = {"runs": 1, "concurrency": 8, "progress": lambda _line: None, "on_attempt": lambda _record: None}
+    options = {"runs": 1, "progress": lambda _line: None, "on_attempt": lambda _record: None}
     return diff.run(cases, state_dir=state_dir, **(options | values))
 
 
@@ -91,16 +91,6 @@ def test_run_reviews_the_pinned_range_through_the_product_command(
     assert "+    return save(owner=None)" in provider.calls[0]["prompt"]
     [attempt] = (tmp_path / "reviews").glob("demo/*/run-01/reviews/*/attempts/*")
     assert json.loads((attempt / "model-calls.json").read_text())["usage"]["model_requests"] == len(provider.calls)
-
-
-def test_run_forwards_its_concurrency_to_the_review(tmp_path, case, scripted_model):
-    """Running with concurrency=3 records a review request with review concurrency 3."""
-    scripted_model()
-
-    _run([case], tmp_path / "reviews", concurrency=3)
-
-    [attempt] = (tmp_path / "reviews").glob("demo/*/run-01/reviews/*/attempts/*")
-    assert json.loads((attempt / "request.json").read_text())["concurrency"]["review"] == 3
 
 
 def test_run_reports_each_case_start_and_finish(tmp_path, case, scripted_model, owner_finding):

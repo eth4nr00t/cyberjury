@@ -278,6 +278,25 @@ def test_solidity_file_level_struct_and_enum_are_type_definitions(tmp_path):
     }
 
 
+def test_typescript_abstract_classes_interfaces_enums_and_type_aliases_are_type_definitions(tmp_path):
+    """An abstract class with an abstract method, an interface, an enum, and a type alias are searchable definitions."""
+    (tmp_path / "types.ts").write_text(
+        "abstract class Repo {\n  abstract load(id: string): Item;\n}\n"
+        "interface Item { id: string }\nenum Kind { A, B }\ntype Alias = { id: string };\n",
+        encoding="utf-8",
+    )
+
+    definitions = {(item.name, item.kind) for item in syntax_facts(tmp_path).relationships.definitions}
+
+    assert definitions == {
+        ("Repo", "type"),
+        ("load", "function"),
+        ("Item", "type"),
+        ("Kind", "type"),
+        ("Alias", "type"),
+    }
+
+
 def test_one_extension_maps_to_one_language():
     """No file extension is claimed by more than one language spec."""
     seen: dict[str, str] = {}
@@ -414,14 +433,14 @@ def test_every_tree_sitter_language_uses_one_parse_limitation_contract(tmp_path,
 
 
 def test_an_unsupported_typescript_export_does_not_abort_other_files(tmp_path):
-    """A barrel.ts with "export type * from" yields one typescript limitation while ok.ts keeps facts."""
+    """A barrel.ts with "export type * from" yields one typescript limitation while model.ts and ok.ts keep facts."""
     (tmp_path / "barrel.ts").write_text("export type * from './model';\n")
     (tmp_path / "model.ts").write_text("export interface Model { id: string }\n")
     (tmp_path / "ok.ts").write_text("export function ok() { return true; }\n")
 
     facts = syntax_facts(tmp_path)
 
-    assert set(callgraph(tmp_path)) == {"ok.ts"}
+    assert set(callgraph(tmp_path)) == {"model.ts", "ok.ts"}
     assert [(item.source, item.analyzer) for item in facts.limitations] == [("barrel.ts", "typescript")]
 
 

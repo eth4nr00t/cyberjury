@@ -52,6 +52,7 @@ def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
         "go.sum",
         "uv.lock",
         "public/css/app.min.css.map",
+        "src/messages.xliff",
         "bun.lock",
         "deno.lock",
         "app/tests/test_views.py",

@@ -44,53 +44,29 @@ def source_root(target: Mapping[str, str]) -> Iterator[Path]:
     ensure_git_target_refs(target, root)
     temporary = Path(tempfile.mkdtemp(prefix="cyberjury-eval-target-"))
     try:
-        subprocess.run(
-            ["git", "-C", str(root), "worktree", "add", "--detach", "--quiet", str(temporary), target["commit"]],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        _git("-C", str(root), "worktree", "add", "--detach", "--quiet", str(temporary), target["commit"])
         yield temporary
     finally:
-        subprocess.run(
-            ["git", "-C", str(root), "worktree", "remove", "--force", str(temporary)],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        _git("-C", str(root), "worktree", "remove", "--force", str(temporary), check=False)
         shutil.rmtree(temporary, ignore_errors=True)
 
 
+def _git(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(["git", *arguments], capture_output=True, text=True, check=False)
+    if check and completed.returncode != 0:
+        detail = (completed.stderr or "").strip() or f"exit status {completed.returncode}"
+        raise RuntimeError(f"git {' '.join(arguments)} failed: {detail}")
+    return completed
+
+
 def _ensure_commit(root: Path, ref: str) -> None:
-    exists = subprocess.run(
-        ["git", "-C", str(root), "cat-file", "-e", f"{ref}^{{commit}}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if exists.returncode == 0:
-        return
-    subprocess.run(
-        ["git", "-C", str(root), "fetch", "origin", ref],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    if _git("-C", str(root), "cat-file", "-e", f"{ref}^{{commit}}", check=False).returncode != 0:
+        _git("-C", str(root), "fetch", "origin", ref)
 
 
 def _sync_clone(url: str, root: Path) -> None:
     if (root / ".git").is_dir():
-        subprocess.run(
-            ["git", "-C", str(root), "fetch", "--tags", "--force", "origin", "+refs/heads/*:refs/remotes/origin/*"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        _git("-C", str(root), "fetch", "--tags", "--force", "origin", "+refs/heads/*:refs/remotes/origin/*")
         return
     root.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["git", "clone", "--filter=blob:none", "--no-checkout", url, str(root)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    _git("clone", "--filter=blob:none", "--no-checkout", url, str(root))

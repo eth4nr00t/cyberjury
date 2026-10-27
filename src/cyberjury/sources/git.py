@@ -240,56 +240,56 @@ def _write_git_blobs(repository: str, blobs: tuple[_GitBlob, ...], source_root: 
     except OSError as exc:
         raise GitSourceError(f"Git blob reader could not start: {exc}") from exc
     total_bytes = 0
-    try:
-        for blob in blobs:
-            process.stdin.write(blob.object_id.encode("ascii") + b"\n")
-            process.stdin.flush()
-            header = process.stdout.readline().decode("ascii").strip().split(" ")
-            if len(header) != 3 or header[0] != blob.object_id or header[1] != "blob":
-                raise GitSourceError(f"Git object is not the expected blob for {blob.path!r}")
-            try:
-                size = int(header[2])
-            except ValueError as exc:
-                raise GitSourceError(f"Git blob size is invalid for {blob.path!r}") from exc
-            if size > _MAX_GIT_BLOB_BYTES:
-                raise GitSourceError(f"Git blob exceeds the byte limit: {blob.path!r}")
-            total_bytes += size
-            if total_bytes > _MAX_GIT_TREE_BYTES:
-                raise GitSourceError("Git tree exceeds the total byte limit")
-            path = source_root / blob.path
-            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            if blob.mode == "120000":
-                if size > _MAX_GIT_SYMLINK_BYTES:
-                    raise GitSourceError(f"Git symlink target exceeds the byte limit: {blob.path!r}")
-                content = process.stdout.read(size)
-                if len(content) != size:
-                    raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
+    with process:
+        try:
+            for blob in blobs:
+                process.stdin.write(blob.object_id.encode("ascii") + b"\n")
+                process.stdin.flush()
+                header = process.stdout.readline().decode("ascii").strip().split(" ")
+                if len(header) != 3 or header[0] != blob.object_id or header[1] != "blob":
+                    raise GitSourceError(f"Git object is not the expected blob for {blob.path!r}")
                 try:
-                    link_target = content.decode("utf-8")
-                except UnicodeError as exc:
-                    raise GitSourceError(f"Git symlink target is not UTF-8: {blob.path!r}") from exc
-                if not safe_link_target(link_target):
-                    raise GitSourceError(f"Git symlink target must be relative: {blob.path!r}")
-                path.symlink_to(link_target)
-            else:
-                remaining = size
-                with path.open("xb") as stream:
-                    while remaining:
-                        chunk = process.stdout.read(min(1_048_576, remaining))
-                        if not chunk:
-                            raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
-                        stream.write(chunk)
-                        remaining -= len(chunk)
-                path.chmod(0o755 if blob.mode == "100755" else 0o644)
-            if process.stdout.read(1) != b"\n":
-                raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
-        process.stdin.close()
-        if process.wait() != 0:
-            raise GitSourceError("Git blob reader failed")
-    except BaseException:
-        process.kill()
-        process.wait()
-        raise
+                    size = int(header[2])
+                except ValueError as exc:
+                    raise GitSourceError(f"Git blob size is invalid for {blob.path!r}") from exc
+                if size > _MAX_GIT_BLOB_BYTES:
+                    raise GitSourceError(f"Git blob exceeds the byte limit: {blob.path!r}")
+                total_bytes += size
+                if total_bytes > _MAX_GIT_TREE_BYTES:
+                    raise GitSourceError("Git tree exceeds the total byte limit")
+                path = source_root / blob.path
+                path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                if blob.mode == "120000":
+                    if size > _MAX_GIT_SYMLINK_BYTES:
+                        raise GitSourceError(f"Git symlink target exceeds the byte limit: {blob.path!r}")
+                    content = process.stdout.read(size)
+                    if len(content) != size:
+                        raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
+                    try:
+                        link_target = content.decode("utf-8")
+                    except UnicodeError as exc:
+                        raise GitSourceError(f"Git symlink target is not UTF-8: {blob.path!r}") from exc
+                    if not safe_link_target(link_target):
+                        raise GitSourceError(f"Git symlink target must be relative: {blob.path!r}")
+                    path.symlink_to(link_target)
+                else:
+                    remaining = size
+                    with path.open("xb") as stream:
+                        while remaining:
+                            chunk = process.stdout.read(min(1_048_576, remaining))
+                            if not chunk:
+                                raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
+                            stream.write(chunk)
+                            remaining -= len(chunk)
+                    path.chmod(0o755 if blob.mode == "100755" else 0o644)
+                if process.stdout.read(1) != b"\n":
+                    raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
+            process.stdin.close()
+            if process.wait() != 0:
+                raise GitSourceError("Git blob reader failed")
+        except BaseException:
+            process.kill()
+            raise
 
 
 @contextlib.contextmanager

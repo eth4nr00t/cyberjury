@@ -1,13 +1,22 @@
-extensions: [.ts, .mts, .cts]
+extensions: [.cts, .mts, .ts]
 grammar: [tree_sitter_typescript, language_typescript]
 inherits: javascript
 files:
-  test_name_patterns: ['*.spec.mts', '*.spec.ts', '*.test.mts', '*.test.ts']
+  test_name_patterns:
+    - "*.spec.mts"
+    - "*.spec.ts"
+    - "*.test.mts"
+    - "*.test.ts"
 syntax:
   definitions: |
     [(function_declaration name: (identifier) @name)
      (class_declaration name: (type_identifier) @name)
+     (abstract_class_declaration name: (type_identifier) @name)
+     (interface_declaration name: (type_identifier) @name)
+     (enum_declaration name: (identifier) @name)
+     (type_alias_declaration name: (type_identifier) @name)
      (method_definition name: (property_identifier) @name)
+     (abstract_method_signature name: (property_identifier) @name)
      (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])
      (assignment_expression
        left: (member_expression
@@ -25,13 +34,36 @@ syntax:
        (#eq? @module "module")
        (#eq? @exports "exports"))] @def
   type_definitions: |
-    (class_declaration name: (type_identifier) @name) @type
+    [(class_declaration name: (type_identifier) @name)
+     (abstract_class_declaration name: (type_identifier) @name)
+     (interface_declaration name: (type_identifier) @name)
+     (enum_declaration name: (identifier) @name)
+     (type_alias_declaration name: (type_identifier) @name)] @type
   structural_relationships:
-  - kind: inheritance
-    query: |
-      (class_declaration
-        name: (type_identifier) @owner_name
-        (class_heritage
-          (extends_clause value:
-            [(identifier) @reference @target_name
-             (member_expression property: (property_identifier) @target_name) @reference]))) @owner
+    - kind: inheritance
+      query: |
+        (class_declaration
+          name: (type_identifier) @owner_name
+          (class_heritage
+            (extends_clause value:
+              [(identifier) @reference @target_name
+               (member_expression property: (property_identifier) @target_name) @reference]))) @owner
+        (abstract_class_declaration
+          name: (type_identifier) @owner_name
+          (class_heritage
+            (extends_clause value:
+              [(identifier) @reference @target_name
+               (member_expression property: (property_identifier) @target_name) @reference]))) @owner
+    - kind: inheritance
+      query: |
+        (class_declaration
+          name: (type_identifier) @owner_name
+          (class_heritage (implements_clause (type_identifier) @reference @target_name))) @owner
+        (abstract_class_declaration
+          name: (type_identifier) @owner_name
+          (class_heritage (implements_clause (type_identifier) @reference @target_name))) @owner
+    - kind: inheritance
+      query: |
+        (interface_declaration
+          name: (type_identifier) @owner_name
+          (extends_type_clause (type_identifier) @reference @target_name)) @owner

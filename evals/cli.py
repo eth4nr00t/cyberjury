@@ -7,8 +7,6 @@ import json
 import sys
 from pathlib import Path
 
-from cyberjury.cli import positive_int
-from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from evals.attempts import attempt_path, recorded_attempt
 from evals.benchmarks.cases import find_case, load_cases
 from evals.benchmarks.validate import validate_benchmark
@@ -27,6 +25,16 @@ def _write_new(path: Path, document: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8") as output:
         output.write(json.dumps(document, indent=1, ensure_ascii=False))
+
+
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        parsed = 0
+    if parsed < 1:
+        raise ValueError("must be a positive integer")
+    return parsed
 
 
 def _progress(line: str) -> None:
@@ -56,7 +64,6 @@ def _cmd_diff(args) -> int:
     records = run(
         cases,
         runs=args.runs,
-        concurrency=args.concurrency,
         state_dir=state_dir,
         progress=_progress,
         on_attempt=save_attempt,
@@ -173,13 +180,8 @@ def main(argv: list[str] | None = None) -> int:
         "diff", parents=[benchmark], help="run diff cases and record one attempt per case and run", allow_abbrev=False
     )
     diff_parser.add_argument("--case", metavar="NAME", default=None, help="exact name of the one case to run")
-    diff_parser.add_argument("--runs", metavar="N", type=positive_int, default=1, help="independent runs of every case")
     diff_parser.add_argument(
-        "--concurrency",
-        metavar="N",
-        type=positive_int,
-        default=DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency,
-        help="review units or issue link judgments of each case to run in parallel",
+        "--runs", metavar="N", type=_positive_int, default=1, help="independent runs of every case"
     )
     diff_parser.add_argument(
         "--attempts-dir", metavar="DIR", required=True, help="runs directory for <project>/<case>/attempt-NN.json"
@@ -221,12 +223,12 @@ def main(argv: list[str] | None = None) -> int:
         help="new private mapping path outside --out, default <out>.private/mapping.json",
     )
     packets_parser.add_argument(
-        "--groups", metavar="N", type=positive_int, default=1, help="number of packets to split the cases into"
+        "--groups", metavar="N", type=_positive_int, default=1, help="number of packets to split the cases into"
     )
     packets_parser.add_argument(
         "--max-reports",
         metavar="N",
-        type=positive_int,
+        type=_positive_int,
         default=None,
         help="most reports in one packet entry, a larger case is split into entries that list each other",
     )

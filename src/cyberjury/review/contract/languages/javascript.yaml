@@ -1,10 +1,28 @@
-extensions: [.js, .jsx, .mjs, .cjs]
+extensions: [.cjs, .js, .jsx, .mjs]
 grammar: [tree_sitter_javascript, language]
 files:
-  ignored_dirs: [node_modules]
-  test_dirs: [__mocks__, __tests__]
-  test_name_patterns: ['*.spec.cjs', '*.spec.js', '*.spec.jsx', '*.spec.mjs', '*.test.cjs', '*.test.js', '*.test.jsx', '*.test.mjs']
-  lockfiles: [bun.lock, bun.lockb, deno.lock, npm-shrinkwrap.json, package-lock.json, pnpm-lock.yaml, yarn.lock]
+  ignored_dirs:
+    - node_modules
+  test_dirs:
+    - __mocks__
+    - __tests__
+  test_name_patterns:
+    - "*.spec.cjs"
+    - "*.spec.js"
+    - "*.spec.jsx"
+    - "*.spec.mjs"
+    - "*.test.cjs"
+    - "*.test.js"
+    - "*.test.jsx"
+    - "*.test.mjs"
+  lockfiles:
+    - bun.lock
+    - bun.lockb
+    - deno.lock
+    - npm-shrinkwrap.json
+    - package-lock.json
+    - pnpm-lock.yaml
+    - yarn.lock
 syntax:
   definitions: |
     [(function_declaration name: (identifier) @name)
@@ -29,68 +47,68 @@ syntax:
   type_definitions: |
     (class_declaration name: (identifier) @name) @type
   structural_relationships:
-  - kind: inheritance
-    query: |
-      (class_declaration
-        name: (identifier) @owner_name
-        (class_heritage
-          [(identifier) @reference @target_name
-           (member_expression property: (property_identifier) @target_name) @reference])) @owner
+    - kind: inheritance
+      query: |
+        (class_declaration
+          name: (identifier) @owner_name
+          (class_heritage
+            [(identifier) @reference @target_name
+             (member_expression property: (property_identifier) @target_name) @reference])) @owner
   calls: |
     (call_expression function: (identifier) @callee arguments: (arguments)) @call
     (call_expression function: (member_expression object: (_) @receiver property: (property_identifier) @member)
       arguments: (arguments)) @call
   imports:
-  - query: |
-      (import_statement
-        (import_clause (named_imports (import_specifier name: (identifier) @imported !alias)))
-        source: (string) @module) @statement
-  - query: |
-      (import_statement
-        (import_clause
-          (named_imports
-            (import_specifier name: (identifier) @imported alias: (identifier) @alias)))
-        source: (string) @module) @statement
-  - query: |
-      (import_statement (import_clause (identifier) @alias) source: (string) @module) @statement
-    imported: default
-  - query: |
-      (export_statement (export_clause (export_specifier name: (identifier) @imported !alias))
-        source: (string) @module) @statement
-  - query: |
-      (export_statement
-        (export_clause
-          (export_specifier name: (identifier) @imported alias: (identifier) @alias))
-        source: (string) @module) @statement
-  - query: |
-      (export_statement "*" source: (string) @module) @statement
-    imported: '*'
-  - query: |
-      (variable_declarator
-        name: (object_pattern (shorthand_property_identifier_pattern) @imported)
-        value: (call_expression
-          function: (identifier) @require
-          arguments: (arguments (string) @module))
-        (#eq? @require "require")) @statement
-  - query: |
-      (variable_declarator
-        name: (object_pattern
-          (pair_pattern key: (property_identifier) @imported value: (identifier) @alias))
-        value: (call_expression
-          function: (identifier) @require
-          arguments: (arguments (string) @module))
-        (#eq? @require "require")) @statement
+    - query: |
+        (import_statement
+          (import_clause (named_imports (import_specifier name: (identifier) @imported !alias)))
+          source: (string) @module) @statement
+    - query: |
+        (import_statement
+          (import_clause
+            (named_imports
+              (import_specifier name: (identifier) @imported alias: (identifier) @alias)))
+          source: (string) @module) @statement
+    - query: |
+        (import_statement (import_clause (identifier) @alias) source: (string) @module) @statement
+      imported: default
+    - query: |
+        (export_statement (export_clause (export_specifier name: (identifier) @imported !alias))
+          source: (string) @module) @statement
+    - query: |
+        (export_statement
+          (export_clause
+            (export_specifier name: (identifier) @imported alias: (identifier) @alias))
+          source: (string) @module) @statement
+    - query: |
+        (export_statement "*" source: (string) @module) @statement
+      imported: "*"
+    - query: |
+        (variable_declarator
+          name: (object_pattern (shorthand_property_identifier_pattern) @imported)
+          value: (call_expression
+            function: (identifier) @require
+            arguments: (arguments (string) @module))
+          (#eq? @require "require")) @statement
+    - query: |
+        (variable_declarator
+          name: (object_pattern
+            (pair_pattern key: (property_identifier) @imported value: (identifier) @alias))
+          value: (call_expression
+            function: (identifier) @require
+            arguments: (arguments (string) @module))
+          (#eq? @require "require")) @statement
   namespace_imports:
-  - |
-    (import_statement (import_clause (namespace_import (identifier) @alias))
-      source: (string) @module) @statement
-  - |
-    (variable_declarator
-      name: (identifier) @alias
-      value: (call_expression
-        function: (identifier) @require
-        arguments: (arguments (string) @module))
-      (#eq? @require "require")) @statement
+    - |
+      (import_statement (import_clause (namespace_import (identifier) @alias))
+        source: (string) @module) @statement
+    - |
+      (variable_declarator
+        name: (identifier) @alias
+        value: (call_expression
+          function: (identifier) @require
+          arguments: (arguments (string) @module))
+        (#eq? @require "require")) @statement
   qualified_uses: |
     (member_expression object: [(identifier) (member_expression)] @qualifier
       property: (property_identifier) @name)

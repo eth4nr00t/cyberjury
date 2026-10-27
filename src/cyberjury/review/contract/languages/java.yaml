@@ -1,8 +1,10 @@
 extensions: [.java]
 grammar: [tree_sitter_java, language]
 files:
-  ignored_dirs: [.gradle]
-  lockfiles: [gradle.lockfile]
+  ignored_dirs:
+    - .gradle
+  lockfiles:
+    - gradle.lockfile
 syntax:
   definitions: |
     [(class_declaration name: (identifier) @name)
@@ -18,16 +20,26 @@ syntax:
      (enum_declaration name: (identifier) @name)
      (record_declaration name: (identifier) @name)] @type
   structural_relationships:
-  - kind: inheritance
-    query: |
-      (class_declaration
-        name: (identifier) @owner_name
-        superclass: (superclass (type_identifier) @reference @target_name)) @owner
-  - kind: inheritance
-    query: |
-      (class_declaration
-        name: (identifier) @owner_name
-        interfaces: (super_interfaces (type_list (type_identifier) @reference @target_name))) @owner
+    - kind: inheritance
+      query: |
+        (class_declaration
+          name: (identifier) @owner_name
+          superclass: (superclass (type_identifier) @reference @target_name)) @owner
+    - kind: inheritance
+      query: |
+        (class_declaration
+          name: (identifier) @owner_name
+          interfaces: (super_interfaces (type_list (type_identifier) @reference @target_name))) @owner
+    - kind: inheritance
+      query: |
+        (interface_declaration
+          name: (identifier) @owner_name
+          (extends_interfaces (type_list (type_identifier) @reference @target_name))) @owner
+    - kind: inheritance
+      query: |
+        (enum_declaration
+          name: (identifier) @owner_name
+          interfaces: (super_interfaces (type_list (type_identifier) @reference @target_name))) @owner
   calls: |
     (method_invocation !object name: (identifier) @callee arguments: (argument_list)) @call
     (method_invocation object: (_) @receiver name: (identifier) @member arguments: (argument_list)) @call

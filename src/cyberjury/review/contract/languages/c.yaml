@@ -1,9 +1,11 @@
 extensions: [.c]
 grammar: [tree_sitter_c, language]
 files:
-  dependency_dirs: [3rdparty, third_party]
-  test_name_patterns: ['*_test.c', '*_unittest.c']
-  lockfiles: [conan.lock]
+  test_name_patterns:
+    - "*_test.c"
+    - "*_unittest.c"
+  lockfiles:
+    - conan.lock
 syntax:
   definitions: |
     [(function_definition declarator: (function_declarator declarator: (identifier) @name))

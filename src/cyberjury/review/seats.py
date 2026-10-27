@@ -13,7 +13,7 @@ from cyberjury.review.request import ProviderSeatRecord, endpoint_identity, seat
 
 def provider_seat_record(seat: ProviderSeat) -> ProviderSeatRecord:
     """Describe one effective provider transport without credentials."""
-    endpoint = endpoint_identity(seat.api_base)
+    endpoint = endpoint_identity(seat.base_url)
     return ProviderSeatRecord(
         seat_id=seat_identity(seat.provider, seat.model, endpoint),
         provider=seat.provider,

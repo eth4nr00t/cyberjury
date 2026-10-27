@@ -33,6 +33,22 @@ def test_binary_undecodable_and_empty_files_are_skipped_with_reasons(tmp_path):
     }
 
 
+def test_image_font_and_pdf_assets_are_excluded_without_being_listed_as_skipped(tmp_path):
+    """A PNG logo, a WOFF2 font, and a PDF guide are neither reviewed nor reported as skipped binaries."""
+    selection = _select(
+        tmp_path,
+        {
+            "app.py": b"value = 1\n",
+            "static/logo.png": b"\x89PNG\r\n\x1a\n\0image",
+            "static/font.woff2": b"wOF2\0font",
+            "docs/guide.pdf": b"%PDF-1.7\n\0document",
+        },
+    )
+
+    assert selection.review_files == ("app.py",)
+    assert selection.skipped_files == ()
+
+
 def test_documentation_is_navigable_but_not_reviewed(tmp_path):
     """README.md is offered to navigation and kept out of review."""
     selection = _select(tmp_path, {"app.py": b"value = 1\n", "README.md": b"documentation\n"})

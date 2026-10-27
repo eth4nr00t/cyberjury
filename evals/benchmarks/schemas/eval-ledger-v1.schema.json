@@ -5,7 +5,17 @@
   "description": "The version 1 schema for one source assessment of every report in one recorded review attempt, bound to its adjudication round, rubric, and case checks.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "case", "attempt", "source_commit", "attempt_sha256", "round_id", "rubric_sha256", "checks_sha256", "records"],
+  "required": [
+    "schema",
+    "case",
+    "attempt",
+    "source_commit",
+    "attempt_sha256",
+    "round_id",
+    "rubric_sha256",
+    "checks_sha256",
+    "records"
+  ],
   "properties": {
     "schema": {"const": "cyberjury.eval-ledger/v1"},
     "case": {"type": "string", "pattern": "^[a-z0-9-]+:[a-z0-9-]+$"},
@@ -23,10 +33,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["file", "line"],
-      "properties": {
-        "file": {"type": "string", "minLength": 1},
-        "line": {"type": "integer", "minimum": 1}
-      }
+      "properties": {"file": {"type": "string", "minLength": 1}, "line": {"type": "integer", "minimum": 1}}
     },
     "record": {
       "type": "object",

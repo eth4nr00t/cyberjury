@@ -11,45 +11,12 @@ from cyberjury.record import Record
 from cyberjury.review.command import ReviewCommand, run_review_command
 from cyberjury.review.recorder import TERMINATED
 from cyberjury.review.request import TargetInput
-from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 UNFINISHED_EXIT = 1
 USAGE_EXIT = 2
 INTERNAL_EXIT = 3
 INTERRUPTED_EXIT = 130
 TERMINATED_EXIT = 143
-
-
-def positive_int(value: str) -> int:
-    """Parse a positive integer argument."""
-    try:
-        parsed = int(value)
-    except ValueError:
-        parsed = 0
-    if parsed < 1:
-        raise ValueError("must be a positive integer")
-    return parsed
-
-
-def _default_state_dir() -> str:
-    return str(Path.home() / ".cyberjury")
-
-
-def _add_shared_options(target) -> None:
-    target.add_argument(
-        "--concurrency",
-        type=positive_int,
-        metavar="N",
-        default=None,
-        help="review units or issue link judgments to run in parallel, default "
-        f"{DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency}",
-    )
-    target.add_argument(
-        "--state-dir",
-        default=_default_state_dir(),
-        metavar="DIR",
-        help="directory that stores review sessions under reviews/<review-id>, default ~/.cyberjury",
-    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -74,8 +41,6 @@ def _build_parser() -> argparse.ArgumentParser:
     repository.add_argument(
         "--fresh", action="store_true", help="start a new review session instead of resuming the active one"
     )
-    for scope in (diff, repository):
-        _add_shared_options(scope)
     return parser
 
 
@@ -99,8 +64,7 @@ def _review_command(args: argparse.Namespace) -> ReviewCommand:
     return ReviewCommand(
         target=target,
         fresh=args.fresh if args.scope == "repository" else None,
-        concurrency=args.concurrency,
-        state_dir=args.state_dir,
+        state_dir=None,
     )
 
 

@@ -10,7 +10,7 @@
     "case": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["case", "records"],
+      "required": ["case", "records", "check_notes"],
       "properties": {
         "case": {"type": "string", "minLength": 1},
         "records": {"type": "array", "items": {"$ref": "#/$defs/record"}},
@@ -33,10 +33,7 @@
             "type": "object",
             "additionalProperties": false,
             "required": ["file", "line"],
-            "properties": {
-              "file": {"type": "string", "minLength": 1},
-              "line": {"type": "integer", "minimum": 1}
-            }
+            "properties": {"file": {"type": "string", "minLength": 1}, "line": {"type": "integer", "minimum": 1}}
           }
         },
         "reason": {"$ref": "#/$defs/text"},

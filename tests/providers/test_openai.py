@@ -52,7 +52,7 @@ def _sent(content: str, **kw) -> dict:
 
 
 def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch):
-    """A client built with a gateway api_base gets max_retries=0 and the gateway base_url."""
+    """A client built with a gateway base_url passes it to the SDK with max_retries=0."""
     captured = {}
 
     class _OpenAI:
@@ -61,7 +61,7 @@ def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch
 
     monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=_OpenAI))
 
-    OpenAIProvider(api_base="https://gateway.example.test")._get_client()
+    OpenAIProvider(base_url="https://gateway.example.test")._get_client()
 
     assert captured == {"max_retries": 0, "base_url": "https://gateway.example.test"}
 

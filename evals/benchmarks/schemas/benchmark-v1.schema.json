@@ -2,29 +2,21 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/eth4nr00t/cyberjury/main/evals/benchmarks/schemas/benchmark-v1.schema.json",
   "title": "Benchmark Schema",
-  "description": "The version 1 schema for one benchmark project: the pinned repository and its review cases, each with the checks a review must find. Every review covers the whole repository.",
+  "description": "The version 1 schema for one benchmark project: the pinned repository and its review cases, each with the checks a review must find.",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "repository", "cases"],
   "properties": {
-    "id": {"description": "The project directory name, which equals the repository name at the end of repository.url when a url is given.", "$ref": "#/$defs/slug"},
+    "id": {
+      "description": "The project directory name, which equals the repository name at the end of repository.url when a url is given.",
+      "$ref": "#/$defs/slug"
+    },
     "repository": {"$ref": "#/$defs/repository"},
-    "cases": {
-      "type": "array",
-      "minItems": 1,
-      "items": {"$ref": "#/$defs/case"}
-    }
+    "cases": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/case"}}
   },
   "$defs": {
-    "slug": {
-      "type": "string",
-      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
-      "maxLength": 80
-    },
-    "gitCommit": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{40}$"
-    },
+    "slug": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$", "maxLength": 80},
+    "gitCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "repositoryPath": {
       "description": "A normalized repository-root-relative POSIX path such as src/documents/views.py: no leading or trailing /, no empty, . or .. segment, and no backslash.",
       "type": "string",
@@ -90,12 +82,7 @@
       "properties": {
         "id": {"$ref": "#/$defs/checkId"},
         "root_cause": {"$ref": "#/$defs/rootCause"},
-        "locations": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {"$ref": "#/$defs/location"}
-        },
+        "locations": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/location"}},
         "change_anchors": {
           "type": "array",
           "minItems": 1,

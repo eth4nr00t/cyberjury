@@ -7,6 +7,7 @@ from pathlib import Path
 
 from cyberjury.envfile import load_env_file
 from cyberjury.providers.configuration import provider_configuration_from_env
+from cyberjury.review import command
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -35,23 +36,28 @@ def test_env_example_documents_cli_runtime_environment():
 
     assert names == {
         "ANTHROPIC_API_KEY",
-        "CYBERJURY_API_BASE",
+        "CYBERJURY_BASE_URL",
+        "CYBERJURY_CONCURRENCY",
         "CYBERJURY_MODEL",
+        "CYBERJURY_STATE_DIR",
         "OPENAI_API_KEY",
     }
     assert sorted(name for name in names if f"{name}=" not in text) == []
 
 
 def test_the_example_copied_as_is_selects_the_defaults(tmp_path, monkeypatch):
-    """Loading an unedited .env.example copy selects provider anthropic, model claude-opus-5, no api_base."""
+    """An unedited .env.example copy gives anthropic, claude-fable-5-1, no base_url, 8, and ~/.local/share/cyberjury."""
     (tmp_path / ".env").write_text((_ROOT / ".env.example").read_text(encoding="utf-8"), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     _forget_after_test(monkeypatch, *_environment_names_read_by_the_cli())
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
 
     load_env_file()
     seat = provider_configuration_from_env().seat
+    state_dir = command._state_dir(None)
 
-    assert (seat.provider, seat.model, seat.api_base) == ("anthropic", "claude-opus-5", None)
+    assert (seat.provider, seat.model, seat.base_url) == ("anthropic", "claude-fable-5-1", None)
+    assert (command._concurrency(), state_dir) == (8, str(Path.home() / ".local" / "share" / "cyberjury"))
 
 
 def test_load_missing_file_is_not_an_error(tmp_path, monkeypatch):
@@ -67,15 +73,15 @@ def test_load_reads_only_the_working_directory_file(tmp_path, monkeypatch):
     """A quoted export line in subdir/.env is loaded while a parent directory .env is ignored."""
     working = tmp_path / "project" / "subdir"
     working.mkdir(parents=True)
-    (tmp_path / "project" / ".env").write_text("CYBERJURY_API_BASE=https://parent.example.test\n", encoding="utf-8")
+    (tmp_path / "project" / ".env").write_text("CYBERJURY_BASE_URL=https://parent.example.test\n", encoding="utf-8")
     (working / ".env").write_text("export CYBERJURY_MODEL='from-file'\n# a comment\n", encoding="utf-8")
     monkeypatch.chdir(working)
-    _forget_after_test(monkeypatch, "CYBERJURY_MODEL", "CYBERJURY_API_BASE")
+    _forget_after_test(monkeypatch, "CYBERJURY_MODEL", "CYBERJURY_BASE_URL")
 
     load_env_file()
 
     assert os.environ["CYBERJURY_MODEL"] == "from-file"
-    assert "CYBERJURY_API_BASE" not in os.environ
+    assert "CYBERJURY_BASE_URL" not in os.environ
 
 
 def test_an_exported_value_wins_over_the_file(tmp_path, monkeypatch):

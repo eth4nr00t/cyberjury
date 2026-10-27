@@ -118,11 +118,17 @@ def test_namespace_declaration_and_concrete_use_are_distinct_relationship_questi
         ("models.js", "class Base {}\nclass Child extends Base {}\n"),
         ("models.ts", "class Base {}\nclass Child extends Base {}\n"),
         ("models.tsx", "class Base {}\nclass Child extends Base {}\n"),
+        ("abstract_base.ts", "abstract class Base {}\nclass Child extends Base {}\n"),
+        ("abstract_child.ts", "class Base {}\nabstract class Child extends Base {}\n"),
+        ("implements.ts", "interface Base {}\nclass Child implements Base {}\n"),
+        ("interfaces.ts", "interface Base {}\ninterface Child extends Base {}\n"),
+        ("Interfaces.java", "interface Base {}\ninterface Child extends Base {}\n"),
+        ("Mode.java", "interface Base {}\nenum Child implements Base { A }\n"),
         ("models.sol", "contract Base {}\ncontract Child is Base {}\n"),
     ],
 )
 def test_class_inheritance_uses_one_cross_language_structural_contract(tmp_path, name, source):
-    """Child extending Base in Python, JS, TS, TSX, and Solidity gives the same Base inheritance candidate."""
+    """Child extending or implementing Base gives the same Base inheritance candidate in every language and form."""
     (tmp_path / name).write_text(source)
 
     evidence = syntax_facts(tmp_path).relationships.to_dict()

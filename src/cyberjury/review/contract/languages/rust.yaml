@@ -1,7 +1,8 @@
 extensions: [.rs]
 grammar: [tree_sitter_rust, language]
 files:
-  lockfiles: [Cargo.lock]
+  lockfiles:
+    - Cargo.lock
 syntax:
   definitions: |
     [(function_item name: (identifier) @name)

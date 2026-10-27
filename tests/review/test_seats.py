@@ -9,8 +9,8 @@ from tests.support import MockProvider
 
 
 def test_seat_identity_names_the_transport_without_its_endpoint_value():
-    """An api_base changes the seat- prefixed id while the gateway hostname stays out of it."""
-    seat = ProviderSeat(provider="openai", model="m", api_base="https://gateway.example.test/v1")
+    """A base_url changes the seat- prefixed id while the gateway hostname stays out of it."""
+    seat = ProviderSeat(provider="openai", model="m", base_url="https://gateway.example.test/v1")
 
     assert provider_seat_record(seat).seat_id.startswith("seat-")
     assert (

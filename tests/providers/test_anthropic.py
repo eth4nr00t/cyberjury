@@ -168,6 +168,6 @@ def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch
 
     monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=_Anthropic))
 
-    AnthropicProvider(api_base="https://gateway.example.test")._get_client()
+    AnthropicProvider(base_url="https://gateway.example.test")._get_client()
 
     assert captured == {"max_retries": 0, "base_url": "https://gateway.example.test"}

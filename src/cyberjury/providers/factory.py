@@ -12,14 +12,14 @@ DEFAULT_RETRIES = 2
 
 def default_model_for_provider(provider: str) -> str:
     """Match the default model to the provider selected by the default provider order."""
-    return "gpt-5.6" if provider == "openai" else "claude-opus-5"
+    return "gpt-6-astra" if provider == "openai" else "claude-fable-5-1"
 
 
-def make_provider(name: str, *, api_base: str | None, retries: int, timeout: float) -> Provider:
+def make_provider(name: str, *, base_url: str | None, retries: int, timeout: float) -> Provider:
     """Build the named provider and wrap it with retries."""
     provider: Provider = (
-        OpenAIProvider(api_base=api_base, timeout=timeout)
+        OpenAIProvider(base_url=base_url, timeout=timeout)
         if name == "openai"
-        else AnthropicProvider(api_base=api_base, timeout=timeout)
+        else AnthropicProvider(base_url=base_url, timeout=timeout)
     )
     return RetryProvider(provider, max_attempts=retries + 1, hard_timeout=timeout)

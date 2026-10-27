@@ -1,5 +1,55 @@
-test_dirs: [e2e, test, tests]
-doc_extensions: [.adoc, .markdown, .md, .mdx, .rst]
-asset_extensions: [.css, .less, .map, .po, .pot, .sass, .scss, .svg, .xlf]
-translation_dirs: [i18n, l10n, locale, locales, localization, translations]
-translation_extensions: [.ftl, .ini, .json, .properties, .strings, .toml, .xml, .yaml, .yml]
+dependency_dirs:
+  - 3rdparty
+  - third_party
+  - vendor
+test_dirs:
+  - e2e
+  - test
+  - tests
+doc_extensions:
+  - .adoc
+  - .markdown
+  - .md
+  - .mdx
+  - .rst
+asset_extensions:
+  - .bmp
+  - .css
+  - .eot
+  - .gif
+  - .ico
+  - .jpeg
+  - .jpg
+  - .less
+  - .map
+  - .otf
+  - .pdf
+  - .png
+  - .po
+  - .pot
+  - .sass
+  - .scss
+  - .svg
+  - .ttf
+  - .webp
+  - .woff
+  - .woff2
+  - .xlf
+  - .xliff
+translation_dirs:
+  - i18n
+  - l10n
+  - locale
+  - locales
+  - localization
+  - translations
+translation_extensions:
+  - .ftl
+  - .ini
+  - .json
+  - .properties
+  - .strings
+  - .toml
+  - .xml
+  - .yaml
+  - .yml

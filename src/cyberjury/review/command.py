@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TextIO
 
 from cyberjury import __version__
-from cyberjury.envfile import load_env_file
+from cyberjury.envfile import env_setting, load_env_file
 from cyberjury.providers.base import ProviderAccessError
 from cyberjury.providers.configuration import (
     ProviderConfiguration,
@@ -57,8 +57,7 @@ class ReviewCommand:
 
     target: TargetInput
     fresh: bool | None
-    concurrency: int | None
-    state_dir: str
+    state_dir: str | None
 
 
 @dataclass(kw_only=True)
@@ -70,13 +69,26 @@ class _AttemptState:
     source_changed: bool | None = None
 
 
+class ReviewSettingError(ValueError):
+    """A review setting in the environment has an invalid value."""
+
+
 def classify_error(exc: BaseException) -> RecordError:
     """Classify an exception that ended a stage as an input, config, busy, or internal error."""
     if isinstance(exc, (TargetResolutionError, GitSourceError, SourceSnapshotError, NoReviewableSourceError)):
         return RecordError(code="input", message=error_message(str(exc)))
     if isinstance(exc, (PermissionError, FileExistsError, NotADirectoryError, IsADirectoryError)):
         return RecordError(code="config", message=error_message(f"{type(exc).__name__}: {exc}"))
-    if isinstance(exc, (ProviderCredentialsError, ProviderAccessError, WorkspaceCorruptionError, SessionConflictError)):
+    if isinstance(
+        exc,
+        (
+            ProviderCredentialsError,
+            ProviderAccessError,
+            ReviewSettingError,
+            WorkspaceCorruptionError,
+            SessionConflictError,
+        ),
+    ):
         return RecordError(code="config", message=error_message(str(exc)))
     if isinstance(exc, SessionBusyError):
         return RecordError(code="busy", message=error_message(str(exc)))
@@ -111,9 +123,9 @@ def run_review_command(command: ReviewCommand, *, stdout: TextIO, stderr: TextIO
 
 def _run_stages(command: ReviewCommand, state: _AttemptState, recorder: Recorder, meter: UsageMeter) -> None:
     with contextlib.ExitStack() as stack:
-        request, intent, seats = _configure(command, recorder, meter)
-        target = _resolve(intent, command.state_dir, recorder)
-        attempt = _open_attempt(command.state_dir, intent, request, state, recorder)
+        request, intent, seats, state_dir = _configure(command, recorder, meter)
+        target = _resolve(intent, state_dir, recorder)
+        attempt = _open_attempt(state_dir, intent, request, state, recorder)
         snapshot, source = _capture(target, stack, recorder)
         prepared = (
             prepare_diff_review(target.patch.text, source, recorder=recorder)
@@ -133,24 +145,23 @@ def _run_stages(command: ReviewCommand, state: _AttemptState, recorder: Recorder
 
 def _configure(
     command: ReviewCommand, recorder: Recorder, meter: UsageMeter
-) -> tuple[ReviewAttemptRequest, ReviewIntent, ReviewSeats]:
+) -> tuple[ReviewAttemptRequest, ReviewIntent, ReviewSeats, str]:
     with recorder.stage("config") as measure:
         load_env_file()
         configuration = provider_configuration_from_env()
         request = _attempt_request(command, configuration)
+        state_dir = _state_dir(command.state_dir)
         seats = review_seats(configuration, meter=meter)
         measure.attributes.update(
             provider=request.providers.seat.provider, model=request.providers.seat.model, version=__version__
         )
-    return request, ReviewIntent(target=command.target), seats
+    return request, ReviewIntent(target=command.target), seats, state_dir
 
 
 def _attempt_request(command: ReviewCommand, configuration: ProviderConfiguration) -> ReviewAttemptRequest:
     return ReviewAttemptRequest(
         engine_version=__version__,
-        concurrency=ConcurrencyRecord(
-            review=command.concurrency or DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
-        ),
+        concurrency=ConcurrencyRecord(review=_concurrency()),
         fresh=command.fresh,
         providers=ProviderPlanRecord(
             retries=configuration.retries,
@@ -160,6 +171,21 @@ def _attempt_request(command: ReviewCommand, configuration: ProviderConfiguratio
     )
 
 
+def _concurrency() -> int:
+    value = env_setting("CYBERJURY_CONCURRENCY")
+    if value is None:
+        return DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
+    if not (value.isascii() and value.isdigit()) or int(value) < 1:
+        raise ReviewSettingError(f"CYBERJURY_CONCURRENCY is not a positive integer: {value}")
+    return int(value)
+
+
+def _state_dir(configured: str | None) -> str:
+    data_home = env_setting("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    value = configured or env_setting("CYBERJURY_STATE_DIR") or str(Path(data_home) / "cyberjury")
+    return str(Path(value).expanduser().resolve())
+
+
 def _resolve(intent: ReviewIntent, state_dir: str, recorder: Recorder) -> ResolvedTarget:
     with recorder.stage("target") as measure:
         target = (
@@ -167,7 +193,7 @@ def _resolve(intent: ReviewIntent, state_dir: str, recorder: Recorder) -> Resolv
             if intent.target.kind == "diff"
             else resolve_repository_target(intent.target.repository)
         )
-        state_path = Path(state_dir).expanduser().resolve()
+        state_path = Path(state_dir)
         repository_root = Path(target.repository_root)
         if state_path == repository_root or state_path.is_relative_to(repository_root):
             raise TargetResolutionError("the state directory cannot be inside the reviewed repository")

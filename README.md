@@ -80,15 +80,17 @@ pip install cyberjury
 
 ## Configure
 
-All model settings come from a `.env` file in the working directory. An exported shell value wins
+All settings come from a `.env` file in the working directory. An exported shell value wins
 over the file. Copy [.env.example](.env.example) to `.env` and fill in what you use:
 
 | Setting | Meaning |
 | :--- | :--- |
 | `OPENAI_API_KEY` | OpenAI key. When it is set the review uses OpenAI. |
 | `ANTHROPIC_API_KEY` | Anthropic key, used when no OpenAI key is set. |
-| `CYBERJURY_MODEL` | Model name, default `gpt-5.6` for OpenAI and `claude-opus-5` for Anthropic. |
-| `CYBERJURY_API_BASE` | Gateway or proxy endpoint for the provider. |
+| `CYBERJURY_MODEL` | Model name, default `gpt-6-astra` for OpenAI and `claude-fable-5-1` for Anthropic. |
+| `CYBERJURY_BASE_URL` | Gateway or proxy endpoint for the provider. |
+| `CYBERJURY_CONCURRENCY` | Review units or issue link judgments to run in parallel, default `8`. |
+| `CYBERJURY_STATE_DIR` | Directory that stores review sessions under `reviews/<review-id>`, default `$XDG_DATA_HOME/cyberjury`, or `~/.local/share/cyberjury` when it is unset. |
 
 One model finds the issues and also answers the issue grouping question, so use the strongest
 model you can.

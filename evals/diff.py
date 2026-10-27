@@ -27,7 +27,6 @@ def run(
     cases: list[BenchmarkCase],
     *,
     runs: int,
-    concurrency: int,
     state_dir: Path,
     progress: Progress,
     on_attempt: Callable[[dict[str, object]], None],
@@ -39,7 +38,7 @@ def run(
             prefix = f"{f'run {number}/{runs} ' if runs > 1 else ''}[{index}/{len(cases)}] {case.name}"
             progress(f"{prefix} started")
             started = time.monotonic()
-            record = _review_case(case, number, concurrency, case_state_dir(state_dir, case, number))
+            record = _review_case(case, number, case_state_dir(state_dir, case, number))
             seconds = round(time.monotonic() - started, 3)
             if record["complete"]:
                 progress(f"{prefix} finished in {seconds}s, reports {len(record['findings'])}")
@@ -53,7 +52,6 @@ def run(
 def _review_case(
     case: BenchmarkCase,
     number: int,
-    concurrency: int,
     state_dir: Path,
 ) -> dict[str, object]:
     root = git_target_root(case.target)
@@ -63,7 +61,6 @@ def _review_case(
     command = ReviewCommand(
         target=TargetInput(kind="diff", repository=str(root.resolve()), git_range=git_range),
         fresh=None,
-        concurrency=concurrency,
         state_dir=str(state_dir),
     )
     record = run_review_command(command, stdout=io.StringIO())
