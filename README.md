@@ -22,11 +22,11 @@ All settings come from a `.env` file in the working directory. An exported shell
 | Setting | Meaning |
 | :--- | :--- |
 | `CYBERJURY_PROVIDER` | Model provider, `openai` or `anthropic`, default `openai`. |
-| `CYBERJURY_API_KEY` | API key for the provider, required. |
-| `CYBERJURY_BASE_URL` | Provider endpoint, such as a gateway or proxy, default `https://api.openai.com/v1` for OpenAI and `https://api.anthropic.com` for Anthropic. |
+| `CYBERJURY_API_KEY` | Provider API key, required. |
+| `CYBERJURY_BASE_URL` | Provider endpoint, set it to use a gateway or proxy, default `https://api.openai.com/v1` for OpenAI and `https://api.anthropic.com` for Anthropic. |
 | `CYBERJURY_MODEL` | Model name, default `gpt-6-astra` for OpenAI and `claude-fable-5-1` for Anthropic. |
 | `CYBERJURY_CONCURRENCY` | Number of review units or issue link judgments run in parallel, default `8`. |
-| `CYBERJURY_STATE_DIR` | Directory that stores each review under `reviews/<review-id>`, default `$XDG_DATA_HOME/cyberjury`, or `~/.local/share/cyberjury` without `XDG_DATA_HOME`. |
+| `CYBERJURY_STATE_DIR` | Review state directory, each review under `reviews/<review-id>`, default `$XDG_DATA_HOME/cyberjury`, or `~/.local/share/cyberjury` when `XDG_DATA_HOME` is unset. |
 
 ## Review
 
