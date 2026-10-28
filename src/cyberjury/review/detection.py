@@ -13,8 +13,9 @@ import yaml
 
 from cyberjury.review.contract import DETECTION_FILE
 from cyberjury.review.languages import load_languages
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
-MAX_SOURCE_BYTES = 400_000
+_EXECUTION = DEFAULT_REVIEW_SETTINGS.execution
 _ATTRIBUTES = ("linguist-vendored", "linguist-documentation")
 
 
@@ -114,7 +115,9 @@ def load_detection() -> Detection:
 def detection_for(root: str | Path, files: Sequence[str]) -> Detection:
     """Load file classification for one source tree."""
     detection = load_detection()
-    oversized = frozenset(file for file in files if (Path(root) / file).stat().st_size > MAX_SOURCE_BYTES)
+    oversized = frozenset(
+        file for file in files if (Path(root) / file).stat().st_size > _EXECUTION.max_reviewed_source_bytes
+    )
     rules: list[tuple[re.Pattern[str], str, bool]] = []
     attribute_files = [file for file in files if PurePosixPath(file).name == ".gitattributes"]
     for file in sorted(attribute_files, key=lambda item: (len(PurePosixPath(item).parts), item)):

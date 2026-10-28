@@ -36,14 +36,20 @@ class IssueSettings:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReviewExecutionSettings:
-    """Cross target execution defaults exposed by public review interfaces."""
+    """Cross target limits on model calls, evidence, source navigation, and reviewed sources."""
 
     reviewer_max_output_tokens: int = 4_096
     default_model_call_concurrency: int = 8
     target_evidence_request_chars: int = 48_000
+    max_evidence_requests_per_batch: int = 64
     max_source_navigation_followups: int = 8
+    max_source_queries_per_batch: int = 8
+    max_unique_source_queries_per_session: int = 64
+    source_query_results_per_page: int = 20
+    max_source_query_target_chars: int = 24_000
     max_initial_candidate_source_chars: int = 4_000
     max_syntax_hint_chars_per_file: int = 1_200
+    max_reviewed_source_bytes: int = 400_000
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

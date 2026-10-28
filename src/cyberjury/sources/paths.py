@@ -1,4 +1,4 @@
-"""Canonical source path rules shared by snapshots and Git materialization."""
+"""Canonical source path rules and read limits shared by snapshots and Git materialization."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
 MAX_SOURCE_FILES = 200_000
+READ_CHUNK_BYTES = 1_048_576
 
 
 class SourceSnapshotError(RuntimeError):

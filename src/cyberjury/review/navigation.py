@@ -22,7 +22,7 @@ from cyberjury.review.context import (
 )
 from cyberjury.review.definitions import definitions_by_name
 from cyberjury.review.paths import normalized_location_path
-from cyberjury.review.prompts import fenced_source, inline_source, one_line_source
+from cyberjury.review.prompts import MAX_PREVIEW_CHARS, fenced_source, inline_source, one_line_source
 from cyberjury.review.relationships import (
     AnalysisObservation,
     CallsiteEvidence,
@@ -31,15 +31,13 @@ from cyberjury.review.relationships import (
     SourceReference,
     StructuralRelationshipEvidence,
 )
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 if TYPE_CHECKING:
     from cyberjury.review.finding import Finding
 
-_MAX_RESULTS_PER_PAGE = 20
 _SOURCE_LABELS = {"production": "source", "documentation": "documentation", "dependency": "third-party source"}
-MAX_QUERIES_PER_BATCH = 8
-MAX_UNIQUE_QUERIES_PER_SESSION = 64
-_MAX_SOURCE_TARGET_CHARS = 24_000
+_EXECUTION = DEFAULT_REVIEW_SETTINGS.execution
 
 
 class SourceNavigationError(RuntimeError):
@@ -304,9 +302,10 @@ class SourceNavigationSession:
     def _admit_batch(self, query_keys: tuple[str, ...]) -> None:
         if len(query_keys) != len(set(query_keys)) or not self._executed_query_keys.isdisjoint(query_keys):
             raise RepeatedSourceQueryError("source query repeats an earlier query in this session")
-        if len(self._executed_query_keys) + len(query_keys) > MAX_UNIQUE_QUERIES_PER_SESSION:
+        if len(self._executed_query_keys) + len(query_keys) > _EXECUTION.max_unique_source_queries_per_session:
             raise SourceNavigationError(
-                f"source navigation exceeds {MAX_UNIQUE_QUERIES_PER_SESSION} unique queries per session"
+                f"source navigation exceeds {_EXECUTION.max_unique_source_queries_per_session} unique queries "
+                "per session"
             )
 
     def _search(
@@ -415,7 +414,7 @@ class SourceNavigationSession:
             return None
         exact = self.read(
             [targets[0].id],
-            target_chars=max(target_chars, _MAX_SOURCE_TARGET_CHARS * 2),
+            target_chars=max(target_chars, _EXECUTION.max_source_query_target_chars * 2),
         )
         candidate = "\n\n".join((*blocks, f"{label}:\n{exact.text}"))
         if len(candidate) > target_chars:
@@ -468,7 +467,9 @@ class SourceNavigationSession:
                 continue
             module = PurePosixPath(relationship.reference.strip("\"'")).name.split(".")[0]
             binds = name in {relationship.reference, module} or relationship.reference.startswith(f"{name} from ")
-            statements.append((not binds, reference.path, source.count("\n", 0, reference.start) + 1, text[:240]))
+            statements.append(
+                (not binds, reference.path, source.count("\n", 0, reference.start) + 1, text[:MAX_PREVIEW_CHARS])
+            )
         if not statements:
             return ""
         statements = sorted(set(statements))
@@ -478,10 +479,12 @@ class SourceNavigationSession:
         ]
         lines.extend(
             f"- {one_line_source(path)}:{line} | {inline_source(text)}"
-            for _, path, line, text in statements[:_MAX_RESULTS_PER_PAGE]
+            for _, path, line, text in statements[: _EXECUTION.source_query_results_per_page]
         )
-        if len(statements) > _MAX_RESULTS_PER_PAGE:
-            lines.append(f"- {len(statements) - _MAX_RESULTS_PER_PAGE} more import statements are not listed")
+        if len(statements) > _EXECUTION.source_query_results_per_page:
+            lines.append(
+                f"- {len(statements) - _EXECUTION.source_query_results_per_page} more import statements are not listed"
+            )
         return "\n".join(lines)
 
     def _owned_by(self, definition: DefinitionEvidence, qualifier: tuple[str, ...]) -> bool:
@@ -500,7 +503,7 @@ class SourceNavigationSession:
         query: str,
         page: int,
     ) -> tuple[tuple[SourceTarget, ...], bool]:
-        wanted = (page + 1) * _MAX_RESULTS_PER_PAGE + 1
+        wanted = (page + 1) * _EXECUTION.source_query_results_per_page + 1
         targets: list[SourceTarget] = []
         for file in self._navigator.files:
             source = self._source(file)
@@ -514,15 +517,17 @@ class SourceNavigationSession:
                 if query not in line:
                     continue
                 match = offsets[line_no - 1] + line.index(query)
-                start = max(offsets[max(1, line_no - 3) - 1], match - _MAX_SOURCE_TARGET_CHARS // 2)
-                end = min(offsets[min(line_no + 4, len(lines) + 1) - 1], start + _MAX_SOURCE_TARGET_CHARS)
+                start = max(offsets[max(1, line_no - 3) - 1], match - _EXECUTION.max_source_query_target_chars // 2)
+                end = min(
+                    offsets[min(line_no + 4, len(lines) + 1) - 1], start + _EXECUTION.max_source_query_target_chars
+                )
                 targets.append(
                     SourceTarget.create(
                         file=file,
                         name=f"text line {line_no}",
                         start=start,
                         end=end,
-                        preview=line.strip()[:240],
+                        preview=line.strip()[:MAX_PREVIEW_CHARS],
                         source_kind=self._source_kind(file),
                     )
                 )
@@ -656,8 +661,8 @@ class SourceNavigationSession:
             "",
         )
         ranges = tuple(
-            (page_start, min(page_start + _MAX_SOURCE_TARGET_CHARS, end))
-            for page_start in range(start, end, _MAX_SOURCE_TARGET_CHARS)
+            (page_start, min(page_start + _EXECUTION.max_source_query_target_chars, end))
+            for page_start in range(start, end, _EXECUTION.max_source_query_target_chars)
         )
         total = len(ranges)
         return tuple(
@@ -666,7 +671,7 @@ class SourceNavigationSession:
                 name=(definition.name if total == 1 else f"{definition.name} page {index}/{total}"),
                 start=page_start,
                 end=page_end,
-                preview=preview[:240],
+                preview=preview[:MAX_PREVIEW_CHARS],
                 definition_id=definition.id,
                 source_kind=self._source_kind(file),
             )
@@ -693,7 +698,7 @@ class SourceNavigationSession:
                 name=name,
                 start=reference.start,
                 end=reference.end,
-                preview=preview[:240],
+                preview=preview[:MAX_PREVIEW_CHARS],
                 definition_id=definition_id,
                 source_kind=self._source_kind(reference.path),
             )
@@ -737,8 +742,8 @@ def navigation_instructions() -> str:
     return (
         "# Source Navigation\n\n"
         "`source_queries` searches the repository. Leading and trailing whitespace of `query` is ignored. Each "
-        f"query returns at most {_MAX_RESULTS_PER_PAGE} results per page. `page` starts at 0, and a result list "
-        "states when a next page exists.\n"
+        f"query returns at most {_EXECUTION.source_query_results_per_page} results per page. `page` starts at 0, "
+        "and a result list states when a next page exists.\n"
         "- `search_symbols` returns definitions whose name equals `query` exactly. A dotted `query` also matches a "
         "definition named by its last segment whose enclosing definitions are named by the preceding segments, in "
         "order. When nothing matches exactly, definitions named by the last segment are listed as candidates.\n"
@@ -760,15 +765,15 @@ def navigation_instructions() -> str:
         "no definition also lists any import statements that name it. When needed code is outside the snapshot, "
         "judge with the delivered evidence and treat that code's behavior as an assumption.\n"
         "- Batch every independent search and evidence request into one response and never repeat a query. "
-        f"Send at most {MAX_QUERIES_PER_BATCH} `source_queries` in one response and "
-        f"{MAX_UNIQUE_QUERIES_PER_SESSION} unique queries across this unit."
+        f"Send at most {_EXECUTION.max_source_queries_per_batch} `source_queries` in one response and "
+        f"{_EXECUTION.max_unique_source_queries_per_session} unique queries across this unit."
     )
 
 
 def parse_source_queries(value: list[dict[str, object]]) -> list[dict[str, object]]:
     """Check the limits a schema-valid batch of searches cannot state, and trim each search query."""
-    if len(value) > MAX_QUERIES_PER_BATCH:
-        raise SourceQueryLimitError(len(value), MAX_QUERIES_PER_BATCH)
+    if len(value) > _EXECUTION.max_source_queries_per_batch:
+        raise SourceQueryLimitError(len(value), _EXECUTION.max_source_queries_per_batch)
     queries: list[dict[str, object]] = []
     for index, raw in enumerate(value, start=1):
         if raw["page"] < 0:
@@ -789,8 +794,8 @@ def _definition_label(definition: DefinitionEvidence) -> str:
 
 
 def _page[T](targets: tuple[T, ...], page: int) -> tuple[tuple[T, ...], bool]:
-    start = page * _MAX_RESULTS_PER_PAGE
-    selected = targets[start : start + _MAX_RESULTS_PER_PAGE]
+    start = page * _EXECUTION.source_query_results_per_page
+    selected = targets[start : start + _EXECUTION.source_query_results_per_page]
     return selected, start + len(selected) < len(targets)
 
 

@@ -13,13 +13,14 @@ from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.facts import FactLimitation, render_fact_limitations
 from cyberjury.review.paths import normalized_location_path
 from cyberjury.review.prompts import PromptPlan, fenced_source, inline_source, one_line_source
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 if TYPE_CHECKING:
     from cyberjury.review.navigation import SourceNavigator
 
 
+_EXECUTION = DEFAULT_REVIEW_SETTINGS.execution
 _EVIDENCE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
-MAX_EVIDENCE_REQUESTS_PER_BATCH = 64
 _MAX_EVIDENCE_ID_CHARS = 128
 
 
@@ -198,8 +199,10 @@ def is_evidence_id(value: str) -> bool:
 
 def evidence_request_ids(requested: list[str]) -> tuple[str, ...]:
     """Validate one exact request batch and collapse semantically identical ids."""
-    if len(requested) > MAX_EVIDENCE_REQUESTS_PER_BATCH:
-        raise EvidenceRequestError(f"evidence_requests cannot contain more than {MAX_EVIDENCE_REQUESTS_PER_BATCH} ids")
+    if len(requested) > _EXECUTION.max_evidence_requests_per_batch:
+        raise EvidenceRequestError(
+            f"evidence_requests cannot contain more than {_EXECUTION.max_evidence_requests_per_batch} ids"
+        )
     if any(len(item) > _MAX_EVIDENCE_ID_CHARS for item in requested):
         raise EvidenceRequestError("evidence_requests contain an oversized evidence id")
     if any(not _EVIDENCE_ID.fullmatch(item) for item in requested):

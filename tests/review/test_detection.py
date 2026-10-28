@@ -1,6 +1,7 @@
 """Detection config data drives source, noise, and test path classification."""
 
-from cyberjury.review.detection import MAX_SOURCE_BYTES, detection_for, load_detection
+from cyberjury.review.detection import detection_for, load_detection
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 
 def test_detection_ignores_tool_directories_and_marks_dependency_directories():
@@ -160,12 +161,13 @@ def test_project_declarations_override_the_contract_defaults(tmp_path):
 
 
 def test_files_over_the_size_limit_are_classified_as_oversized(tmp_path):
-    """A bindata.go over MAX_SOURCE_BYTES is the only oversized file, while app.py is not."""
+    """A bindata.go over the size limit is the only oversized file, while app.py is not."""
+    limit = DEFAULT_REVIEW_SETTINGS.execution.max_reviewed_source_bytes
     files = _write(
         tmp_path,
         {
             "app.py": "def handler(value):\n    return value\n",
-            "bindata.go": "package bindata\n\nvar data = `" + "a" * MAX_SOURCE_BYTES + "`\n",
+            "bindata.go": "package bindata\n\nvar data = `" + "a" * limit + "`\n",
         },
     )
 

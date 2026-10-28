@@ -4,14 +4,11 @@ from dataclasses import replace
 
 import pytest
 
-from cyberjury.review.detection import load_detection
 from cyberjury.review.diff import planning
 from cyberjury.review.diff.model import changed_line_ranges
 from cyberjury.review.diff.planning import build_diff_units, changed_definitions, plan_definition_units
 from cyberjury.review.failures import BackendUnavailable
 from tests.review.support import definition
-
-_DETECTION = load_detection()
 
 
 def test_diff_unit_planners_return_an_empty_worklist_for_empty_input(tmp_path):

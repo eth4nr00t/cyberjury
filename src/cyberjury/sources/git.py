@@ -11,7 +11,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury.sources.paths import SourceSnapshotError, portable_paths, safe_link_target
+from cyberjury.sources.paths import READ_CHUNK_BYTES, SourceSnapshotError, portable_paths, safe_link_target
 
 _MAX_GIT_BLOB_BYTES = 100_000_000
 _MAX_GIT_TREE_BYTES = 2_000_000_000
@@ -270,7 +270,7 @@ def _write_git_blobs(repository: str, blobs: tuple[_GitBlob, ...], source_root: 
                     remaining = size
                     with path.open("xb") as stream:
                         while remaining:
-                            chunk = process.stdout.read(min(1_048_576, remaining))
+                            chunk = process.stdout.read(min(READ_CHUNK_BYTES, remaining))
                             if not chunk:
                                 raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
                             stream.write(chunk)

@@ -17,6 +17,7 @@ from cyberjury.canonical import canonical_sha256
 from cyberjury.sources.git import GitSourceError, worktree_files
 from cyberjury.sources.paths import (
     MAX_SOURCE_FILES,
+    READ_CHUNK_BYTES,
     SourceSnapshotError,
     portable_paths,
     require_contained_symlinks,
@@ -25,7 +26,6 @@ from cyberjury.sources.paths import (
 SNAPSHOT_SCHEMA = "cyberjury.snapshot/v1"
 _MAX_SOURCE_FILE_BYTES = 100_000_000
 _MAX_SNAPSHOT_BYTES = 2_000_000_000
-_READ_CHUNK_BYTES = 1_048_576
 
 type ScopeProvider = Callable[[], tuple[str, ...]]
 
@@ -135,7 +135,7 @@ def _source_file(root: Path, relative: str, sink: BinaryIO | None = None) -> Sou
             before = os.fstat(stream.fileno())
             if before.st_size > _MAX_SOURCE_FILE_BYTES:
                 raise SourceSnapshotError(f"source file exceeds the byte limit: {relative}")
-            while chunk := stream.read(_READ_CHUNK_BYTES):
+            while chunk := stream.read(READ_CHUNK_BYTES):
                 size += len(chunk)
                 if size > _MAX_SOURCE_FILE_BYTES:
                     raise SourceSnapshotError(f"source file exceeds the byte limit: {relative}")

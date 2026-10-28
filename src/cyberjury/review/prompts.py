@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from cyberjury.review.schemas import closed_object, string_array
 from cyberjury.severity import SEVERITIES
 
+MAX_PREVIEW_CHARS = 240
+
 
 @dataclass(frozen=True, kw_only=True)
 class PromptPlan:

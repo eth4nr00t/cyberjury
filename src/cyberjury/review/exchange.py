@@ -14,7 +14,6 @@ from cyberjury.providers.metering import (
     record_model_parse,
 )
 from cyberjury.review.context import (
-    MAX_EVIDENCE_REQUESTS_PER_BATCH,
     EvidenceBudgetError,
     EvidencePromptContext,
     EvidenceRequestError,
@@ -39,8 +38,10 @@ from cyberjury.review.navigation import (
     parse_source_queries,
 )
 from cyberjury.review.replies import CorrectableRoleResponseError, RoleReply
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.union import MERGE_RULE, FindingAccumulator
 
+_EXECUTION = DEFAULT_REVIEW_SETTINGS.execution
 _CORRECTION_BUDGET = {
     "response": 1,
     "query_limit": 1,
@@ -658,7 +659,7 @@ def _deliver_within_budget(
     source_queries: list[dict[str, object]],
     target_chars: int,
 ) -> tuple[SourceNavigationResult, list[str], list[dict[str, object]]]:
-    capped = requested[:MAX_EVIDENCE_REQUESTS_PER_BATCH]
+    capped = requested[: _EXECUTION.max_evidence_requests_per_batch]
     for kept in range(len(capped) + len(source_queries), 0, -1):
         kept_ids, kept_queries = capped[:kept], source_queries[: max(0, kept - len(capped))]
         try:

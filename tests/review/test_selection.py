@@ -1,8 +1,9 @@
 """File selection decides which files are reviewed, navigable, or skipped."""
 
-from cyberjury.review.detection import MAX_SOURCE_BYTES, detection_for, load_detection
+from cyberjury.review.detection import detection_for, load_detection
 from cyberjury.review.result import SkippedFile
 from cyberjury.review.selection import select_files
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 
 def _select(root, files: dict[str, bytes]):
@@ -75,10 +76,11 @@ def test_vendored_files_are_navigable_but_not_reviewed(tmp_path):
 
 
 def test_files_over_the_size_limit_are_skipped_as_too_large(tmp_path):
-    """A bindata.go over MAX_SOURCE_BYTES is skipped as too_large and offered neither to review nor navigation."""
+    """A bindata.go over the size limit is skipped as too_large and offered neither to review nor navigation."""
+    limit = DEFAULT_REVIEW_SETTINGS.execution.max_reviewed_source_bytes
     files = {
         "app.py": b"def handler(value):\n    return value\n",
-        "bindata.go": b"package bindata\n\nvar data = `" + b"a" * MAX_SOURCE_BYTES + b"`\n",
+        "bindata.go": b"package bindata\n\nvar data = `" + b"a" * limit + b"`\n",
     }
     _select(tmp_path, files)
 

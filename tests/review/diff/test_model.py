@@ -3,7 +3,7 @@
 import pytest
 
 from cyberjury.review.definitions import DefinitionUnitPlan
-from cyberjury.review.detection import MAX_SOURCE_BYTES, detection_for, load_detection
+from cyberjury.review.detection import detection_for, load_detection
 from cyberjury.review.diff.model import (
     DiffUnit,
     changed_line_ranges,
@@ -16,6 +16,7 @@ from cyberjury.review.diff.model import (
     strip_unreviewable_files,
 )
 from cyberjury.review.result import SkippedFile
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from tests.review.diff.support import FILE_A_DIFF, FILE_B_DIFF
 
 _DETECTION = load_detection()
@@ -256,8 +257,9 @@ def test_diff_line_ranges_keep_reportable_non_source_files():
 
 
 def test_strip_unreviewable_files_skips_oversized_files_as_too_large(tmp_path):
-    """A change to a bindata.go over MAX_SOURCE_BYTES is skipped as too_large and nothing is kept."""
-    (tmp_path / "bindata.go").write_text("package bindata\n\nvar data = `" + "a" * MAX_SOURCE_BYTES + "`\n")
+    """A change to a bindata.go over the size limit is skipped as too_large and nothing is kept."""
+    limit = DEFAULT_REVIEW_SETTINGS.execution.max_reviewed_source_bytes
+    (tmp_path / "bindata.go").write_text("package bindata\n\nvar data = `" + "a" * limit + "`\n")
     diff = "diff --git a/bindata.go b/bindata.go\n--- a/bindata.go\n+++ b/bindata.go\n@@ -1 +1 @@\n-x\n+y\n"
 
     kept, skipped = strip_unreviewable_files(diff, detection_for(tmp_path, ["bindata.go"]), root=tmp_path)

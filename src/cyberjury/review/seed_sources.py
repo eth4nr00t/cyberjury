@@ -16,7 +16,7 @@ from cyberjury.review.context import (
 )
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.failures import BackendUnavailable
-from cyberjury.review.prompts import inline_source, one_line_source
+from cyberjury.review.prompts import MAX_PREVIEW_CHARS, inline_source, one_line_source
 from cyberjury.review.relationships import (
     CallsiteEvidence,
     DefinitionEvidence,
@@ -294,8 +294,8 @@ def _definition_preview(source: str) -> str:
             line = line.partition("{")[0].rstrip() + " {"
         parts.append(line)
         preview = " ".join(parts)
-        if len(preview) >= 240 or line.endswith(":") or "{" in line or line.endswith(";"):
+        if len(preview) >= MAX_PREVIEW_CHARS or line.endswith(":") or "{" in line or line.endswith(";"):
             break
         if len(parts) == 3:
             break
-    return " ".join(parts)[:240]
+    return " ".join(parts)[:MAX_PREVIEW_CHARS]
