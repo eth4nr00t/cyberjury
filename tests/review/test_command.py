@@ -111,7 +111,7 @@ def _stub_review(*, incomplete: str = "", seen: dict | None = None):
 
 
 def _live_provider(monkeypatch, default: str = _EMPTY_REPLY) -> None:
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("CYBERJURY_API_KEY", "k")
     monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(default=default))
 
 
@@ -244,9 +244,8 @@ def test_the_attempt_record_sums_failures_and_the_usage_of_every_call(diff_targe
 
 
 def test_a_missing_api_key_fails_the_config_stage_before_any_state_directory_exists(monkeypatch, diff_target, tmp_path):
-    """Without provider keys the config record fails with a config error and no state directory is created."""
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    """Without CYBERJURY_API_KEY the config record fails with a config error and no state directory is created."""
+    monkeypatch.delenv("CYBERJURY_API_KEY")
     state = tmp_path / "state"
 
     run = _review(diff_target.target, state)
@@ -256,7 +255,7 @@ def test_a_missing_api_key_fails_the_config_stage_before_any_state_directory_exi
     assert records[0]["id"] == "config"
     assert records[-1]["error"] == records[0]["error"]
     assert records[0]["error"]["code"] == "config"
-    assert records[0]["error"]["message"] == "the anthropic provider has no API key, set ANTHROPIC_API_KEY"
+    assert records[0]["error"]["message"] == "the openai provider has no API key, set CYBERJURY_API_KEY"
     assert not state.exists()
 
 
@@ -542,7 +541,7 @@ def test_repository_review_concurrency_comes_from_the_environment(monkeypatch, t
 def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target, tmp_path):
     """The request.json records the seat id and concurrency 5, model-calls.json is empty, and no key leaks."""
     seen = {}
-    monkeypatch.setenv("OPENAI_API_KEY", "secret-canary")
+    monkeypatch.setenv("CYBERJURY_API_KEY", "secret-canary")
     monkeypatch.setenv("CYBERJURY_CONCURRENCY", "5")
     monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
     state = tmp_path / "state"
@@ -560,14 +559,17 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     assert "secret-canary" not in "".join(path.read_text() for path in _review_dir(state).rglob("*.json"))
 
 
-def test_the_review_reads_its_model_from_the_working_directory_env(monkeypatch, diff_target, tmp_path):
-    """CYBERJURY_MODEL and OPENAI_API_KEY from ./.env select an openai seat running model-from-env."""
+def test_the_review_reads_its_seat_from_the_working_directory_env(monkeypatch, diff_target, tmp_path):
+    """The provider, model, and key in ./.env select an anthropic seat running model-from-env."""
     monkeypatch.setattr(commandmod, "load_env_file", load_env_file)
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".env").write_text("CYBERJURY_MODEL=model-from-env\nOPENAI_API_KEY=key-from-env\n", encoding="utf-8")
+    (project / ".env").write_text(
+        "CYBERJURY_PROVIDER=anthropic\nCYBERJURY_MODEL=model-from-env\nCYBERJURY_API_KEY=key-from-env\n",
+        encoding="utf-8",
+    )
     monkeypatch.chdir(project)
-    for name in ("CYBERJURY_MODEL", "OPENAI_API_KEY"):
+    for name in ("CYBERJURY_PROVIDER", "CYBERJURY_MODEL", "CYBERJURY_API_KEY"):
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
     seen = {}
@@ -577,7 +579,7 @@ def test_the_review_reads_its_model_from_the_working_directory_env(monkeypatch, 
 
     config = _stage(_records(run.out), "config")
     assert seen["seats"].finder_model == "model-from-env"
-    assert (config["attributes"]["provider"], config["attributes"]["model"]) == ("openai", "model-from-env")
+    assert (config["attributes"]["provider"], config["attributes"]["model"]) == ("anthropic", "model-from-env")
 
 
 @pytest.mark.parametrize("scope", ["diff", "repository"])

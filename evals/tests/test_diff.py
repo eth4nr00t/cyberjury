@@ -33,7 +33,7 @@ def scripted_model(monkeypatch):
         if name.startswith(("CYBERJURY_", "ANTHROPIC_", "OPENAI_")):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(commandmod, "load_env_file", lambda: [])
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("CYBERJURY_API_KEY", "k")
 
     def install(findings=(), *, error: BaseException | None = None) -> MockProvider:
         def respond(system, _prompt):
@@ -129,9 +129,9 @@ def test_run_validates_change_anchors_before_any_model_call(tmp_path, case, scri
 
 
 def test_run_aborts_on_missing_provider_credentials(tmp_path, case, scripted_model, monkeypatch):
-    """Removing ANTHROPIC_API_KEY makes the run exit via SystemExit without recording an attempt."""
+    """Removing CYBERJURY_API_KEY makes the run exit via SystemExit without recording an attempt."""
     scripted_model()
-    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    monkeypatch.delenv("CYBERJURY_API_KEY")
     records = []
 
     with pytest.raises(SystemExit):

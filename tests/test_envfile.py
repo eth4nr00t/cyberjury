@@ -35,18 +35,18 @@ def test_env_example_documents_cli_runtime_environment():
     text = (_ROOT / ".env.example").read_text(encoding="utf-8")
 
     assert names == {
-        "ANTHROPIC_API_KEY",
+        "CYBERJURY_API_KEY",
         "CYBERJURY_BASE_URL",
         "CYBERJURY_CONCURRENCY",
         "CYBERJURY_MODEL",
+        "CYBERJURY_PROVIDER",
         "CYBERJURY_STATE_DIR",
-        "OPENAI_API_KEY",
     }
     assert sorted(name for name in names if f"{name}=" not in text) == []
 
 
 def test_the_example_copied_as_is_selects_the_defaults(tmp_path, monkeypatch):
-    """An unedited .env.example copy gives anthropic, claude-fable-5-1, no base_url, 8, and ~/.local/share/cyberjury."""
+    """An unedited .env.example copy selects the openai seat defaults, concurrency 8, and the default state dir."""
     (tmp_path / ".env").write_text((_ROOT / ".env.example").read_text(encoding="utf-8"), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     _forget_after_test(monkeypatch, *_environment_names_read_by_the_cli())
@@ -56,7 +56,7 @@ def test_the_example_copied_as_is_selects_the_defaults(tmp_path, monkeypatch):
     seat = provider_configuration_from_env().seat
     state_dir = command._state_dir(None)
 
-    assert (seat.provider, seat.model, seat.base_url) == ("anthropic", "claude-fable-5-1", None)
+    assert (seat.provider, seat.model, seat.base_url) == ("openai", "gpt-6-astra", "https://api.openai.com/v1")
     assert (command._concurrency(), state_dir) == (8, str(Path.home() / ".local" / "share" / "cyberjury"))
 
 

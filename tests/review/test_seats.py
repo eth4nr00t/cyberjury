@@ -22,9 +22,8 @@ def test_seat_identity_names_the_transport_without_its_endpoint_value():
 def test_review_seats_judge_issue_links_on_the_configured_finder(monkeypatch):
     """The issue judge reuses the finder provider, model, and seat id."""
     monkeypatch.setattr(configuration_module, "make_provider", lambda *args, **kwargs: MockProvider(default="{}"))
-    monkeypatch.setenv("OPENAI_API_KEY", "k")
     finder = ProviderSeat(provider="openai", model="finder")
-    configuration = ProviderConfiguration(seat=finder, retries=0, timeout=10)
+    configuration = ProviderConfiguration(seat=finder, api_key="k", retries=0, timeout=10)
 
     seats = review_seats(configuration, meter=UsageMeter())
 

@@ -158,8 +158,12 @@ def test_non_temperature_bad_request_still_fails_loud():
     assert len(client.calls) == 1
 
 
-def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch):
-    """A client built with a gateway base_url gets max_retries=0, leaving retries to the outer provider."""
+@pytest.mark.parametrize(
+    ("base_url", "expected"),
+    [("https://gateway.example.test", "https://gateway.example.test"), (None, "https://api.anthropic.com")],
+)
+def test_the_client_gets_the_key_and_the_configured_or_official_endpoint(monkeypatch, base_url, expected):
+    """The SDK gets the key, the gateway or else the official Anthropic API, and max_retries=0."""
     captured = {}
 
     class _Anthropic:
@@ -168,6 +172,6 @@ def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch
 
     monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=_Anthropic))
 
-    AnthropicProvider(base_url="https://gateway.example.test")._get_client()
+    AnthropicProvider(api_key="k", base_url=base_url)._get_client()
 
-    assert captured == {"max_retries": 0, "base_url": "https://gateway.example.test"}
+    assert captured == {"api_key": "k", "base_url": expected, "max_retries": 0}

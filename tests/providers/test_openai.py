@@ -51,8 +51,12 @@ def _sent(content: str, **kw) -> dict:
     return client.kwargs
 
 
-def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch):
-    """A client built with a gateway base_url passes it to the SDK with max_retries=0."""
+@pytest.mark.parametrize(
+    ("base_url", "expected"),
+    [("https://gateway.example.test", "https://gateway.example.test"), (None, "https://api.openai.com/v1")],
+)
+def test_the_client_gets_the_key_and_the_configured_or_official_endpoint(monkeypatch, base_url, expected):
+    """The SDK gets the key, the gateway or else the official OpenAI API, and max_retries=0."""
     captured = {}
 
     class _OpenAI:
@@ -61,9 +65,9 @@ def test_sdk_retries_are_disabled_when_the_outer_provider_owns_retry(monkeypatch
 
     monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=_OpenAI))
 
-    OpenAIProvider(base_url="https://gateway.example.test")._get_client()
+    OpenAIProvider(api_key="k", base_url=base_url)._get_client()
 
-    assert captured == {"max_retries": 0, "base_url": "https://gateway.example.test"}
+    assert captured == {"api_key": "k", "base_url": expected, "max_retries": 0}
 
 
 def test_responses_usage_reads_the_cached_tokens_detail():

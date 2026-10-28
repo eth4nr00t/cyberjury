@@ -6,6 +6,8 @@ from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
 MAX_SOURCE_FILES = 200_000
+MAX_SOURCE_FILE_BYTES = 100_000_000
+MAX_SOURCE_TREE_BYTES = 2_000_000_000
 READ_CHUNK_BYTES = 1_048_576
 
 

@@ -16,7 +16,7 @@ from cyberjury.envfile import env_setting, load_env_file
 from cyberjury.providers.base import ProviderAccessError
 from cyberjury.providers.configuration import (
     ProviderConfiguration,
-    ProviderCredentialsError,
+    ProviderSettingError,
     provider_configuration_from_env,
 )
 from cyberjury.providers.metering import UsageMeter
@@ -82,7 +82,7 @@ def classify_error(exc: BaseException) -> RecordError:
     if isinstance(
         exc,
         (
-            ProviderCredentialsError,
+            ProviderSettingError,
             ProviderAccessError,
             ReviewSettingError,
             WorkspaceCorruptionError,

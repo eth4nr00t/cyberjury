@@ -14,7 +14,7 @@ from tests.support import EMPTY_SCHEMA
 
 
 def _make(name: str, *, retries: int = 2):
-    return make_provider(name, base_url=None, retries=retries, timeout=10.0)
+    return make_provider(name, api_key="k", base_url=None, retries=retries, timeout=10.0)
 
 
 def test_selects_provider_by_name_behind_a_retry_wrapper():

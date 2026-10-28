@@ -16,7 +16,9 @@ from typing import BinaryIO, Literal
 from cyberjury.canonical import canonical_sha256
 from cyberjury.sources.git import GitSourceError, worktree_files
 from cyberjury.sources.paths import (
+    MAX_SOURCE_FILE_BYTES,
     MAX_SOURCE_FILES,
+    MAX_SOURCE_TREE_BYTES,
     READ_CHUNK_BYTES,
     SourceSnapshotError,
     portable_paths,
@@ -24,8 +26,6 @@ from cyberjury.sources.paths import (
 )
 
 SNAPSHOT_SCHEMA = "cyberjury.snapshot/v1"
-_MAX_SOURCE_FILE_BYTES = 100_000_000
-_MAX_SNAPSHOT_BYTES = 2_000_000_000
 
 type ScopeProvider = Callable[[], tuple[str, ...]]
 
@@ -133,11 +133,11 @@ def _source_file(root: Path, relative: str, sink: BinaryIO | None = None) -> Sou
         size = 0
         with path.open("rb") as stream:
             before = os.fstat(stream.fileno())
-            if before.st_size > _MAX_SOURCE_FILE_BYTES:
+            if before.st_size > MAX_SOURCE_FILE_BYTES:
                 raise SourceSnapshotError(f"source file exceeds the byte limit: {relative}")
             while chunk := stream.read(READ_CHUNK_BYTES):
                 size += len(chunk)
-                if size > _MAX_SOURCE_FILE_BYTES:
+                if size > MAX_SOURCE_FILE_BYTES:
                     raise SourceSnapshotError(f"source file exceeds the byte limit: {relative}")
                 digest.update(chunk)
                 if sink is not None:
@@ -205,7 +205,7 @@ class SourceSnapshot:
         for relative in portable_paths(files):
             entry = _source_file(canonical_root, relative)
             total_bytes += entry.size_bytes
-            if total_bytes > _MAX_SNAPSHOT_BYTES:
+            if total_bytes > MAX_SOURCE_TREE_BYTES:
                 raise SourceSnapshotError("source snapshot exceeds the total byte limit")
             entries.append(entry)
         return cls(

@@ -11,10 +11,15 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury.sources.paths import READ_CHUNK_BYTES, SourceSnapshotError, portable_paths, safe_link_target
+from cyberjury.sources.paths import (
+    MAX_SOURCE_FILE_BYTES,
+    MAX_SOURCE_TREE_BYTES,
+    READ_CHUNK_BYTES,
+    SourceSnapshotError,
+    portable_paths,
+    safe_link_target,
+)
 
-_MAX_GIT_BLOB_BYTES = 100_000_000
-_MAX_GIT_TREE_BYTES = 2_000_000_000
 _MAX_GIT_SYMLINK_BYTES = 4096
 _MAX_GIT_LIST_BYTES = 100_000_000
 _MAX_PATCH_BYTES = 100_000_000
@@ -247,10 +252,10 @@ def _write_git_blobs(repository: str, blobs: tuple[_GitBlob, ...], source_root: 
                     size = int(header[2])
                 except ValueError as exc:
                     raise GitSourceError(f"Git blob size is invalid for {blob.path!r}") from exc
-                if size > _MAX_GIT_BLOB_BYTES:
+                if size > MAX_SOURCE_FILE_BYTES:
                     raise GitSourceError(f"Git blob exceeds the byte limit: {blob.path!r}")
                 total_bytes += size
-                if total_bytes > _MAX_GIT_TREE_BYTES:
+                if total_bytes > MAX_SOURCE_TREE_BYTES:
                     raise GitSourceError("Git tree exceeds the total byte limit")
                 path = source_root / blob.path
                 path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

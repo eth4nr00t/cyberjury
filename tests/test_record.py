@@ -10,16 +10,16 @@ def test_error_messages_redact_credentials_and_stay_bounded():
     message = error_message(
         "Authorization: Bearer super-secret headers={'Authorization': 'Bearer dict-secret'} "
         "api key loose-secret token token-secret sk-abcdefghijkl, "
-        "the anthropic provider has no API key, set ANTHROPIC_API_KEY. "
-        "tokens=abcdefghij OPENAI_API_KEY=abcdefghijklmnop tokenization_failed "
+        "the openai provider has no API key, set CYBERJURY_API_KEY. "
+        "tokens=abcdefghij CYBERJURY_API_KEY=abcdefghijklmnop tokenization_failed "
         f"{'x' * 3000}"
     )
 
     assert "secret" not in message
     assert "abcdefghij" not in message
     assert (
-        "the anthropic provider has no API key, set ANTHROPIC_API_KEY. "
-        "tokens=[redacted] OPENAI_API_KEY=[redacted] tokenization_failed" in message
+        "the openai provider has no API key, set CYBERJURY_API_KEY. "
+        "tokens=[redacted] CYBERJURY_API_KEY=[redacted] tokenization_failed" in message
     )
     assert len(message) == 2000
 

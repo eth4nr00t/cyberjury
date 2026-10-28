@@ -13,6 +13,7 @@ from cyberjury.providers.base import (
     Usage,
 )
 
+DEFAULT_BASE_URL = "https://api.openai.com/v1"
 _RESPONSES_MIN_OUTPUT_TOKENS = 8_000
 
 
@@ -22,11 +23,13 @@ class OpenAIProvider(Provider):
     def __init__(
         self,
         *,
+        api_key: str | None = None,
         base_url: str | None = None,
         client: Any | None = None,
         timeout: float = REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         """Store OpenAI connection settings without constructing the client eagerly."""
+        self._api_key = api_key
         self._base_url = base_url
         self._client = client
         self._timeout = timeout
@@ -35,10 +38,9 @@ class OpenAIProvider(Provider):
         if self._client is None:
             import openai
 
-            kwargs: dict[str, Any] = {"max_retries": 0}
-            if self._base_url:
-                kwargs["base_url"] = self._base_url
-            self._client = openai.OpenAI(**kwargs)
+            self._client = openai.OpenAI(
+                api_key=self._api_key, base_url=self._base_url or DEFAULT_BASE_URL, max_retries=0
+            )
         return self._client
 
     def complete(

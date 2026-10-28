@@ -17,14 +17,14 @@ pip install cyberjury
 
 ## Configure
 
-All settings come from a `.env` file in the working directory. An exported shell value wins over the file. Copy [.env.example](.env.example) to `.env` and fill in what you use:
+All settings come from a `.env` file in the working directory. An exported shell value wins over the file. Copy [.env.example](.env.example) to `.env` and fill in what you use. Its endpoint and model are the OpenAI defaults, so change or clear them when you set `CYBERJURY_PROVIDER=anthropic`:
 
 | Setting | Meaning |
 | :--- | :--- |
-| `OPENAI_API_KEY` | OpenAI key, used whenever it is set. |
-| `ANTHROPIC_API_KEY` | Anthropic key, used when no OpenAI key is set. |
+| `CYBERJURY_PROVIDER` | Model provider, `openai` or `anthropic`, default `openai`. |
+| `CYBERJURY_API_KEY` | API key for the provider, required. |
+| `CYBERJURY_BASE_URL` | Provider endpoint, such as a gateway or proxy, default `https://api.openai.com/v1` for OpenAI and `https://api.anthropic.com` for Anthropic. |
 | `CYBERJURY_MODEL` | Model name, default `gpt-6-astra` for OpenAI and `claude-fable-5-1` for Anthropic. |
-| `CYBERJURY_BASE_URL` | Gateway or proxy endpoint for the provider, default the provider's own endpoint. |
 | `CYBERJURY_CONCURRENCY` | Number of review units or issue link judgments run in parallel, default `8`. |
 | `CYBERJURY_STATE_DIR` | Directory that stores each review under `reviews/<review-id>`, default `$XDG_DATA_HOME/cyberjury`, or `~/.local/share/cyberjury` without `XDG_DATA_HOME`. |
 

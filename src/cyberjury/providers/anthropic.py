@@ -12,6 +12,8 @@ from cyberjury.providers.base import (
     Usage,
 )
 
+DEFAULT_BASE_URL = "https://api.anthropic.com"
+
 
 class AnthropicProvider(Provider):
     """Anthropic Messages backend with model-specific temperature handling."""
@@ -19,11 +21,13 @@ class AnthropicProvider(Provider):
     def __init__(
         self,
         *,
+        api_key: str | None = None,
         base_url: str | None = None,
         client: Any | None = None,
         timeout: float = REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         """Store Anthropic connection settings without constructing the client eagerly."""
+        self._api_key = api_key
         self._base_url = base_url
         self._client = client
         self._temperature: float | None = 0.0
@@ -33,10 +37,9 @@ class AnthropicProvider(Provider):
         if self._client is None:
             import anthropic
 
-            kwargs: dict[str, Any] = {"max_retries": 0}
-            if self._base_url:
-                kwargs["base_url"] = self._base_url
-            self._client = anthropic.Anthropic(**kwargs)
+            self._client = anthropic.Anthropic(
+                api_key=self._api_key, base_url=self._base_url or DEFAULT_BASE_URL, max_retries=0
+            )
         return self._client
 
     def complete(
