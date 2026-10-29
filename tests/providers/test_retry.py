@@ -266,11 +266,9 @@ class _HangOnce(Provider):
     def __init__(self):
         self.release = threading.Event()
         self.calls = 0
-        self.threads = []
 
     def complete(self, **kwargs):
         self.calls += 1
-        self.threads.append(threading.current_thread())
         if self.calls == 1:
             self.release.wait()
         return CompletionResult(text=f"call {self.calls}")

@@ -9,14 +9,6 @@ from cyberjury.review.syntax.facts import analyzable_sources
 from tests.review.syntax.support import syntax_facts
 
 
-def _write(root, files):
-    for name, text in files.items():
-        path = root / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-    return sorted(files)
-
-
 def test_an_empty_tree_yields_empty_facts(tmp_path):
     """A tree holding only notes.md produces facts equal to an empty Facts()."""
     (tmp_path / "notes.md").write_text("no code here\n")

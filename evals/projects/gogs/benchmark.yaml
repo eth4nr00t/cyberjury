@@ -378,7 +378,7 @@ cases:
     commit: d720c92d995131c19a5cb2bb55f54b804fda4cc4
     checks:
       - id: smtp-login-information-disclosure
-        root_cause: The new LoginAuth.Start sends SMTP LOGIN credentials without checking ServerInfo.TLS (modules/mailer/mailer.go:30), unlike net/smtp PlainAuth, so credentials go out in cleartext when STARTTLS is not negotiated
+        root_cause: The new LoginAuth.Start sends SMTP LOGIN credentials without checking ServerInfo.TLS (modules/mailer/mailer.go:30), so credentials go out in cleartext to a server that does not negotiate STARTTLS
         locations:
           - {file: modules/mailer/mailer.go, line: 30}
         change_anchors:

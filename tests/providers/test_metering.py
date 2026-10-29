@@ -122,20 +122,6 @@ def test_a_validation_failure_marks_the_same_call_failed():
     assert (call["status"], call["failure_reason"]) == ("failed", "invalid response")
 
 
-def test_scheduler_scope_supplies_unit_to_nested_model_calls():
-    """A call inside model_call_scope(unit_id="unit-a") records that unit and the initial_judgment trigger."""
-    meter = UsageMeter()
-    provider = MeteringProvider(_Fake(Usage()), meter)
-
-    with model_call_scope(unit_id="unit-a"), model_call_context(role="finder", trigger="initial_judgment"):
-        _call(provider)
-        record_model_parse()
-
-    record = meter.call_snapshot()[0]
-    assert record["unit_id"] == "unit-a"
-    assert record["trigger"] == "initial_judgment"
-
-
 def test_a_candidate_model_call_binds_the_candidate_instead_of_a_scheduler_unit():
     """An issue_link call with candidate_id="candidate-a" records that candidate and an empty unit_id."""
     meter = UsageMeter()

@@ -200,3 +200,20 @@ def test_an_oversized_symlink_target_fails_materialization_and_leaves_nothing_be
     assert yielded == []
     assert len(created) == 1
     assert not created[0].exists()
+
+
+@pytest.mark.parametrize(
+    ("limit", "message"),
+    [
+        ("MAX_SOURCE_FILE_BYTES", "Git blob exceeds the byte limit"),
+        ("MAX_SOURCE_TREE_BYTES", "Git tree exceeds the total byte limit"),
+    ],
+)
+def test_materialization_fails_loud_above_the_source_byte_limits(monkeypatch, tmp_path, limit, message):
+    """A 5-byte app.py blob over a 1-byte file or tree limit raises GitSourceError naming that limit."""
+    repo = tmp_path / "repo"
+    _base, head = _two_commits(repo)
+    monkeypatch.setattr(gitmod, limit, 1)
+
+    with pytest.raises(GitSourceError, match=message), materialize_revision(repo, head):
+        pass

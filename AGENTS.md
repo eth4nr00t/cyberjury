@@ -4,10 +4,8 @@ Codex reads `AGENTS.md` directly. Claude Code reads it through the `@AGENTS.md` 
 
 ## Development
 
-- Write no comments, and keep each docstring that Ruff requires to a single line.
-- Write Markdown with one line per paragraph.
-- Keep persisted schema versions at v1 and change v1 in place.
-- Test one supported behavior per test, and delete tests of removed or legacy behavior.
+- Write no comments, and write docstrings only where Ruff requires them, each on a single line.
+- Improve the general case instead of fitting a benchmark, and change a benchmark or scorer only to make it correct, never to raise a score.
 - Run `ruff check .`, `ruff format --check .`, and `pytest -q` before finishing a change.
 
 ## Commits
