@@ -125,25 +125,25 @@ def resolve_repository_target(repository: str | Path) -> ResolvedTarget:
 
 def _parse_git_range(value: str) -> tuple[str, str, str]:
     if not value:
-        raise TargetResolutionError("git range must be nonempty")
+        raise TargetResolutionError("Git range must be nonempty")
     if any(character.isspace() or ord(character) < 32 for character in value):
-        raise TargetResolutionError("git range cannot contain whitespace or control characters")
+        raise TargetResolutionError("Git range cannot contain whitespace or control characters")
     if value.startswith("-"):
-        raise TargetResolutionError("git range cannot be a git option")
+        raise TargetResolutionError("Git range cannot be a git option")
     if "..." in value:
         if value.count("...") != 1:
-            raise TargetResolutionError("git range must contain exactly two endpoints")
+            raise TargetResolutionError("Git range must contain exactly two endpoints")
         left, right = value.split("...", 1)
         separator = "three-dot"
     elif ".." in value:
         if value.count("..") != 1:
-            raise TargetResolutionError("git range must contain exactly two endpoints")
+            raise TargetResolutionError("Git range must contain exactly two endpoints")
         left, right = value.split("..", 1)
         separator = "two-dot"
     else:
-        raise TargetResolutionError("git range must use A..B or A...B")
+        raise TargetResolutionError("Git range must use A..B or A...B")
     if not left or not right or right.startswith("-"):
-        raise TargetResolutionError("git range requires two explicit non-option endpoints")
+        raise TargetResolutionError("Git range requires two explicit non-option endpoints")
     return left, right, separator
 
 

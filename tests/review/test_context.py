@@ -4,6 +4,7 @@ import pytest
 
 from cyberjury.review.context import (
     EvidenceItem,
+    EvidencePromptContext,
     EvidenceRequestError,
     GroundingContext,
     GroundingCoverage,
@@ -125,3 +126,38 @@ def test_fact_limitations_are_scoped_to_sources_published_by_the_unit():
     assert context.coverage.limitations == ("facts:app.py",)
     assert "app.py: python unparsable" in context.text
     assert "unrelated.py" not in context.text
+
+
+def test_every_target_sends_seed_notices_delivered_source_hints_then_catalog_before_the_controls():
+    """The stable prefix orders seed, notices, initial source, hints, then catalog, and the suffix is the follow-up."""
+    delivered = SourceEvidence(
+        id="src-000000000001",
+        identity="lib.py:helper:0:9",
+        text="# file: lib.py lines 1-1\n1 | helper()",
+        source_span=SourceSpan(file="lib.py", start_line=1, end_line=1),
+    )
+    context = GroundingContext(
+        text="NOTICES AND CALL CANDIDATES",
+        seed="SEED",
+        syntax_hints="HINTS",
+        source_evidence=(delivered,),
+        evidence=(EvidenceItem.create(identity="lib.py:other:10:20", label="lib.py:other", text="other()"),),
+    )
+    prompt = context.prompt
+    plan = prompt.plan
+
+    assert plan.stable_prefix.index("SEED") < plan.stable_prefix.index("NOTICES AND CALL CANDIDATES")
+    assert plan.stable_prefix.index("NOTICES") < plan.stable_prefix.index("Initial source `src-000000000001`")
+    assert plan.stable_prefix.index("Initial source") < plan.stable_prefix.index("HINTS")
+    assert plan.stable_prefix.index("HINTS") < plan.stable_prefix.index("Evidence catalog")
+    assert plan.stable_prefix.endswith("lib.py:other\n\n")
+    assert plan.dynamic_suffix == prompt.followup
+
+
+def test_delivered_exchanges_are_the_cache_segments_that_lead_the_follow_up():
+    """Two delivered exchanges before the budget become two segments, and text equals prefix, segments, rest."""
+    plan = EvidencePromptContext(source="SEED", delivered=("FIRST", "SECOND"), budget="BUDGET").plan
+
+    assert plan.cache_segments == ("FIRST\n\n", "SECOND\n\n")
+    assert plan.text == "SEED\n\nFIRST\n\nSECOND\n\nBUDGET"
+    assert EvidencePromptContext(source="SEED", delivered=("ONLY",)).plan.cache_segments == ()

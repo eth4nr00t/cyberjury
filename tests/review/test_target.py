@@ -108,7 +108,7 @@ def test_diff_target_uses_git_top_level_for_subdirectory_input(tmp_path):
     "git_range",
     ["HEAD", "..HEAD", "HEAD..", "HEAD..HEAD..HEAD", "HEAD HEAD"],
 )
-def test_diff_target_rejects_noncommitted_or_option_like_ranges(tmp_path, git_range):
+def test_diff_target_rejects_a_range_that_is_not_two_revisions(tmp_path, git_range):
     """HEAD, ..HEAD, HEAD.., HEAD..HEAD..HEAD, and HEAD HEAD all raise TargetResolutionError."""
     repository, _base, _head = _repository(tmp_path / "repo")
 
@@ -127,19 +127,6 @@ def test_option_like_git_range_cannot_write_an_output_file(tmp_path):
     assert not unexpected.exists()
 
 
-def test_diff_target_with_a_submodule_materializes_without_it(tmp_path):
-    """A head commit holding a gitlink at lib/dependency resolves and materializes app.py without lib/dependency."""
-    repository, base, _head = _repository(tmp_path / "repo")
-    git(repository, "update-index", "--add", "--cacheinfo", f"160000,{base},lib/dependency")
-    git(repository, "commit", "--quiet", "-m", "gitlink")
-
-    target = resolve_diff_target(repository, f"{base}..HEAD")
-
-    with materialize_diff_target(target) as source_root:
-        assert (source_root / "app.py").read_text(encoding="utf-8") == "head\n"
-        assert not (source_root / "lib" / "dependency").exists()
-
-
 def test_repository_target_requires_a_real_nonsymlink_directory(tmp_path):
     """A real directory resolves, while a symlink to it raises TargetResolutionError."""
     repository = tmp_path / "repo"
@@ -150,13 +137,3 @@ def test_repository_target_requires_a_real_nonsymlink_directory(tmp_path):
     assert resolve_repository_target(repository).repository_root == str(repository.resolve())
     with pytest.raises(TargetResolutionError, match="symlink"):
         resolve_repository_target(link)
-
-
-def test_a_materialized_revision_is_removed_on_exit(tmp_path):
-    """The materialized root of a base..head range is deleted once its context exits."""
-    repository, base, head = _repository(tmp_path / "repo")
-
-    with materialize_diff_target(resolve_diff_target(repository, f"{base}..{head}")) as source_root:
-        assert source_root.is_dir()
-
-    assert not source_root.exists()

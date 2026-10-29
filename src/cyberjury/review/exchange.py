@@ -547,15 +547,14 @@ def _parse_evidence_reply(
         navigation=navigation,
         evidence_requests=list(unread_evidence_ids),
     )
-    ids = list(dict.fromkeys(requested))
     accepted, deferred = _partition_evidence_bound_findings(
         findings,
         available=available_refs,
-        requested=set(ids),
+        requested=set(requested),
     )
     return _ParsedEvidenceReply(
         findings=accepted,
-        requested=ids,
+        requested=requested,
         source_queries=source_queries,
         deferred=deferred,
         repeated_evidence_requests=repeated_evidence_requests,

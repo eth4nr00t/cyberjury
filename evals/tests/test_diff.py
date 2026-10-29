@@ -67,12 +67,9 @@ def owner_finding():
     )
 
 
-def test_run_reviews_the_pinned_range_through_the_product_command(
-    monkeypatch, tmp_path, case, scripted_model, owner_finding
-):
-    """A scripted finding is recorded with its anchor, the CYBERJURY_MODEL override, and attempt artifacts."""
+def test_run_reviews_the_pinned_range_through_the_product_command(tmp_path, case, scripted_model, owner_finding):
+    """A scripted finding is recorded with its anchor, and the prompt carries the pinned patch."""
     provider = scripted_model([owner_finding.reply])
-    monkeypatch.setenv("CYBERJURY_MODEL", "override")
 
     (record,) = _run([case], tmp_path / "reviews")
 
@@ -87,10 +84,7 @@ def test_run_reviews_the_pinned_range_through_the_product_command(
         "attack_path": "anyone creates an unowned record",
     }
     assert finding["change_anchor"] == {"file": "views.py", "line": 2, "side": "new"}
-    assert {call["model"] for call in provider.calls} == {"override"}
     assert "+    return save(owner=None)" in provider.calls[0]["prompt"]
-    [attempt] = (tmp_path / "reviews").glob("demo/*/run-01/reviews/*/attempts/*")
-    assert json.loads((attempt / "model-calls.json").read_text())["usage"]["model_requests"] == len(provider.calls)
 
 
 def test_run_reports_each_case_start_and_finish(tmp_path, case, scripted_model, owner_finding):

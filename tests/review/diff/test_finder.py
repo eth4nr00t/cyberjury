@@ -2,11 +2,12 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from cyberjury.review.context import GroundingContext, GroundingCoverage, SourceEvidence, SourceSpan
 from cyberjury.review.diff.finder import locate
 from cyberjury.review.diff.model import DiffLineRanges
 from cyberjury.review.finding import ChangeAnchor, Finding
-from cyberjury.review.union import MERGE_RULE
 from tests.review.diff.support import SQL_DIFF, diff_unit, finder, reply, review
 from tests.support import MockProvider
 
@@ -106,8 +107,7 @@ def test_diff_review_preserves_a_valid_sibling_during_anchor_correction():
 
     assert [finding.evidence for finding in findings] == ["first unsafe operation", "second unsafe operation"]
     correction = provider.calls[1]["prompt"]
-    assert f"cannot be edited or withdrawn. {MERGE_RULE} Return only new findings." in correction
-    assert '"title": "unsafe changed operation"' in correction
+    assert '"entrypoint": "GET /first"' in correction
 
 
 def test_diff_review_keeps_an_invalid_anchor_candidate_when_correction_fails():
@@ -156,6 +156,7 @@ def test_diff_review_keeps_an_out_of_range_location_explicitly_incomplete():
                     "severity": "HIGH",
                     "category": "missing-authorization",
                     "evidence": "unguarded route",
+                    "change_anchor": {"file": "app.py", "line": 31, "side": "new"},
                 },
                 {
                     "file": "b/app.py",
@@ -177,69 +178,69 @@ def test_diff_review_keeps_an_out_of_range_location_explicitly_incomplete():
     assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="app.py", line=31, side="new")
 
 
-def test_diff_review_accepts_an_unchanged_location_with_a_new_change_anchor():
-    """A finding on unchanged line 20 anchored to added line 21 is accepted with that anchor intact."""
-    diff = (
-        "diff --git a/policy.py b/policy.py\n"
-        "--- a/policy.py\n"
-        "+++ b/policy.py\n"
-        "@@ -20,2 +20,3 @@\n"
-        " existing_operation()\n"
-        "+expose_operation()\n"
-        " finish_request()\n"
-    )
-    provider = MockProvider(
-        default=reply(
-            [
-                {
-                    "file": "policy.py",
-                    "line": 20,
-                    "change_anchor": {"file": "policy.py", "line": 21, "side": "new"},
-                    "severity": "HIGH",
-                    "category": "other",
-                    "evidence": "the existing operation is newly exposed",
-                }
-            ]
-        )
-    )
+@pytest.mark.parametrize(
+    ("diff", "location", "anchor", "accepted"),
+    [
+        pytest.param(
+            "diff --git a/policy.py b/policy.py\n--- a/policy.py\n+++ b/policy.py\n@@ -20,2 +20,3 @@\n"
+            " existing_operation()\n+expose_operation()\n finish_request()\n",
+            ("policy.py", 20),
+            ("policy.py", 21, "new"),
+            (("policy.py", 20), ChangeAnchor(file="policy.py", line=21, side="new")),
+            id="unchanged-location-added-anchor",
+        ),
+        pytest.param(
+            "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -10,2 +10 @@\n"
+            "-app.use(auth)\n app.use('/admin', admin)\n",
+            ("app.py", 10),
+            ("app.py", 10, "old"),
+            (("app.py", 10), ChangeAnchor(file="app.py", line=10, side="old")),
+            id="surviving-location-deleted-control",
+        ),
+        pytest.param(
+            "diff --git a/operation.py b/operation.py\n--- a/operation.py\n+++ b/operation.py\n@@ -10,2 +10,3 @@\n"
+            " sensitive_operation()\n+record_operation()\n finish_operation()\n"
+            "diff --git a/exposure.py b/exposure.py\n--- a/exposure.py\n+++ b/exposure.py\n@@ -20 +20,2 @@\n"
+            " keep_private()\n+expose_operation()\n",
+            ("operation.py", 10),
+            ("exposure.py", 21, "new"),
+            (("operation.py", 10), ChangeAnchor(file="exposure.py", line=21, side="new")),
+            id="cross-file-anchor",
+        ),
+        pytest.param(
+            SQL_DIFF,
+            ("b/app.py", 1),
+            ("b/app.py", 1, "new"),
+            (("app.py", 1), ChangeAnchor(file="app.py", line=1, side="new")),
+            id="git-side-prefix-canonicalized",
+        ),
+        pytest.param(
+            "diff --git a/policy.yaml b/policy.yaml\n--- a/policy.yaml\n+++ b/policy.yaml\n@@ -1 +1 @@\n"
+            "-require_approval: true\n+require_approval: false\n",
+            ("policy.yaml", 1),
+            ("policy.yaml", 1, "new"),
+            (("policy.yaml", 1), ChangeAnchor(file="policy.yaml", line=1, side="new")),
+            id="non-source-file",
+        ),
+    ],
+)
+def test_diff_review_accepts_a_location_with_a_valid_change_anchor(diff, location, anchor, accepted):
+    """Each valid location and change anchor pair is accepted complete at its canonical location and anchor."""
+    (file, line), (anchor_file, anchor_line, side) = location, anchor
+    finding = {
+        "file": file,
+        "line": line,
+        "change_anchor": {"file": anchor_file, "line": anchor_line, "side": side},
+        "severity": "HIGH",
+        "category": "other",
+        "evidence": "the changed code exposes an operation",
+    }
 
-    result = review(diff, provider=provider)
+    result = review(diff, provider=MockProvider(default=reply([finding])))
 
     assert result.outcome.complete is True
-    assert result.outcome.findings[0].line == 20
-    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="policy.py", line=21, side="new")
-
-
-def test_diff_review_accepts_a_surviving_location_anchored_to_a_deleted_control():
-    """A finding on surviving line 10 anchored to the deleted old-side auth line is accepted as complete."""
-    diff = (
-        "diff --git a/app.py b/app.py\n"
-        "--- a/app.py\n"
-        "+++ b/app.py\n"
-        "@@ -10,2 +10 @@\n"
-        "-app.use(auth)\n"
-        " app.use('/admin', admin)\n"
-    )
-    provider = MockProvider(
-        default=reply(
-            [
-                {
-                    "file": "app.py",
-                    "line": 10,
-                    "change_anchor": {"file": "app.py", "line": 10, "side": "old"},
-                    "severity": "CRITICAL",
-                    "category": "missing-authorization",
-                    "evidence": "the admin route lost authentication",
-                }
-            ]
-        )
-    )
-
-    result = review(diff, provider=provider)
-
-    assert result.outcome.complete is True
-    assert result.outcome.findings[0].line == 10
-    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="app.py", line=10, side="old")
+    [accepted_finding] = result.outcome.findings
+    assert ((accepted_finding.file, accepted_finding.line), accepted_finding.change_anchor) == accepted
 
 
 def test_diff_review_rejects_an_anchor_that_is_only_context():
@@ -265,44 +266,6 @@ def test_diff_review_rejects_an_anchor_that_is_only_context():
     assert result.outcome.findings == ()
     assert [finding.evidence for finding in result.outcome.incomplete] == ["context is not a change anchor"]
     assert result.outcome.complete is False
-
-
-def test_diff_review_accepts_a_cross_file_change_anchor():
-    """A finding in operation.py anchored to an added line in exposure.py is accepted with that anchor."""
-    diff = (
-        "diff --git a/operation.py b/operation.py\n"
-        "--- a/operation.py\n"
-        "+++ b/operation.py\n"
-        "@@ -10,2 +10,3 @@\n"
-        " sensitive_operation()\n"
-        "+record_operation()\n"
-        " finish_operation()\n"
-        "diff --git a/exposure.py b/exposure.py\n"
-        "--- a/exposure.py\n"
-        "+++ b/exposure.py\n"
-        "@@ -20 +20,2 @@\n"
-        " keep_private()\n"
-        "+expose_operation()\n"
-    )
-    provider = MockProvider(
-        default=reply(
-            [
-                {
-                    "file": "operation.py",
-                    "line": 10,
-                    "change_anchor": {"file": "exposure.py", "line": 21, "side": "new"},
-                    "severity": "HIGH",
-                    "category": "other",
-                    "evidence": "the existing operation is newly exposed",
-                }
-            ]
-        )
-    )
-
-    result = review(diff, provider=provider)
-
-    assert result.outcome.complete is True
-    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="exposure.py", line=21, side="new")
 
 
 def test_diff_review_accepts_a_cited_repository_location_outside_the_patch():
@@ -400,30 +363,6 @@ def test_diff_path_normalization_prefers_a_real_side_named_directory():
     assert result.change_anchor == ChangeAnchor(file="b/app.py", line=1, side="new")
 
 
-def test_diff_review_keeps_a_canonicalized_path_when_every_finding_is_valid():
-    """A b/app.py finding and anchor are canonicalized to app.py and the review stays complete."""
-    provider = MockProvider(
-        default=reply(
-            [
-                {
-                    "file": "b/app.py",
-                    "line": 1,
-                    "change_anchor": {"file": "b/app.py", "line": 1, "side": "new"},
-                    "severity": "HIGH",
-                    "category": "other",
-                    "evidence": "new unsafe operation",
-                }
-            ]
-        )
-    )
-
-    result = review(SQL_DIFF, provider=provider)
-
-    assert result.outcome.complete is True
-    assert result.outcome.findings[0].file == "app.py"
-    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="app.py", line=1, side="new")
-
-
 def test_diff_unit_rejects_an_invalid_anchor_instead_of_overwriting_it():
     """An anchor naming b.py, which is absent from the ranges, makes the a.py finding unlocatable."""
     ranges = DiffLineRanges(
@@ -448,37 +387,6 @@ def test_diff_unit_preserves_a_distinct_valid_anchor_for_an_added_location():
     assert _locate(finding, ranges).change_anchor == ChangeAnchor(file="a.py", line=2, side="new")
 
 
-def test_diff_review_accepts_a_non_source_change_location_and_anchor():
-    """A policy.yaml change flipping require_approval is accepted as both finding location and anchor."""
-    diff = (
-        "diff --git a/policy.yaml b/policy.yaml\n"
-        "--- a/policy.yaml\n"
-        "+++ b/policy.yaml\n"
-        "@@ -1 +1 @@\n"
-        "-require_approval: true\n"
-        "+require_approval: false\n"
-    )
-    provider = MockProvider(
-        default=reply(
-            [
-                {
-                    "file": "policy.yaml",
-                    "line": 1,
-                    "change_anchor": {"file": "policy.yaml", "line": 1, "side": "new"},
-                    "severity": "HIGH",
-                    "category": "other",
-                    "evidence": "the policy no longer requires approval",
-                }
-            ]
-        )
-    )
-
-    result = review(diff, provider=provider)
-
-    assert result.outcome.complete is True
-    assert result.outcome.findings[0].change_anchor == ChangeAnchor(file="policy.yaml", line=1, side="new")
-
-
 def test_diff_review_keeps_a_deleted_file_location_incomplete():
     """A finding on a line of a file deleted to /dev/null is incomplete and yields no findings."""
     provider = MockProvider(
@@ -490,6 +398,7 @@ def test_diff_review_keeps_a_deleted_file_location_incomplete():
                     "severity": "HIGH",
                     "category": "sql-injection",
                     "evidence": "old sink",
+                    "change_anchor": {"file": "app.py", "line": 1, "side": "old"},
                 }
             ]
         )

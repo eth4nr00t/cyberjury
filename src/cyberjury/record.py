@@ -30,7 +30,7 @@ METRICS = (
     "low",
     "calls",
     "input_tokens",
-    "cached_tokens",
+    "cache_read_tokens",
     "cache_write_tokens",
     "output_tokens",
 )

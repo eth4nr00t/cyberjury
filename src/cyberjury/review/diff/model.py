@@ -14,6 +14,7 @@ from cyberjury.numbering import HUNK_HEADER, split_lines
 from cyberjury.review.context import GroundingContext
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.detection import Detection
+from cyberjury.review.paths import normalized_location_path
 from cyberjury.review.result import SkippedFile
 from cyberjury.review.selection import decodes_as_utf8
 from cyberjury.review.unit_plans import UnitPlanRecord, UnitSourceSlice
@@ -37,7 +38,6 @@ class DiffUnit:
     """One diff batch and its reportable source paths."""
 
     index: int
-    total: int
     diff: str
     paths: tuple[str, ...]
     definition_plan: DefinitionUnitPlan
@@ -168,7 +168,7 @@ def _side_path(chunk: str, marker: str) -> str:
 
 def canonical_diff_path(path: str, available: Iterable[str]) -> str:
     """Match one reported path to a patch path, accepting a Git side prefix."""
-    normalized = path.strip().replace("\\", "/").removeprefix("./")
+    normalized = normalized_location_path(path)
     paths = set(available)
     if normalized in paths:
         return normalized
@@ -331,7 +331,7 @@ def changed_line_ranges(diff: str) -> ChangedLineRanges:
                 else:
                     _flush_deletion_anchors(anchors, path, pending_deletions)
             _flush_deletion_anchors(anchors, path, pending_deletions)
-    return {path: tuple(_merge_ranges(ranges)) for path, ranges in anchors.items()}
+    return {path: tuple(merge_ranges(ranges)) for path, ranges in anchors.items()}
 
 
 def _flush_deletion_anchors(
@@ -367,9 +367,9 @@ def diff_line_ranges(diff: str) -> DiffLineRanges:
                 else:
                     current.setdefault(new_path, []).append((line.new_line, line.new_line))
     return DiffLineRanges(
-        current={path: tuple(_merge_ranges(ranges)) for path, ranges in current.items()},
-        old={path: tuple(_merge_ranges(ranges)) for path, ranges in old.items()},
-        new={path: tuple(_merge_ranges(ranges)) for path, ranges in new.items()},
+        current={path: tuple(merge_ranges(ranges)) for path, ranges in current.items()},
+        old={path: tuple(merge_ranges(ranges)) for path, ranges in old.items()},
+        new={path: tuple(merge_ranges(ranges)) for path, ranges in new.items()},
     )
 
 
@@ -387,7 +387,8 @@ def diff_unit_plan_record(unit: DiffUnit) -> UnitPlanRecord:
     )
 
 
-def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+def merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Sort inclusive line ranges and merge those that overlap or touch."""
     merged: list[tuple[int, int]] = []
     for start, end in sorted(ranges):
         if merged and start <= merged[-1][1] + 1:

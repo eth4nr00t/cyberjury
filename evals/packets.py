@@ -16,16 +16,12 @@ from evals.benchmarks.targets import source_root, target_repository
 from evals.benchmarks.validate import validate_document
 
 RUBRIC = Path(__file__).resolve().parent / "adjudication-rubric-v1.md"
-_PROVENANCE = frozenset({"candidate_id", "id", "fingerprint", "evidence_refs", "issue_id", "unit_complete"})
+_PROVENANCE = frozenset({"id", "fingerprint", "evidence_refs", "issue_id", "unit_complete"})
 _INDEX = ("label", "run", "file", "line", "title")
 
 
 def _report(finding: dict) -> dict:
     return {key: value for key, value in finding.items() if key not in _PROVENANCE}
-
-
-def _location(report: dict) -> tuple[str, int, int]:
-    return report["file"], report["line"], int(report["label"].rsplit("#", 1)[1])
 
 
 def default_mapping_path(out: Path) -> Path:
@@ -83,8 +79,7 @@ def build_packets(
     prior = _reference_attempts(references)
     by_case: dict[str, list[Attempt]] = {}
     for attempt in complete:
-        case = cases.get(attempt.case)
-        if case is None:
+        if attempt.case not in cases:
             raise ValueError(f"{attempt.path} names an unknown case {attempt.case!r}")
         by_case.setdefault(attempt.case, []).append(attempt)
     entries, labels, reference_counts = [], {}, {}
@@ -111,7 +106,7 @@ def build_packets(
             entry["reference_decisions"] = _references(case, prior)
             reference_counts[name] = len(entry["reference_decisions"])
         size = max_reports or len(reports) or 1
-        located = sorted(reports, key=_location)
+        located = sorted(reports, key=lambda report: (report["file"], report["line"]))
         chunks = [located[start : start + size] for start in range(0, len(located), size)] or [[]]
         for chunk in chunks:
             part = entry | {"reports": chunk}
@@ -186,14 +181,14 @@ def write_ledgers(
             raise ValueError(f"{path} changed after these packets were built")
         if attempt.case not in cases:
             raise ValueError(f"{path} names an unknown case {attempt.case!r}")
-        case = cases[attempt.case]
-        if checks_sha256(case) != mapping["checks_sha256"].get(attempt.case):
+        digest = checks_sha256(cases[attempt.case])
+        if digest != mapping["checks_sha256"].get(attempt.case):
             raise ValueError(f"the checks of {attempt.case} changed after these packets were built")
-        ledger = _ledger(attempt, case.target["commit"], by_attempt[path], labels, results)
+        ledger = _ledger(attempt, cases[attempt.case].target["commit"], by_attempt[path], labels, results)
         attempts.append(
             (
                 attempt,
-                ledger | {"round_id": round_id, "rubric_sha256": rubric_sha256, "checks_sha256": checks_sha256(case)},
+                ledger | {"round_id": round_id, "rubric_sha256": rubric_sha256, "checks_sha256": digest},
             )
         )
     stale = [

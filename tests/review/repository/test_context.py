@@ -78,7 +78,6 @@ def test_repository_grounding_exposes_the_same_candidate_call_clues(tmp_path):
         f"Initial source `{candidate_source.id}`, delivered by the review agent:\n```\n{candidate_source.text}\n```"
         in grounded.grounding.prompt.source
     )
-    assert grounded.grounding.syntax_hints == ""
     assert "service.py" in grounded.grounding.snapshot_files
 
 

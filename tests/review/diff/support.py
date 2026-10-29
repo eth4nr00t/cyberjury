@@ -33,7 +33,6 @@ def diff_units(
     return [
         DiffUnit(
             index=index,
-            total=len(batches),
             diff=batch,
             paths=diff_paths(batch),
             id=f"diff-unit-{index}",

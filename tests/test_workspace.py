@@ -51,6 +51,7 @@ def test_session_and_attempt_use_private_json_files_only(tmp_path):
     assert stat.S_IMODE(session.path.stat().st_mode) == 0o700
     assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in attempt.path.iterdir())
     assert attempt.read_record().status == "running"
+    attempt.finish(_terminal(attempt))
 
 
 def test_a_second_attempt_cannot_start_while_one_is_running(tmp_path):
@@ -62,7 +63,8 @@ def test_a_second_attempt_cannot_start_while_one_is_running(tmp_path):
         _start(session)
 
     attempt.finish(_terminal(attempt))
-    _start(session)
+    second = _start(session)
+    second.finish(_terminal(second))
 
 
 def test_reopening_session_marks_running_attempt_interrupted(tmp_path):

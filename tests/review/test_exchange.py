@@ -155,6 +155,7 @@ def test_unknown_evidence_correction_preserves_valid_batch_ids_without_guessing(
     assert result.failure_reason == ""
     assert len(prompts[-1].delivered) == 1
     assert f"Resubmit only these exact ids: `{first.id}`" in prompts[1].controls
+    assert second.id not in prompts[1].correction
 
 
 def test_already_delivered_source_receipt_is_cited_without_another_exchange():
@@ -332,9 +333,6 @@ def test_evidence_followups_replace_provisional_memory_without_losing_candidates
 
     assert result.findings == [finding]
     assert [prompt.count("Findings already accepted for this unit") for prompt in prompts] == [0, 1, 1]
-    assert f"Read evidence `{first.id}` a.py:first:\n```\nfirst source\n```" in prompts[2]
-    assert f"Read evidence `{second.id}` a.py:second:\n```\nsecond source\n```" in prompts[2]
-    assert "Evidence catalog (source is delivered only on request):" in prompts[2]
 
 
 def test_unavailable_source_navigation_fails_instead_of_reporting_clean():
@@ -535,7 +533,7 @@ def test_published_evidence_reference_is_an_implicit_read_request():
 
 
 def test_source_navigation_searches_then_reads_before_forming_a_finding(tmp_path):
-    """A search_symbols query yields a src- id that is read before the finding cites models.py Record."""
+    """A unique search_symbols match delivers the Record source, so a later request for it is already delivered."""
     source = "class Record:\n    owner = 'user'\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")
     navigator = navigator_from_definitions(
@@ -732,20 +730,20 @@ def test_unknown_definition_correction_does_not_echo_model_text(tmp_path):
 
 
 def test_source_search_reference_is_read_before_the_finding_is_accepted(tmp_path):
-    """A finding citing a src- id from search results is read first and grounding ends complete."""
+    """A finding citing one of two Record search candidates is accepted only after that source is read."""
     source = "class Record:\n    owner = 'user'\n"
-    (tmp_path / "models.py").write_text(source, encoding="utf-8")
+    for name in ("models.py", "other.py"):
+        (tmp_path / name).write_text(source, encoding="utf-8")
     navigator = navigator_from_definitions(
         tmp_path,
-        {"models.py": {"Record": [(0, len(source))]}},
+        {name: {"Record": [(0, len(source))]} for name in ("models.py", "other.py")},
     )
-    calls = 0
+    prompts = []
     read_target = []
 
     def ask(prompt):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
+        prompts.append(prompt)
+        if len(prompts) == 1:
             return {
                 "findings": [],
                 "source_queries": [{"kind": "search_symbols", "query": "Record", "page": 0}],
@@ -768,9 +766,34 @@ def test_source_search_reference_is_read_before_the_finding_is_accepted(tmp_path
     assert result.findings == [stub_finding("one", "models.py:1", evidence_refs=(read_target[0],))]
     assert result.grounding.references == (read_target[0],)
     assert result.grounding.complete is True
+    assert "owner = 'user'" not in prompts[1].controls
+    assert [item.id for item in result.source_evidence] == [read_target[0]]
+    assert len(prompts) == 3
 
 
-def test_source_navigation_round_limit_is_incomplete(tmp_path):
+def test_a_new_source_query_after_the_last_follow_up_fails_at_the_round_limit(tmp_path):
+    """A distinct search_symbols query after the one follow-up fails and leaves the round limit unresolved."""
+    source = "class Record:\n    pass\n"
+    (tmp_path / "models.py").write_text(source, encoding="utf-8")
+    navigator = navigator_from_definitions(tmp_path, {"models.py": {"Record": [(0, len(source))]}})
+    prompts = []
+
+    def ask(prompt):
+        prompts.append(prompt)
+        return {
+            "findings": [],
+            "source_queries": [{"kind": "search_symbols", "query": f"Record{len(prompts)}", "page": 0}],
+        }
+
+    result = _judge(GroundingContext(text="source", navigator=navigator), ask=ask, target_chars=10_000)
+
+    assert len(prompts) == 2
+    assert result.failure_reason == "finder requested evidence after 1 follow-ups"
+    assert "source navigation round limit reached" in result.grounding.unresolved
+    assert result.grounding.complete is False
+
+
+def test_a_source_query_repeated_after_its_correction_fails_the_unit(tmp_path):
     """Repeating the same symbol search after the budget runs out fails with a repeated-query reason."""
     source = "class Record:\n    pass\n"
     (tmp_path / "models.py").write_text(source, encoding="utf-8")

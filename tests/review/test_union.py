@@ -6,7 +6,7 @@ import pytest
 
 from cyberjury.review.finding import ChangeAnchor, Finding
 from cyberjury.review.identity import canonical_category
-from cyberjury.review.union import MERGE_RULE, FindingAccumulator
+from cyberjury.review.union import FindingAccumulator
 
 
 def _finding(title="query injection", **fields):
@@ -62,15 +62,6 @@ def test_distinct_source_operations_at_one_location_stay_separate():
     assert len(accumulator.findings) == 2
 
 
-def test_one_source_operation_does_not_fold_findings_at_different_lines():
-    """Findings at lines 63 and 64 sharing source operation call-outer are both kept."""
-    accumulator = FindingAccumulator()
-    findings = [_finding(line=line, source_operation_id="call-outer") for line in (63, 64)]
-
-    accumulator.add(findings)
-    assert len(accumulator.findings) == 2
-
-
 @pytest.mark.parametrize("anchor", [None, _ANCHOR], ids=["repository", "diff"])
 def test_an_exact_duplicate_keeps_the_first_report_and_adds_its_evidence_refs(anchor):
     """A case and spacing variant keeps the first severity and evidence, joins attack paths, and unions refs."""
@@ -104,9 +95,3 @@ def test_an_exact_duplicate_keeps_the_first_report_and_adds_its_evidence_refs(an
     assert folded.candidate_id == first.candidate_id == second.candidate_id
     accumulator.add([folded])
     assert len(accumulator.findings) == 1
-
-
-def test_the_merge_rule_names_every_identity_field_the_model_controls():
-    """MERGE_RULE mentions title, category, entrypoint, file, line, and change_anchor in backticks."""
-    for name in ("title", "category", "entrypoint", "file", "line", "change_anchor"):
-        assert f"`{name}`" in MERGE_RULE

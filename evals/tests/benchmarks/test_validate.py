@@ -60,6 +60,29 @@ def test_validate_benchmark_accepts_the_versioned_contract(tmp_path):
     assert [case["id"] for case in benchmark["cases"]] == ["repository-0123456", "diff-a1b2c3d"]
 
 
+def test_validate_benchmark_rejects_an_id_that_differs_from_its_directory(tmp_path):
+    """A benchmark with id example-project under an other-project directory fails naming its directory."""
+    _write_benchmark(tmp_path / "other-project")
+
+    with pytest.raises(ValueError, match="does not match its directory other-project"):
+        validate_benchmark(tmp_path / "other-project")
+
+
+def test_validate_benchmark_rejects_an_id_that_differs_from_its_repository_name(tmp_path):
+    """A repository url ending in renamed.git fails because example-project does not match renamed."""
+    path = _write_benchmark(tmp_path / "example-project")
+    _replace(path, "example/example-project.git", "example/renamed.git")
+
+    with pytest.raises(ValueError, match="does not match its repository name renamed"):
+        validate_benchmark(path)
+
+
+def test_validate_benchmark_rejects_a_path_that_is_not_a_benchmark(tmp_path):
+    """A benchmark.yml file path is neither a project directory nor benchmark.yaml."""
+    with pytest.raises(ValueError, match=r"must be a benchmark directory or benchmark\.yaml"):
+        validate_benchmark(tmp_path / "benchmark.yml")
+
+
 def test_validate_benchmark_accepts_a_local_repository(tmp_path):
     """Replacing the repository url with a local_path still passes validation."""
     path = _write_benchmark(tmp_path / "example-project")

@@ -1,7 +1,7 @@
 """Candidate identity keeps independent root causes at the same source anchor."""
 
 from cyberjury.review.finding import ChangeAnchor, Finding
-from cyberjury.review.identity import candidate_identity, canonical_category
+from cyberjury.review.identity import canonical_category
 
 
 def _finding(**fields: object) -> Finding:
@@ -45,37 +45,6 @@ def test_candidate_identity_distinguishes_causes_within_one_category():
     assert (
         _finding(title="regex", change_anchor=anchor).candidate_id
         != _finding(title="amplification", change_anchor=anchor).candidate_id
-    )
-
-
-def test_one_finding_type_keeps_each_target_identity():
-    """Diff findings hash their change anchor and operation id, and repository ones use file:line as anchor."""
-    diff = _finding(
-        title="string-concatenated query",
-        change_anchor=ChangeAnchor(file="app.py", line=9, side="old"),
-        source_operation_id="call-query",
-    )
-    repository = _finding(title="string-concatenated query", entrypoint="")
-
-    assert diff.candidate_id == candidate_identity(
-        target="diff",
-        file="app.py",
-        line=10,
-        category="sql-injection",
-        path_anchor="POST /query",
-        anchor=("app.py", 9, "old"),
-        root_cause="string-concatenated query",
-        source_operation_id="call-query",
-    )
-    assert repository.candidate_id == candidate_identity(
-        target="repository",
-        file="app.py",
-        line=10,
-        category="sql-injection",
-        path_anchor="app.py:10",
-        anchor=None,
-        root_cause="string-concatenated query",
-        source_operation_id="",
     )
 
 

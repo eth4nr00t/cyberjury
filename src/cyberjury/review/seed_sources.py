@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from cyberjury.numbering import split_lines
+from cyberjury.numbering import line_span, split_lines
 from cyberjury.review.context import (
     EvidenceItem,
     SourceEvidence,
@@ -72,9 +72,7 @@ class _CandidateSources:
         return self._texts[path]
 
     def lines(self, reference: SourceReference, subject: str) -> tuple[int, int]:
-        text = self.text(reference.path, subject)
-        first = text.count("\n", 0, reference.start) + 1
-        return first, text.count("\n", 0, max(reference.start, reference.end - 1)) + 1
+        return line_span(self.text(reference.path, subject), reference.start, reference.end)
 
 
 @dataclass(frozen=True)

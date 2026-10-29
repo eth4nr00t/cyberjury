@@ -78,6 +78,8 @@ def write_attempt(benchmark_project):
         case = find_case(benchmark_project.diff_case, [benchmark_project.benchmark])
         path = attempt_path(runs, case.name, number)
         path.parent.mkdir(parents=True, exist_ok=True)
+        groups = issues if issues is not None else tuple((identity,) for identity in candidates)
+        issue_of = {member: f"issue-{index}" for index, members in enumerate(groups) for member in members}
         record = {
             "case": case.name,
             "attempt": number,
@@ -86,17 +88,18 @@ def write_attempt(benchmark_project):
             "findings": [
                 {
                     "id": identity,
+                    "fingerprint": f"fingerprint-{identity}",
                     "file": "views.py",
                     "line": 2,
                     "title": f"Claim {identity}",
                     "category": "missing-authorization",
+                    "evidence_refs": ["views.py:2"],
+                    "issue_id": issue_of.get(identity, ""),
+                    "unit_complete": True,
                 }
                 for identity in candidates
             ],
-            "issues": [
-                {"representative": members[0], "members": list(members)}
-                for members in (issues if issues is not None else tuple((identity,) for identity in candidates))
-            ],
+            "issues": [{"representative": members[0], "members": list(members)} for members in groups],
         }
         path.write_text(json.dumps(record), encoding="utf-8")
         return path

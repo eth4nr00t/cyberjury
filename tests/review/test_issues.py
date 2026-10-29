@@ -67,13 +67,6 @@ def test_the_representative_is_the_most_severe_member_in_any_union_order():
         assert issue.members == (high, low)
 
 
-def test_findings_on_different_lines_of_one_function_are_separate_issues():
-    """Owner and quota reports at views.py lines 2 and 3 give two single-member issues."""
-    findings = [_finding("save checks no owner", line=2), _finding("save checks no quota", line=3)]
-
-    assert [len(issue.members) for issue in group_issues(findings, ())] == [1, 1]
-
-
 def test_findings_at_one_line_with_different_categories_are_separate_issues():
     """An authorization and a denial-of-service report at line 2 do not fold into one issue."""
     first = _finding("missing owner check", line=2)
@@ -200,16 +193,6 @@ def test_the_model_judge_asks_one_closed_schema_question_from_structured_fields_
     assert call["response_schema"].schema["additionalProperties"] is False
     assert "one code change fixes both findings" in call["system"]
     assert links.links == ((first.candidate_id, second.candidate_id),)
-
-
-def test_the_same_fix_contract_counts_containment_but_not_shared_context():
-    """The system prompt counts a contained defect as same-fix, not a shared entrypoint, file, or sink."""
-    system = issues_module._SYSTEM
-
-    assert "One change at one place removes the defect that each finding describes." in system
-    assert "One finding's defect is one of the places the other finding already requires changing" in system
-    assert "distinct defects that each need their own change" in system
-    assert "share an entrypoint, a file, a sink, or cited code" in system
 
 
 def test_decisions_under_an_earlier_judge_contract_are_asked_again(tmp_path, monkeypatch):

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
 
-from cyberjury.numbering import split_lines
+from cyberjury.numbering import line_span, split_lines
 from cyberjury.review.context import (
     EvidenceBudgetError,
     GroundingCoverage,
@@ -197,8 +197,7 @@ class SourceNavigationSession:
         if target.id in self._delivered:
             return target.id
         source = self._source(target.file)
-        first = source.count("\n", 0, target.start) + 1
-        last = source.count("\n", 0, max(target.start, target.end - 1)) + 1
+        first, last = line_span(source, target.start, target.end)
         file = normalized_location_path(target.file)
         for item_id, span in self._delivered.items():
             if span is not None and span[0] == file and span[1] <= first and last <= span[2]:
@@ -274,12 +273,18 @@ class SourceNavigationSession:
                 if exact is not None:
                     coverage = merge_grounding_coverage((coverage, exact.coverage))
                     source_evidence.extend(exact.source_evidence)
-            elif kind == "search_call_candidates":
-                text = self._search_call_candidates(query["definition_id"], query["direction"], query["page"])
-                blocks.append(f"Source query {index} {text}")
             else:
-                text = self._search_structural_candidates(query["definition_id"], query["direction"], query["page"])
-                blocks.append(f"Source query {index} {text}")
+                definition_id = query["definition_id"]
+                if definition_id not in self._discovered_definition_ids:
+                    raise UnknownDefinitionQueryError(
+                        f"relationship candidate query references undiscovered definition {definition_id!r}"
+                    )
+                search = (
+                    self._search_call_candidates
+                    if kind == "search_call_candidates"
+                    else self._search_structural_candidates
+                )
+                blocks.append(f"Source query {index} {search(definition_id, query['direction'], query['page'])}")
             if len("\n\n".join(blocks)) > target_chars:
                 raise SourceBudgetError(f"source query results exceed the {target_chars} character target")
         source_evidence.extend(held_receipts)
@@ -539,10 +544,6 @@ class SourceNavigationSession:
         return tuple(self._register_target(target) for target in selected), more
 
     def _search_call_candidates(self, definition_id: str, direction: str, page: int) -> str:
-        if definition_id not in self._discovered_definition_ids:
-            raise UnknownDefinitionQueryError(
-                f"relationship candidate query references undiscovered definition {definition_id!r}"
-            )
         calls = []
         for callsite in self._callsites.values():
             candidate_ids = self._call_candidates[callsite.id]
@@ -558,17 +559,10 @@ class SourceNavigationSession:
         ]
         for callsite, candidate_ids in selected_calls:
             lines.extend(self._render_call_candidate(callsite, candidate_ids))
-        if not selected_calls:
-            lines.append("- no matches")
-        if more:
-            lines.append(f"- more results are available on page {page + 1}")
+        lines.extend(_page_tail(empty=not selected_calls, more=more, page=page))
         return "\n".join(lines)
 
     def _search_structural_candidates(self, definition_id: str, direction: str, page: int) -> str:
-        if definition_id not in self._discovered_definition_ids:
-            raise UnknownDefinitionQueryError(
-                f"relationship candidate query references undiscovered definition {definition_id!r}"
-            )
         relationships: list[StructuralRelationshipEvidence] = []
         for relationship in self._structural_relationships:
             outgoing = relationship.source_definition_id == definition_id
@@ -590,10 +584,7 @@ class SourceNavigationSession:
         ]
         for relationship, candidate_id in selected_relationships:
             lines.extend(self._render_structural_candidate(relationship, candidate_id))
-        if not selected_relationships:
-            lines.append("- no matches")
-        if more:
-            lines.append(f"- more results are available on page {page + 1}")
+        lines.extend(_page_tail(empty=not selected_relationships, more=more, page=page))
         return "\n".join(lines)
 
     def _render_structural_candidate(
@@ -830,11 +821,15 @@ def _render_search(
         + _held_note(target.id, held.get(target.id))
         for target in targets
     )
-    if not targets:
-        lines.append("- no matches")
-    if more:
-        lines.append(f"- more results are available on page {page + 1}")
+    lines.extend(_page_tail(empty=not targets, more=more, page=page))
     return "\n".join(lines)
+
+
+def _page_tail(*, empty: bool, more: bool, page: int) -> list[str]:
+    return [
+        *(["- no matches"] if empty else []),
+        *([f"- more results are available on page {page + 1}"] if more else []),
+    ]
 
 
 def _held_note(target_id: str, delivered_as: str | None) -> str:

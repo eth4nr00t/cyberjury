@@ -37,7 +37,7 @@ def _validate_project_id(benchmark: dict, directory: str) -> None:
             raise ValueError(f"benchmark id {project} does not match its repository name {name}")
 
 
-def _validate_semantics(benchmark: dict, *, source_root: Path | None = None) -> None:
+def _validate_semantics(benchmark: dict, *, source_root: Path | None) -> None:
     cases = benchmark["cases"]
     commit = str(benchmark["repository"]["commit"])
     for case in cases:

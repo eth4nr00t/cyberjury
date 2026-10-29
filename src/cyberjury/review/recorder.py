@@ -42,8 +42,8 @@ def usage_metrics(calls: list[dict[str, object]]) -> dict[str, int]:
     usage = usage_from_calls(calls)
     return {
         "calls": len(calls),
-        "input_tokens": usage["total_input_tokens"],
-        "cached_tokens": usage["cache_read_tokens"],
+        "input_tokens": usage["uncached_input_tokens"],
+        "cache_read_tokens": usage["cache_read_tokens"],
         "cache_write_tokens": usage["cache_write_tokens"],
         "output_tokens": usage["output_tokens"],
     }

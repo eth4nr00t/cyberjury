@@ -9,6 +9,19 @@ from cyberjury.review.relationships import (
 )
 
 
+def _definition(path: str, name: str, text: str) -> DefinitionEvidence:
+    source = SourceReference.create(path=path, start=0, end=len(text), content=text)
+    return DefinitionEvidence.create(source=source, kind="function", name=name)
+
+
+def _call(caller: DefinitionEvidence, callee: str) -> CallsiteEvidence:
+    expression = f"{callee}(value)"
+    source = SourceReference.create(path=caller.source.path, start=0, end=len(expression), content=expression)
+    return CallsiteEvidence.create(
+        caller_definition_id=caller.id, source=source, expression=expression, callee_spelling=callee
+    )
+
+
 def _bundle():
     caller_text = "def route(x):\n    return load(x)"
     target_text = "def load(x):\n    return x"
@@ -55,4 +68,23 @@ def test_relationship_evidence_has_stable_ids_and_explicit_source_hashes():
         (next(item.id for item in bundle.definitions if item.name == "load"),)
     ]
     assert len(data["definitions"][0]["source"]["content_sha256"]) == 64
-    assert bundle.canonical().to_dict() == data
+
+
+def test_same_name_definitions_are_all_call_candidates():
+    """A load() call with load defined in one.py and two.py lists both definitions as candidates."""
+    route = _definition("route.py", "route", "def route(value):\n    return load(value)")
+    first = _definition("one.py", "load", "def load(value):\n    return value")
+    second = _definition("two.py", "load", "def load(value):\n    return value + 1")
+    call = _call(route, "load")
+
+    bundle = RelationshipEvidenceBundle(definitions=(route, first, second), callsites=(call,))
+
+    assert set(bundle.call_candidates[call.id]) == {first.id, second.id}
+
+
+def test_a_call_without_a_matching_definition_has_no_candidates():
+    """A call to an undefined external() has an empty candidate list."""
+    route = _definition("route.py", "route", "def route(value):\n    return external(value)")
+    call = _call(route, "external")
+
+    assert RelationshipEvidenceBundle(definitions=(route,), callsites=(call,)).call_candidates == {call.id: ()}

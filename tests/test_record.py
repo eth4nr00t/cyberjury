@@ -1,5 +1,7 @@
 """The shared record schema keeps one field order, rejects records outside it, and never persists credentials."""
 
+import json
+
 import pytest
 
 from cyberjury.record import Record, RecordError, error_message, render
@@ -25,7 +27,7 @@ def test_error_messages_redact_credentials_and_stay_bounded():
 
 
 def test_a_record_round_trips_through_its_rendered_text_in_field_order():
-    """An incomplete record renders its fields in schema order and parses back to an equal record."""
+    """An incomplete record renders its fields in schema order and its rendered text parses back to an equal record."""
     record = Record(
         id="review/unit-1",
         status="incomplete",
@@ -50,8 +52,7 @@ def test_a_record_round_trips_through_its_rendered_text_in_field_order():
         "error",
     ]
     assert list(data["metrics"]) == ["items", "findings"]
-    assert Record.from_dict(data) == record
-    assert render(record).endswith("}\n")
+    assert Record.from_dict(json.loads(render(record))) == record
 
 
 def test_a_record_line_lists_its_fields_and_quotes_values_with_spaces():

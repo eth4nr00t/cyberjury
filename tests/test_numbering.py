@@ -1,6 +1,8 @@
 """Source and diff gutters expose the line identities consumed by review prompts."""
 
-from cyberjury.numbering import numbered_diff, numbered_source, split_lines
+import pytest
+
+from cyberjury.numbering import line_span, numbered_diff, numbered_source, split_lines
 
 _TWO_FILES = """diff --git a/a.py b/a.py
 --- a/a.py
@@ -97,3 +99,12 @@ def test_form_feed_and_other_separators_stay_inside_their_numbered_line():
 
     assert split_lines(source) == ["def page():", "    pass", "\x0c", "COLOR = '\x1b[0m'\x1c"]
     assert numbered_source("pager.py", source, 1).splitlines()[0] == "# file: pager.py lines 1-4"
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "lines"),
+    [(0, 3, (1, 1)), (0, 4, (1, 1)), (4, 11, (2, 3)), (4, 4, (2, 2))],
+)
+def test_line_span_covers_the_lines_of_a_character_range(start, end, lines):
+    """A range ending at a newline stays on its line, and an empty range covers the line it starts on."""
+    assert line_span("one\ntwo\nsix\n", start, end) == lines

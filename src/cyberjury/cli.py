@@ -19,24 +19,22 @@ INTERRUPTED_EXIT = 130
 TERMINATED_EXIT = 143
 
 
+def _command(sub, name: str, summary: str) -> argparse.ArgumentParser:
+    return sub.add_parser(name, help=summary, description=f"{summary[0].upper()}{summary[1:]}.", allow_abbrev=False)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cyberjury", description=cyberjury.__doc__, allow_abbrev=False)
     parser.add_argument("--version", action="version", version=f"cyberjury {cyberjury.__version__}")
     sub = parser.add_subparsers(dest="command")
-    review = sub.add_parser("review", help="review code for security findings", allow_abbrev=False)
+    review = _command(sub, "review", "review code for security findings")
     review_subcommands = review.add_subparsers(dest="scope", metavar="{diff,repository}", required=True)
-    diff = review_subcommands.add_parser(
-        "diff", help="review the changes in a Git range, with its repository as context", allow_abbrev=False
-    )
-    diff.add_argument("range", help="git range to review, A..B or A...B, e.g. origin/main...HEAD")
+    diff = _command(review_subcommands, "diff", "review the changes in a Git range, with its repository as context")
+    diff.add_argument("range", help="range to review, A..B or A...B, e.g. origin/main...HEAD")
     diff.add_argument(
         "path", nargs="?", default=".", help="path inside the Git repository, default the current directory"
     )
-    repository = review_subcommands.add_parser(
-        "repository",
-        help="review a repository, resuming open work when run again",
-        allow_abbrev=False,
-    )
+    repository = _command(review_subcommands, "repository", "review a repository, resuming open work when run again")
     repository.add_argument("path", nargs="?", default=".", help="directory to review, default the current directory")
     repository.add_argument(
         "--fresh", action="store_true", help="start a new review session instead of resuming the active one"

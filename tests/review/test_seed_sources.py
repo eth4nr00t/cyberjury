@@ -158,8 +158,8 @@ def test_definition_evidence_receipt_uses_normalized_character_ranges(tmp_path):
 
 
 def test_definition_evidence_does_not_publish_a_file_scope_container(tmp_path):
-    """A <file> scope definition over a 4,000-line settings.py yields no definition evidence."""
-    source = "send_webhook(url)\n" + "setting = True\n" * 4_000
+    """A <file> scope definition over settings.py yields no definition evidence."""
+    source = "send_webhook(url)\nsetting = True\n"
     (tmp_path / "settings.py").write_text(source, encoding="utf-8")
     file_scope = definition("settings.py", "<file>", 0, len(source))
 

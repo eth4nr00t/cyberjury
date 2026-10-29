@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from cyberjury.numbering import line_span
 from cyberjury.review.definitions import DefinitionUnitPlan, definitions_by_name
 from cyberjury.review.diff.model import (
     ChangedLineRanges,
@@ -44,11 +45,9 @@ def build_diff_units(
     provisional.extend(
         (batch, diff_paths(batch), DefinitionUnitPlan(seed_files=diff_paths(batch))) for batch in fallback_batches
     )
-    total = len(provisional)
     return [
         DiffUnit(
             index=index,
-            total=total,
             diff=unit_diff,
             paths=unit_paths,
             definition_plan=plan,
@@ -119,8 +118,7 @@ def changed_definitions(
         source = sources.get(file, "")
         if not source:
             continue
-        start_line = source[:start].count("\n") + 1
-        end_line = source[: max(start, end - 1)].count("\n") + 1
+        start_line, end_line = line_span(source, start, end)
         if any(
             start_line <= changed_end and end_line >= changed_start
             for changed_start, changed_end in ranges.get(file, ())

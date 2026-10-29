@@ -1,4 +1,4 @@
-"""Module entry point of cyberjury."""
+"""Module entry point of the cyberjury command line interface."""
 
 from cyberjury.cli import main
 

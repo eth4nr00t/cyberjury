@@ -129,7 +129,7 @@ def failures(summary: RunSummary, *, precision_floor: float) -> list[str]:
     if len({rubric for _round, rubric in summary.ledger_rounds}) > 1:
         fails.append("run mixes ledgers adjudicated under different rubrics")
     precision = summary.precision
-    if precision_floor and precision is not None and precision < precision_floor:
+    if precision is not None and precision < precision_floor:
         fails.append(f"report precision {precision:.0%} is below the floor {precision_floor:.0%}")
     return fails
 

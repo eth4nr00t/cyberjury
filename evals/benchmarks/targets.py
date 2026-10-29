@@ -21,27 +21,20 @@ def target_repository(target: Mapping[str, str]) -> Path:
 
 
 def git_target_root(target: Mapping[str, str]) -> Path:
-    """Resolve a Git target to a local repository root, cloning or updating a URL target in the user cache."""
+    """Resolve a Git target to a local root, syncing a URL target and its pinned commits in the user cache."""
     root = target_repository(target)
     if url := target.get("url"):
         _sync_clone(url, root)
+        for ref in (target.get("base"), target.get("commit")):
+            if ref:
+                _ensure_commit(root, ref)
     return root
-
-
-def ensure_git_target_refs(target: Mapping[str, str], root: Path) -> None:
-    """Fetch exact commit targets that are not advertised by branch or tag refs."""
-    if not target.get("url"):
-        return
-    for ref in (target.get("base"), target.get("commit")):
-        if ref:
-            _ensure_commit(root, ref)
 
 
 @contextmanager
 def source_root(target: Mapping[str, str]) -> Iterator[Path]:
     """Check out the exact source commit of a Git target."""
     root = git_target_root(target)
-    ensure_git_target_refs(target, root)
     temporary = Path(tempfile.mkdtemp(prefix="cyberjury-eval-target-"))
     try:
         _git("-C", str(root), "worktree", "add", "--detach", "--quiet", str(temporary), target["commit"])

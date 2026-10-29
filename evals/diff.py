@@ -12,7 +12,7 @@ from cyberjury.review.request import TargetInput
 from cyberjury.review.target import resolve_diff_target
 from evals.attempts import recorded_attempt
 from evals.benchmarks.cases import BenchmarkCase, validate_change_anchors
-from evals.benchmarks.targets import ensure_git_target_refs, git_target_root
+from evals.benchmarks.targets import git_target_root
 
 type Progress = Callable[[str], None]
 
@@ -55,7 +55,6 @@ def _review_case(
     state_dir: Path,
 ) -> dict[str, object]:
     root = git_target_root(case.target)
-    ensure_git_target_refs(case.target, root)
     git_range = f"{case.target['base']}..{case.target['commit']}"
     validate_change_anchors(case, resolve_diff_target(root, git_range).patch.text)
     command = ReviewCommand(

@@ -14,6 +14,11 @@ def split_lines(text: str, *, keepends: bool = False) -> list[str]:
     return lines if keepends else [line.rstrip("\r\n") for line in lines]
 
 
+def line_span(text: str, start: int, end: int) -> tuple[int, int]:
+    """Return the first and last 1-based lines that the character range start to end covers in text."""
+    return text.count("\n", 0, start) + 1, text.count("\n", 0, max(start, end - 1)) + 1
+
+
 def _gutter(number: int | None, width: int) -> str:
     label = str(number) if number is not None else ""
     return f"{label:>{width}} | "

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 
 from cyberjury.providers.base import CompletionResult, Provider, Usage
 from cyberjury.providers.metering import (
@@ -108,12 +107,11 @@ def test_report_withholds_precision_and_fails_while_work_is_open(tmp_path, cases
 
 
 def test_report_fails_a_run_that_mixes_rubrics(tmp_path, cases, write_attempt, write_ledger):
-    """Two ledger rounds with different rubric hashes fail with run mixes ledgers under different rubrics."""
+    """Two attempts whose ledgers carry different rubric hashes fail with run mixes ledgers under different rubrics."""
     runs = tmp_path / "runs"
-    write_ledger(write_attempt(runs, 1, (A,)), {A: _CREDIT})
-    summary = replace(
-        summarize(cases, runs),
-        ledger_rounds=[("round-" + "0" * 16, "e" * 64), ("round-" + "1" * 16, "f" * 64)],
-    )
+    write_ledger(write_attempt(runs, 1, (A,)), {A: _CREDIT}, rubric_sha256="e" * 64)
+    write_ledger(write_attempt(runs, 2, (A,)), {A: _CREDIT}, round_id="round-" + "1" * 16)
 
-    assert failures(summary, precision_floor=0) == ["run mixes ledgers adjudicated under different rubrics"]
+    assert failures(summarize(cases, runs), precision_floor=0) == [
+        "run mixes ledgers adjudicated under different rubrics"
+    ]

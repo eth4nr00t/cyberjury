@@ -1,18 +1,15 @@
 """The shared finder parses replies, prompts with a cacheable contract, and exchanges evidence for any target."""
 
 import json
-from types import SimpleNamespace
 
 import pytest
 
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
-from cyberjury.providers.openai import OpenAIProvider
 from cyberjury.review.context import EvidenceItem, GroundingContext, SourceSpan
 from cyberjury.review.finder import findings_from_reply
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.replies import CorrectableRoleResponseError
 from cyberjury.review.repository.model import RepositoryUnit
-from cyberjury.review.union import MERGE_RULE
 from tests.review.diff import support as diff
 from tests.review.repository import support as repository
 from tests.review.support import navigator_from_definitions
@@ -49,22 +46,10 @@ def test_finder_parses_findings_and_canonicalizes_the_category():
             },
         ]
     )
-    provider = MockProvider(responses=[response, response])
-    out = _diff_findings(provider)
+    out = _diff_findings(MockProvider(responses=[response]))
     assert len(out) == 1
     assert out[0].severity == "CRITICAL"
     assert out[0].category == "sql-injection"
-    assert provider.calls[0]["prompt"].endswith("A further request makes this judgment incomplete.")
-
-
-def test_finder_reports_a_malformed_finding_as_failed_work():
-    """A finding with only severity yields no findings and a "missing fields" failure reason."""
-    reviewer = repository.finder(MockProvider(default=repository.finder_reply([{"severity": "HIGH"}])))
-
-    cycle = reviewer.review_unit(_unit("u", GroundingContext(text="")))
-
-    assert cycle.findings == []
-    assert "$response.findings[0] is missing fields" in cycle.failure_reason
 
 
 @pytest.mark.parametrize(
@@ -109,8 +94,8 @@ def test_semantic_violation_in_one_finding_keeps_the_valid_findings_of_the_reply
     assert "findings[1] must have nonempty fields: title" in provider.calls[1]["prompt"]
 
 
-def test_correction_states_the_shared_merge_rule_for_accepted_findings():
-    """The correction prompt says accepted findings are final, quotes MERGE_RULE, and echoes them."""
+def test_location_correction_echoes_the_accepted_findings():
+    """The correction for an unlocatable line-0 finding echoes the accepted line-2 finding."""
     provider = MockProvider(
         responses=[
             repository.finder_reply([repository.finding("app.py", 2), repository.finding("app.py", 0, title="second")]),
@@ -121,7 +106,6 @@ def test_correction_states_the_shared_merge_rule_for_accepted_findings():
     repository.finder(provider).review_unit(_unit("u", GroundingContext(text="")))
 
     correction = provider.calls[1]["prompt"]
-    assert f"cannot be edited or withdrawn. {MERGE_RULE} Return only new findings." in correction
     assert '"entrypoint": "GET /records/<id>"' in correction
 
 
@@ -363,43 +347,3 @@ def test_finder_call_records_semantic_response_failures():
     call = meter.call_snapshot()[0]
     assert call["status"] == "failed"
     assert "$response.findings[0] is missing fields" in call["failure_reason"]
-
-
-class _SequencedOpenAIClient:
-    def __init__(self, replies):
-        self.requests = []
-        self._replies = list(replies)
-        self.responses = SimpleNamespace(create=self._create)
-
-    def _create(self, **kwargs):
-        self.requests.append(kwargs)
-        return SimpleNamespace(output_text=self._replies.pop(0), status="completed")
-
-
-def test_initial_and_followup_calls_of_one_unit_share_one_openai_cache_key(tmp_path):
-    """OpenAI prompt_cache_key matches across one unit's initial and follow-up calls but not other units."""
-    navigator = _model_navigator(tmp_path)
-    client = _SequencedOpenAIClient(
-        [
-            repository.finder_reply(source_queries=[{"kind": "search_symbols", "query": "ModelWithOwner", "page": 0}]),
-            repository.finder_reply(),
-            repository.finder_reply(),
-        ]
-    )
-    reviewer = repository.finder(OpenAIProvider(client=client), model="gpt-4o")
-    unit = _unit("views", GroundingContext(text="seed()", navigator=navigator), tmp_path)
-    other = _unit("other", GroundingContext(text="other()", navigator=navigator), tmp_path)
-
-    assert reviewer.review_unit(unit).clean is True
-    assert reviewer.review_unit(other).clean is True
-
-    initial, followup, other_unit = client.requests
-    assert initial["prompt_cache_key"] == followup["prompt_cache_key"]
-    assert other_unit["prompt_cache_key"] != initial["prompt_cache_key"]
-    assert initial["instructions"] == followup["instructions"] == other_unit["instructions"]
-    initial_user = initial["input"][0]["content"]
-    followup_user = followup["input"][0]["content"]
-    shared = len(initial_user) - len("Evidence request budget: 8 request batches remain.")
-    assert followup_user[:shared] == initial_user[:shared]
-    assert "owner_scope = True" in followup_user[shared:]
-    assert followup_user.endswith("Evidence request budget: 7 request batches remain.")

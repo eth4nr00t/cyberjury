@@ -48,7 +48,7 @@ def test_oversized_source_keeps_bounded_windows(tmp_path, monkeypatch):
     assert all(unit.span[1] - unit.span[0] <= 40 for unit in units)
 
 
-def test_build_units_covers_each_source_once(tmp_path):
+def test_build_units_gives_each_source_file_one_whole_file_unit(tmp_path):
     """An entry file plus 25 pkg services of 24 KB yield 26 units, each spanning its whole file."""
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "entry.py").write_text("entry")

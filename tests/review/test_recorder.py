@@ -14,7 +14,9 @@ from tests.support import EMPTY_SCHEMA
 
 class _Provider(Provider):
     def complete(self, **_kwargs):
-        return CompletionResult(text="{}", usage=Usage(input_tokens=10, output_tokens=2))
+        return CompletionResult(
+            text="{}", usage=Usage(input_tokens=10, output_tokens=2, cache_read_tokens=3, cache_write_tokens=1)
+        )
 
 
 def _call(meter: UsageMeter) -> None:
@@ -58,7 +60,7 @@ def test_a_stage_marked_incomplete_ends_incomplete_with_a_model_error():
 
 
 def test_a_usage_stage_counts_only_the_model_calls_made_inside_it():
-    """One call before and one call inside a usage stage leave that stage with one call of 10 input tokens."""
+    """One call before and one inside a usage stage leave that stage with the token counts of one call."""
     meter = UsageMeter()
     recorder = Recorder(meter=meter)
     _call(meter)
@@ -70,14 +72,14 @@ def test_a_usage_stage_counts_only_the_model_calls_made_inside_it():
     assert record.metrics == {
         "calls": 1,
         "input_tokens": 10,
-        "cached_tokens": 0,
-        "cache_write_tokens": 0,
+        "cache_read_tokens": 3,
+        "cache_write_tokens": 1,
         "output_tokens": 2,
     }
 
 
 def test_unit_usage_counts_only_the_calls_of_that_unit():
-    """Two calls for unit-a and one for unit-b give unit-a two calls and 20 input tokens."""
+    """Two calls for unit-a and one for unit-b give unit-a two calls and 20 uncached input tokens."""
     meter = UsageMeter()
     for unit in ("unit-a", "unit-a", "unit-b"):
         with model_call_scope(unit_id=unit), model_call_context(role="finder", trigger="initial_judgment"):
@@ -86,8 +88,8 @@ def test_unit_usage_counts_only_the_calls_of_that_unit():
     assert Recorder(meter=meter).unit_usage("unit-a") == {
         "calls": 2,
         "input_tokens": 20,
-        "cached_tokens": 0,
-        "cache_write_tokens": 0,
+        "cache_read_tokens": 6,
+        "cache_write_tokens": 2,
         "output_tokens": 4,
     }
 

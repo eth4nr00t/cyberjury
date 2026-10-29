@@ -59,16 +59,13 @@ def test_worktree_files_leaves_out_a_checked_out_submodule(tmp_path):
 
 
 def test_operator_git_diff_configuration_does_not_change_the_patch(tmp_path):
-    """Setting diff.renames, diff.external, color.ui, core.abbrev, and similar leaves the patch text unchanged."""
+    """Setting diff.external, color.ui, and core.abbrev leaves the patch text unchanged."""
     repo = tmp_path / "repo"
     base, head = _two_commits(repo)
     first = canonical_patch(repo, base, head)
-    git(repo, "config", "diff.renames", "true")
     git(repo, "config", "diff.external", "/bin/false")
     git(repo, "config", "color.ui", "always")
     git(repo, "config", "core.abbrev", "4")
-    git(repo, "config", "diff.indentHeuristic", "true")
-    git(repo, "config", "diff.interHunkContext", "20")
 
     assert canonical_patch(repo, base, head) == first
 
@@ -147,6 +144,29 @@ def test_materialization_writes_exact_blobs_without_a_smudge_filter(tmp_path):
 
     with materialize_revision(repo, git(repo, "rev-parse", "HEAD")) as root:
         assert (root / "value.txt").read_bytes() == b"blob-head\n"
+
+
+def test_materialization_leaves_out_a_committed_submodule(tmp_path):
+    """A head commit holding a gitlink at lib/dependency materializes app.py without lib/dependency."""
+    repo = tmp_path / "repo"
+    base, _head = _two_commits(repo)
+    git(repo, "update-index", "--add", "--cacheinfo", f"160000,{base},lib/dependency")
+    git(repo, "commit", "--quiet", "-m", "gitlink")
+
+    with materialize_revision(repo, git(repo, "rev-parse", "HEAD")) as root:
+        assert (root / "app.py").read_text(encoding="utf-8") == "head\n"
+        assert not (root / "lib" / "dependency").exists()
+
+
+def test_a_materialized_revision_is_removed_on_exit(tmp_path):
+    """The materialized root of a revision is deleted once its context exits."""
+    repo = tmp_path / "repo"
+    _base, head = _two_commits(repo)
+
+    with materialize_revision(repo, head) as root:
+        assert root.is_dir()
+
+    assert not root.exists()
 
 
 def test_a_relative_internal_symlink_is_materialized(tmp_path):

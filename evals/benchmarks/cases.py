@@ -11,7 +11,7 @@ from pathlib import Path
 from cyberjury.review.detection import load_detection
 from cyberjury.review.diff.model import diff_line_ranges
 from evals.benchmarks.contract import Check, case_checks
-from evals.benchmarks.validate import benchmark_path, validate_benchmark
+from evals.benchmarks.validate import validate_benchmark
 
 PROJECTS_DIR = Path(__file__).resolve().parent.parent / "projects"
 
@@ -53,7 +53,7 @@ def load_cases(benchmarks: Sequence[str | Path] | None = None) -> dict[str, Benc
     """Load every case of the given benchmark definitions, defaulting to the public projects."""
     cases: dict[str, BenchmarkCase] = {}
     for path in benchmarks or public_benchmarks():
-        benchmark = validate_benchmark(benchmark_path(path))
+        benchmark = validate_benchmark(path)
         for case in benchmark["cases"]:
             name = f"{benchmark['id']}:{case['id']}"
             if name in cases:

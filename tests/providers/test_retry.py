@@ -230,13 +230,13 @@ def test_retry_after_attribute_sets_the_delay_unless_it_is_not_a_number(raw, exp
 def test_a_non_rate_limit_error_honors_its_structured_retry_delay():
     """Provider supplied recovery timing takes precedence over linear backoff."""
     exc = RuntimeError("502 bad gateway")
-    exc.body = {"retryable": True, "retry_after": 60}
+    exc.body = {"retry_after": 7}
     slept = []
     inner = _RateLimited(fail_times=1, exc=exc)
     provider = _retry(inner, max_attempts=2, sleep=slept.append)
 
     assert _call(provider).text == _OK
-    assert slept == [60.0]
+    assert slept == [7.0]
 
 
 class _Hang(Provider):

@@ -14,7 +14,7 @@ A = "candidate-" + "a" * 20
 
 @pytest.fixture
 def fake_diff_run(monkeypatch):
-    """Replace the diff runner with one that records a complete empty attempt per case and run."""
+    """Replace the diff runner with one that records an empty attempt per case and run, complete only in run 1."""
 
     def run(cases, *, runs, on_attempt, **kwargs):
         records = []
@@ -33,8 +33,8 @@ def fake_diff_run(monkeypatch):
 def test_diff_writes_nonoverwriting_attempts_and_summarizes_the_run(tmp_path, capsys, fake_diff_run, benchmark_project):
     """Two runs write attempt-01 and attempt-02, print the summary and failure, and refuse to rerun over them."""
     runs, reviews = tmp_path / "runs", tmp_path / "reviews"
-    args = ["diff", "--benchmark", str(benchmark_project.benchmark), "--runs", "2"]
-    args += ["--attempts-dir", str(runs), "--state-dir", str(reviews)]
+    args = ["diff", "--benchmark", str(benchmark_project.benchmark), "--repeat", "2"]
+    args += ["--runs-dir", str(runs), "--state-dir", str(reviews)]
 
     assert main(args) == 1
 
@@ -50,7 +50,7 @@ def test_diff_writes_nonoverwriting_attempts_and_summarizes_the_run(tmp_path, ca
         main(args)
 
 
-def test_diff_rejects_an_unknown_case_before_running(tmp_path, fake_diff_run, benchmark_project):
+def test_diff_rejects_an_unknown_case(tmp_path, fake_diff_run, benchmark_project):
     """Passing --case demo:missing raises ValueError about an unknown diff case."""
     with pytest.raises(ValueError, match="unknown diff case"):
         main(
@@ -60,7 +60,7 @@ def test_diff_rejects_an_unknown_case_before_running(tmp_path, fake_diff_run, be
                 str(benchmark_project.benchmark),
                 "--case",
                 "demo:missing",
-                "--attempts-dir",
+                "--runs-dir",
                 "x",
                 "--state-dir",
                 "y",
@@ -117,14 +117,14 @@ def test_packets_say_when_references_hold_no_earlier_verdicts(tmp_path, capsys, 
     assert "reference attempts without a ledger 1" in output
 
 
-def test_repository_records_the_next_attempt_of_a_repository_case(tmp_path, monkeypatch, capsys, benchmark_project):
-    """A second repository run records attempt 2."""
+def test_record_registers_the_next_attempt_of_a_repository_case(tmp_path, monkeypatch, capsys, benchmark_project):
+    """Recording a second repository review attempt numbers it attempt 2."""
 
     def record(case, directory, number):
         return {"case": case.name, "attempt": number, "complete": True, "findings": []}
 
     monkeypatch.setattr(evals_cli, "recorded_attempt", record)
-    args = ["repository", benchmark_project.repository_case, str(tmp_path), "--attempts-dir", str(tmp_path / "runs")]
+    args = ["record", benchmark_project.repository_case, str(tmp_path), "--runs-dir", str(tmp_path / "runs")]
     args += ["--benchmark", str(benchmark_project.benchmark)]
 
     assert main(args) == 0
@@ -136,15 +136,15 @@ def test_repository_records_the_next_attempt_of_a_repository_case(tmp_path, monk
     )
 
 
-def test_repository_rejects_a_diff_case(tmp_path, benchmark_project):
-    """Passing the diff case to repository raises not a repository case."""
+def test_record_rejects_a_diff_case(tmp_path, benchmark_project):
+    """Passing the diff case to record raises not a repository case."""
     with pytest.raises(ValueError, match="not a repository case"):
         main(
             [
-                "repository",
+                "record",
                 benchmark_project.diff_case,
                 str(tmp_path),
-                "--attempts-dir",
+                "--runs-dir",
                 str(tmp_path / "runs"),
                 "--benchmark",
                 str(benchmark_project.benchmark),

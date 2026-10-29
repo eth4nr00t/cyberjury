@@ -10,7 +10,7 @@ from cyberjury.record import Record
 from cyberjury.review.issues import issue_id
 from cyberjury.sources.snapshot import capture_source_snapshot
 from cyberjury.workspace import write_record
-from evals.attempts import load_attempt, recorded_attempt
+from evals.attempts import collect_attempts, load_attempt, recorded_attempt
 from evals.benchmarks.cases import find_case
 from tests.support import git
 
@@ -153,3 +153,11 @@ def test_attempt_issues_must_partition_its_reports(tmp_path, write_attempt):
     """An attempt whose issues cover only A of reports A and B fails to load with "partition"."""
     with pytest.raises(ValueError, match="partition"):
         load_attempt(write_attempt(tmp_path / "runs", 1, (A, B), issues=((A,),)))
+
+
+def test_overlapping_runs_directories_collect_each_attempt_once(tmp_path, write_attempt):
+    """Passing one runs directory twice plus its parent collects each of its two attempts once."""
+    runs = tmp_path / "runs"
+    paths = [write_attempt(runs, 1, (A,)), write_attempt(runs, 2, (B,))]
+
+    assert sorted(attempt.path.resolve() for attempt in collect_attempts([runs, runs, tmp_path])) == paths

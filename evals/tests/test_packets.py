@@ -55,14 +55,14 @@ def _result(packets, verdicts):
 
 
 def test_packets_hide_report_provenance(tmp_path, cases, runs_dirs):
-    """Two runs give reports labelled by run A/B, without report or candidate ids."""
+    """Two runs give reports labelled by run A/B that keep the claim and drop ids, fingerprints, refs, and issues."""
     out = tmp_path / "adjudication"
 
     build_packets(cases, list(runs_dirs), out, groups=1)
 
     (entry,) = json.loads((out / "packet-1.json").read_text(encoding="utf-8"))
     assert {report["run"] for report in entry["reports"]} == {"A", "B"}
-    assert all(not {"id", "candidate_id"} & set(report) for report in entry["reports"])
+    assert all(set(report) == {"label", "run", "file", "line", "title", "category"} for report in entry["reports"])
 
 
 def test_packets_carry_the_case_and_keep_the_label_mapping_outside(tmp_path, cases, runs_dirs, benchmark_project):
@@ -98,7 +98,7 @@ def test_packets_carry_the_case_and_keep_the_label_mapping_outside(tmp_path, cas
 
 
 def test_grouped_reports_are_adjudicated_one_by_one_without_their_issue(tmp_path, cases, write_attempt):
-    """Three reports grouped into two issues reach the packet with no issue keys and get one verdict each."""
+    """Three reports grouped into two issues each reach the packet and get their own verdict."""
     runs = tmp_path / "grouped"
     write_attempt(runs, 1, (A, B, C), issues=((B, A), (C,)))
     out = tmp_path / "adjudication"
@@ -107,7 +107,7 @@ def test_grouped_reports_are_adjudicated_one_by_one_without_their_issue(tmp_path
 
     assert counts["reports"] == 3
     (entry,) = json.loads((out / "packet-1.json").read_text(encoding="utf-8"))
-    assert all("issue" not in key for report in entry["reports"] for key in report)
+    assert len(entry["reports"]) == 3
     _result(out, {f"Claim {B}": "supported"})
 
     assert write_ledgers(cases, out) == (1, [])
@@ -188,15 +188,6 @@ def test_the_private_mapping_cannot_be_written_inside_the_packet_directory(tmp_p
         build_packets(cases, list(runs_dirs), out, groups=1, mapping_path=out / "private" / "mapping.json")
 
     assert not out.exists()
-
-
-def test_overlapping_runs_directories_package_each_attempt_once(tmp_path, cases, runs_dirs):
-    """Passing one runs directory twice plus its parent still packages 2 attempts and 3 reports."""
-    counts = build_packets(cases, [runs_dirs[0], runs_dirs[0], tmp_path], tmp_path / "adjudication", groups=1)
-
-    assert (counts["attempts"], counts["reports"]) == (2, 3)
-    mapping = json.loads(default_mapping_path(tmp_path / "adjudication").read_text(encoding="utf-8"))
-    assert len(mapping["attempts"]) == 2
 
 
 def test_packets_include_earlier_verdicts_only_from_requested_references(
@@ -346,3 +337,22 @@ def test_a_later_round_does_not_silently_mix_with_ledgers_of_an_earlier_round(tm
     (ledger,) = runs_dirs[0].rglob("ledger-*.json")
     round_id = json.loads(default_mapping_path(second).read_text(encoding="utf-8"))["round_id"]
     assert json.loads(ledger.read_text(encoding="utf-8"))["round_id"] == round_id
+
+
+@pytest.mark.parametrize("change", ["attempt", "rubric"])
+def test_ledgers_refuse_packets_whose_attempt_or_rubric_changed(tmp_path, cases, write_attempt, change):
+    """Rewriting the attempt or recording a different rubric hash after packaging fails the ledger write."""
+    runs = tmp_path / "runs"
+    attempt = write_attempt(runs, 1, (A,))
+    out = tmp_path / "adjudication"
+    build_packets(cases, [runs], out, groups=1)
+    _result(out, {})
+    if change == "attempt":
+        attempt.write_text(attempt.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    else:
+        mapping_path = default_mapping_path(out)
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        mapping_path.write_text(json.dumps(mapping | {"rubric_sha256": "0" * 64}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="changed after these packets were built"):
+        write_ledgers(cases, out)

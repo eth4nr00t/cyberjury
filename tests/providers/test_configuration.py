@@ -38,15 +38,31 @@ def test_the_environment_sets_every_seat_field_and_the_key(monkeypatch):
     assert configuration.api_key == "k"
 
 
-def test_provider_sdk_variables_are_not_read(monkeypatch):
-    """OPENAI_API_KEY and OPENAI_BASE_URL leave the anthropic seat without a key and on the Anthropic API."""
-    monkeypatch.setenv("CYBERJURY_PROVIDER", "anthropic")
-    monkeypatch.setenv("OPENAI_API_KEY", "k")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://openai-gateway.example.test")
+@pytest.mark.parametrize(
+    ("provider", "sdk", "seat"),
+    [
+        (
+            "openai",
+            "OPENAI",
+            ProviderSeat(provider="openai", model="gpt-6-astra", base_url="https://api.openai.com/v1"),
+        ),
+        (
+            "anthropic",
+            "ANTHROPIC",
+            ProviderSeat(provider="anthropic", model="claude-fable-5-1", base_url="https://api.anthropic.com"),
+        ),
+    ],
+)
+def test_provider_sdk_variables_are_not_read(monkeypatch, provider, sdk, seat):
+    """The seat's own SDK key, base URL, and model variables leave it keyless on its default model and official API."""
+    monkeypatch.setenv("CYBERJURY_PROVIDER", provider)
+    monkeypatch.setenv(f"{sdk}_API_KEY", "k")
+    monkeypatch.setenv(f"{sdk}_BASE_URL", "https://gateway.example.test")
+    monkeypatch.setenv(f"{sdk}_MODEL", "sdk-model")
 
     configuration = provider_configuration_from_env()
 
-    assert (configuration.seat.base_url, configuration.api_key) == ("https://api.anthropic.com", None)
+    assert (configuration.seat, configuration.api_key) == (seat, None)
 
 
 def test_blank_settings_count_as_unset(monkeypatch):

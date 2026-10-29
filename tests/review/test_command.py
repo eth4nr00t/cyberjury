@@ -195,7 +195,7 @@ def test_stderr_prints_the_line_of_every_record_it_writes(diff_target, tmp_path)
 def test_every_record_kind_carries_its_fixed_metrics_and_attributes(diff_target, tmp_path):
     """Stages, review items, and the attempt each carry one fixed metric set in vocabulary order and attribute set."""
     state = tmp_path / "state"
-    usage = ["calls", "input_tokens", "cached_tokens", "cache_write_tokens", "output_tokens"]
+    usage = ["calls", "input_tokens", "cache_read_tokens", "cache_write_tokens", "output_tokens"]
 
     records = _records(_review(diff_target.target, state).out)
 
@@ -266,7 +266,7 @@ def test_an_invalid_git_range_fails_the_target_stage_before_any_state_directory_
     run = _review(_diff(diff_target.repository, "HEAD"), state)
 
     target = _stage(_records(run.out), "target")
-    assert target["error"] == {"code": "input", "message": "git range must use A..B or A...B"}
+    assert target["error"] == {"code": "input", "message": "Git range must use A..B or A...B"}
     assert not state.exists()
 
 
@@ -403,7 +403,7 @@ def test_review_diff_grounds_units_and_judges_issue_links_on_the_finder(monkeypa
 
 
 def test_review_diff_empty_git_range_is_ok(monkeypatch, diff_target, tmp_path):
-    """A HEAD..HEAD range with a mock provider ends ok with no findings."""
+    """A HEAD..HEAD range ends ok with no findings."""
     _live_provider(monkeypatch, '{"findings": []}')
     state = tmp_path / "state"
 

@@ -340,12 +340,6 @@ def test_a_method_call_resolves_to_the_bare_callee_name(tmp_path):
     assert callgraph(tmp_path)["a.ts"]["outer"][0]["calls"] == ["readOne"]
 
 
-def test_python_recursion_is_preserved_as_an_unresolved_call_clue(tmp_path):
-    """A Python walk() calling itself keeps "walk" in its own call list."""
-    (tmp_path / "r.py").write_text("def walk(n):\n    return walk(n - 1)\n")
-    assert callgraph(tmp_path)["r.py"]["walk"][0]["calls"] == ["walk"]
-
-
 def test_same_name_attribute_call_is_not_filtered_as_recursion(tmp_path):
     """A memories.update_memory_by_id() call inside update_memory_by_id() stays in that function's calls."""
     (tmp_path / "route.py").write_text(
@@ -430,18 +424,6 @@ def test_every_tree_sitter_language_uses_one_parse_limitation_contract(tmp_path,
     limitation = syntax_facts(tmp_path).limitations[0]
 
     assert (limitation.source, limitation.analyzer, limitation.reason) == (name, analyzer, "partially parsed")
-
-
-def test_an_unsupported_typescript_export_does_not_abort_other_files(tmp_path):
-    """A barrel.ts with "export type * from" yields one typescript limitation while model.ts and ok.ts keep facts."""
-    (tmp_path / "barrel.ts").write_text("export type * from './model';\n")
-    (tmp_path / "model.ts").write_text("export interface Model { id: string }\n")
-    (tmp_path / "ok.ts").write_text("export function ok() { return true; }\n")
-
-    facts = syntax_facts(tmp_path)
-
-    assert set(callgraph(tmp_path)) == {"model.ts", "ok.ts"}
-    assert [(item.source, item.analyzer) for item in facts.limitations] == [("barrel.ts", "typescript")]
 
 
 def test_native_analyzer_recovers_the_cross_language_structure(tmp_path):
@@ -531,3 +513,28 @@ def test_analysis_reports_each_analyzed_file_against_the_total(tmp_path):
     analyze_repository(sources, progress=lambda finished, items: reports.append((finished, items)))
 
     assert reports == [(1, 2), (2, 2)]
+
+
+def test_decorator_calls_belong_to_the_decorated_definition(tmp_path):
+    """The @require_admin call belongs to protected(), whose range starts at the decorator."""
+    source = (
+        "def require_admin(handler):\n    return handler\n\n@require_admin\ndef protected(value):\n    return value\n"
+    )
+    (tmp_path / "app.py").write_text(source)
+
+    [protected] = callgraph(tmp_path)["app.py"]["protected"]
+
+    assert protected["calls"] == ["require_admin"]
+    assert source[protected["range"][0] :].startswith("@require_admin")
+
+
+def test_solidity_modifier_calls_belong_to_the_modified_function(tmp_path):
+    """The onlyOwner modifier on withdraw is a call of withdraw."""
+    (tmp_path / "Vault.sol").write_text(
+        "contract Vault {\n"
+        "    modifier onlyOwner() { require(msg.sender == owner); _; }\n"
+        "    function withdraw() external onlyOwner {}\n"
+        "}\n"
+    )
+
+    assert callgraph(tmp_path)["Vault.sol"]["withdraw"][0]["calls"] == ["onlyOwner"]

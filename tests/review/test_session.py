@@ -86,6 +86,7 @@ def test_same_review_intent_reuses_session_with_distinct_attempts(tmp_path):
     assert first_session.workspace.path == second_session.workspace.path
     assert first.workspace.attempt_id != second.workspace.attempt_id
     assert len(list((first_session.workspace.path / "attempts").iterdir())) == 2
+    _finish(second)
 
 
 def test_review_attempt_request_is_the_persisted_request(tmp_path):
@@ -95,6 +96,7 @@ def test_review_attempt_request_is_the_persisted_request(tmp_path):
     attempt = _start(ReviewSession.create(tmp_path, intent), request)
 
     assert json.loads((attempt.workspace.path / "request.json").read_text()) == request.to_dict()
+    _finish(attempt)
 
 
 def test_independent_reviews_of_the_same_intent_have_unique_ids(tmp_path):
@@ -164,6 +166,7 @@ def test_each_stage_writes_its_artifacts_under_its_own_directory(tmp_path):
         "grounding/grounding.json",
     ):
         assert (attempt.session_workspace.path / name).is_file()
+    _finish(attempt)
 
 
 def test_an_attempt_runs_until_its_terminal_record_is_written(tmp_path):

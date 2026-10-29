@@ -16,6 +16,7 @@ from cyberjury.review.prepare import SharedGrounding
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.sources.snapshot import capture_source_snapshot
 from tests.review.support import definition, recorder, shared_grounding
+from tests.review.syntax.support import syntax_facts
 
 
 def _prepare(shared: SharedGrounding, diff: str) -> list[DiffUnit]:
@@ -23,7 +24,7 @@ def _prepare(shared: SharedGrounding, diff: str) -> list[DiffUnit]:
 
 
 def _collect(shared: SharedGrounding, diff: str, plan: DefinitionUnitPlan) -> GroundingContext:
-    return ground_diff_unit(DiffUnit(index=1, total=1, diff=diff, paths=(), definition_plan=plan), shared)
+    return ground_diff_unit(DiffUnit(index=1, diff=diff, paths=(), definition_plan=plan), shared)
 
 
 def _ground(root: Path, diff: str, facts: Facts | None = None) -> GroundingContext:
@@ -53,7 +54,7 @@ def test_changed_definition_is_requestable_without_an_initial_prefix(tmp_path):
     )
     collector = shared_grounding(tmp_path)
 
-    context = _collect(collector, diff, plan)
+    context = ground_diff_unit(DiffUnit(index=1, diff=diff, paths=("app.py",), definition_plan=plan), collector)
 
     assert context.source_evidence == ()
     assert "control = check(owner)" not in context.prompt.source
@@ -70,12 +71,14 @@ def test_importing_source_stays_behind_navigation_instead_of_being_preselected(t
     related = "from service import apply\n\nclass Route:\n    permission = require_user\n    handler = apply\n"
     (tmp_path / "service.py").write_text(changed, encoding="utf-8")
     (tmp_path / "views.py").write_text(related, encoding="utf-8")
-    collector = shared_grounding(tmp_path)
+    facts = syntax_facts(tmp_path)
+    collector = shared_grounding(tmp_path, facts=facts)
     plan = DefinitionUnitPlan(seeds=(definition("service.py", "apply", 0, len(changed)),))
     diff = "diff --git a/service.py b/service.py\n+++ b/service.py\n@@ -1,1 +1,1 @@\n+def apply(value):\n"
 
     context = _collect(collector, diff, plan)
 
+    assert any(relationship.source.path == "views.py" for relationship in facts.relationships.structural_relationships)
     assert "views.py" not in context.prompt.source
     assert "permission = require_user" not in context.prompt.source
 
@@ -245,6 +248,7 @@ def test_deleted_diff_source_is_bound_by_the_patch_not_the_post_change_snapshot(
         "@@ -1 +0,0 @@\n"
         "-dangerous_default = True\n"
     )
+    (tmp_path / "kept.py").write_text("value = 1\n", encoding="utf-8")
     unit = _prepare(shared_grounding(tmp_path), diff)[0]
 
     assert unit.grounding is not None

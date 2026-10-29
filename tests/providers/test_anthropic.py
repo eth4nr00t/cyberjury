@@ -28,7 +28,6 @@ class _FakeClient:
         self.create_kwargs = kwargs
         return SimpleNamespace(
             content=[SimpleNamespace(text="he"), SimpleNamespace(text="llo")],
-            model="claude-real",
         )
 
 

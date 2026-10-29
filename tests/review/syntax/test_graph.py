@@ -53,26 +53,6 @@ def test_relationship_evidence_preserves_calls_but_does_not_assign_targets(tmp_p
     }
 
 
-def test_same_name_definitions_remain_visible_as_ambiguous_call_candidates(tmp_path):
-    """A load() call with load defined in one.py and two.py lists both as candidates."""
-    (tmp_path / "one.py").write_text("def load(value):\n    return value\n")
-    (tmp_path / "two.py").write_text("def load(value):\n    return value + 1\n")
-    (tmp_path / "route.py").write_text("def route(value):\n    return load(value)\n")
-
-    evidence = syntax_facts(tmp_path).relationships.to_dict()
-    candidates = {item["id"] for item in evidence["definitions"] if item["name"] == "load"}
-    (call_candidates,) = syntax_facts(tmp_path).relationships.call_candidates.values()
-
-    assert set(call_candidates) == candidates
-
-
-def test_missing_definition_keeps_an_explicit_unresolved_call_target(tmp_path):
-    """A call to an undefined external() has no candidate definitions."""
-    (tmp_path / "route.py").write_text("def route(value):\n    return external(value)\n")
-
-    assert list(syntax_facts(tmp_path).relationships.call_candidates.values()) == [()]
-
-
 def test_import_alias_remains_unresolved_with_its_declaration_clue(tmp_path):
     """A call via load as selected_load stays unresolved and carries the selected_load from one clue."""
     (tmp_path / "one.py").write_text("def load(value):\n    return value\n")
@@ -219,37 +199,6 @@ def test_a_top_level_registration_call_uses_an_explicit_file_scope_caller(tmp_pa
 
     assert file_scope["kind"] == "file"
     assert callsite["caller_definition_id"] == file_scope["id"]
-
-
-def test_decorator_calls_belong_to_the_decorated_definition(tmp_path):
-    """The @require_admin callsite belongs to protected(), whose range starts at the decorator."""
-    (tmp_path / "app.py").write_text(
-        "def require_admin(handler):\n    return handler\n\n@require_admin\ndef protected(value):\n    return value\n"
-    )
-
-    evidence = syntax_facts(tmp_path).relationships.to_dict()
-    protected = next(item for item in evidence["definitions"] if item["name"] == "protected")
-    callsite = next(item for item in evidence["callsites"] if item["expression"] == "@require_admin")
-
-    assert callsite["caller_definition_id"] == protected["id"]
-    start, end = protected["source"]["range"]
-    assert (tmp_path / "app.py").read_text()[start:end].startswith("@require_admin")
-
-
-def test_solidity_modifier_calls_belong_to_the_modified_function(tmp_path):
-    """The onlyOwner modifier on withdraw is a callsite of withdraw whose candidate is the onlyOwner modifier."""
-    (tmp_path / "Vault.sol").write_text(
-        "contract Vault {\n"
-        "    modifier onlyOwner() { require(msg.sender == owner); _; }\n"
-        "    function withdraw() external onlyOwner {}\n"
-        "}\n"
-    )
-
-    relationships = syntax_facts(tmp_path).relationships
-    names = {item.id: item.name for item in relationships.definitions}
-    callsite = next(item for item in relationships.callsites if item.callee_spelling == "onlyOwner")
-    assert names[callsite.caller_definition_id] == "withdraw"
-    assert [names[item] for item in relationships.call_candidates[callsite.id]] == ["onlyOwner"]
 
 
 def test_solidity_named_import_is_a_declaration_clue_for_its_alias(tmp_path):

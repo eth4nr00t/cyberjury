@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from cyberjury.numbering import split_lines
+from cyberjury.numbering import line_span, split_lines
 from cyberjury.review.context import (
     GroundingContext,
     SourceEvidence,
@@ -22,6 +22,7 @@ from cyberjury.review.diff.model import (
     ChangedLineRanges,
     DiffUnit,
     changed_line_ranges,
+    merge_ranges,
 )
 from cyberjury.review.diff.prompts import diff_seed
 from cyberjury.review.paths import read_repository_source
@@ -147,12 +148,7 @@ def _source_windows(lines: list[str], changed: tuple[tuple[int, int], ...]) -> l
         (max(1, start - context), min(len(lines), end + context)) for start, end in changed if start <= len(lines) + 1
     ]
     prefix = _leading_lines(lines, _SETTINGS.max_changed_source_prefix_chars)
-    merged: list[tuple[int, int]] = []
-    for first, last in sorted(window for window in (*windows, (1, prefix)) if window[0] <= window[1]):
-        if merged and first <= merged[-1][1] + 1:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], last))
-        else:
-            merged.append((first, last))
+    merged = merge_ranges([window for window in (*windows, (1, prefix)) if window[0] <= window[1]])
     return sorted(merged, key=lambda window: not any(window[0] <= end and start <= window[1] for start, end in changed))
 
 
@@ -206,8 +202,7 @@ def _callsite_ids_in_ranges(
         if source is None:
             source = read_repository_source(root, callsite.source.path, label="diff grounding") or ""
             sources[callsite.source.path] = source
-        start_line = source.count("\n", 0, callsite.source.start) + 1
-        end_line = source.count("\n", 0, max(callsite.source.start, callsite.source.end - 1)) + 1
+        start_line, end_line = line_span(source, callsite.source.start, callsite.source.end)
         if any(start_line <= end and start <= end_line for start, end in file_ranges):
             selected.add(callsite.id)
     return frozenset(selected)

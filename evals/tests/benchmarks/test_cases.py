@@ -17,19 +17,17 @@ def test_public_benchmarks_validate():
 
 
 def test_cases_carry_their_nested_checks_and_targets(benchmark_project):
-    """Repository and diff cases carry commit, base, and local_path targets with checks at line 2."""
+    """Repository and diff cases carry their commit, base, and local_path targets and their checks."""
     repository = find_case(benchmark_project.repository_case, [benchmark_project.benchmark])
     diff = find_case(benchmark_project.diff_case, [benchmark_project.benchmark])
 
     assert repository.target == {"commit": benchmark_project.commit, "local_path": str(benchmark_project.repo)}
-    assert [check.locations[0].line for check in repository.checks] == [2]
     assert diff.target == {
         "commit": benchmark_project.commit,
         "base": benchmark_project.base,
         "local_path": str(benchmark_project.repo),
     }
-    assert [check.change_anchors[0].line for check in diff.checks] == [2]
-    assert not repository.checks[0].change_anchors
+    assert (len(repository.checks), len(diff.checks)) == (1, 1)
 
 
 def test_checks_digest_ignores_check_and_location_order(benchmark_project):

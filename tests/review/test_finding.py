@@ -6,6 +6,7 @@ import pytest
 
 from cyberjury.review.context import SourceSpan
 from cyberjury.review.finding import ChangeAnchor, Finding
+from cyberjury.review.identity import candidate_identity
 
 _FINDING = Finding(
     title="Unscoped account export",
@@ -66,3 +67,29 @@ def test_fingerprint_ignores_wording_and_follows_the_location():
 
     assert reworded.fingerprint == _FINDING.fingerprint
     assert replace(_FINDING, line=11).fingerprint != _FINDING.fingerprint
+
+
+def test_candidate_id_hashes_the_target_identity_of_the_finding():
+    """A diff finding hashes its change anchor and operation id, and a repository finding anchors on file:line."""
+    repository = replace(_FINDING, entrypoint="", change_anchor=None, source_operation_id="")
+
+    assert _FINDING.candidate_id == candidate_identity(
+        target="diff",
+        file="app/v.py",
+        line=10,
+        category="missing-authorization",
+        path_anchor="POST /export",
+        anchor=("app/v.py", 9, "old"),
+        root_cause="Unscoped account export",
+        source_operation_id="call-account-export",
+    )
+    assert repository.candidate_id == candidate_identity(
+        target="repository",
+        file="app/v.py",
+        line=10,
+        category="missing-authorization",
+        path_anchor="app/v.py:10",
+        anchor=None,
+        root_cause="Unscoped account export",
+        source_operation_id="",
+    )

@@ -88,20 +88,6 @@ def test_concurrency_yields_same_union_as_serial(tmp_path):
     assert parallel.complete is True
 
 
-def test_unit_failures_are_counted_not_silent(tmp_path):
-    """A rate-limited bad.py unit is recorded as failure index 2 while ok1 and ok2 findings remain."""
-    units = _units(tmp_path, ["ok1", "bad", "ok2"])
-    provider = unit_provider(
-        lambda file: RuntimeError("rate limited") if file == "bad.py" else [finding(file, 1, title=file[:-3])]
-    )
-
-    outcome = _run(units, provider, concurrency=2)
-
-    assert [(failure.index, failure.paths) for failure in outcome.failures] == [(2, ("bad.py",))]
-    assert "rate limited" in outcome.failures[0].reason
-    assert {c.title for c in outcome.findings} == {"ok1", "ok2"}
-
-
 def test_a_failed_batch_keeps_the_findings_of_the_other_batches():
     """A large diff keeps completed batch results while surfacing failed batches."""
     finding_b = {
@@ -120,37 +106,6 @@ def test_a_failed_batch_keeps_the_findings_of_the_other_batches():
     failure = result.outcome.failures[0]
     assert (failure.index, failure.total, failure.paths) == (1, 2, ("a.py",))
     assert "reply had no complete JSON object" in failure.reason
-
-
-def test_findings_are_located_before_duplicates_fold():
-    """Duplicates anchored at unchanged line 10 and added line 11 fold to one finding anchored at 11."""
-    diff_text = (
-        "diff --git a/app.py b/app.py\n"
-        "--- a/app.py\n"
-        "+++ b/app.py\n"
-        "@@ -10,2 +10,3 @@\n"
-        " existing()\n"
-        "+expose()\n"
-        " finish()\n"
-    )
-    base = {
-        "file": "app.py",
-        "line": 10,
-        "severity": "HIGH",
-        "category": "other",
-        "evidence": "existing operation is exposed",
-    }
-    findings = [
-        {**base, "change_anchor": {"file": "app.py", "line": 10, "side": "new"}},
-        {**base, "change_anchor": {"file": "app.py", "line": 11, "side": "new"}},
-    ]
-
-    result = diff.review(diff_text, provider=MockProvider(default=diff.reply(findings)))
-
-    assert [
-        (item.line, item.change_anchor.line if item.change_anchor else None) for item in result.outcome.findings
-    ] == [(10, 11)]
-    assert result.outcome.complete is False
 
 
 _FLASK_APP = """

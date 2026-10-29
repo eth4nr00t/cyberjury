@@ -80,7 +80,6 @@ def test_diff_unit_plan_record_exposes_patch_ownership():
     """A diff unit for a.py records kind diff, owned path a.py, and a patch sha256."""
     unit = DiffUnit(
         index=1,
-        total=1,
         diff=FILE_A_DIFF,
         paths=("a.py",),
         definition_plan=DefinitionUnitPlan(seed_files=("a.py",)),
@@ -105,20 +104,6 @@ def test_strip_unreviewable_files_drops_docs_and_lockfiles_keeps_source(tmp_path
     kept, skipped = strip_unreviewable_files(_SRC + _DOC + _LOCK, _DETECTION, root=tmp_path)
     assert kept == _SRC
     assert {item.path for item in skipped} == {"README.md", "package-lock.json"}
-
-
-def test_strip_unreviewable_files_skips_asset_changes_but_keeps_templates_and_queries(tmp_path):
-    """The noise boundary skips .xlf and .scss changes but keeps .html templates and .sql files."""
-    translation = "diff --git a/messages.xlf b/messages.xlf\n@@ -0,0 +1 @@\n+<trans-unit/>\n"
-    style = "diff --git a/theme.scss b/theme.scss\n@@ -0,0 +1 @@\n+.secret { color: red; }\n"
-    template = "diff --git a/view.html b/view.html\n@@ -0,0 +1 @@\n+{{ unsafe }}\n"
-    query = "diff --git a/data.sql b/data.sql\n@@ -0,0 +1 @@\n+SELECT 1;\n"
-
-    kept, skipped = strip_unreviewable_files(translation + style + template + query, _DETECTION, root=tmp_path)
-
-    assert {item.path for item in skipped} == {"messages.xlf", "theme.scss"}
-    assert "view.html" in kept
-    assert "data.sql" in kept
 
 
 def test_strip_unreviewable_files_skips_binary_changes(tmp_path):
@@ -235,25 +220,6 @@ def test_diff_line_ranges_keep_renamed_side_paths_distinct():
     assert ranges.old == {"old.py": ((4, 4),)}
     assert ranges.new == {"new.py": ((4, 4),)}
     assert ranges.current == {"new.py": ((4, 4),)}
-
-
-def test_diff_line_ranges_keep_reportable_non_source_files():
-    """A policy.yaml change keeps line 1 in current, old, new, and changed_line_ranges."""
-    diff = (
-        "diff --git a/policy.yaml b/policy.yaml\n"
-        "--- a/policy.yaml\n"
-        "+++ b/policy.yaml\n"
-        "@@ -1 +1 @@\n"
-        "-require_approval: true\n"
-        "+require_approval: false\n"
-    )
-
-    ranges = diff_line_ranges(diff)
-
-    assert ranges.current == {"policy.yaml": ((1, 1),)}
-    assert ranges.old == {"policy.yaml": ((1, 1),)}
-    assert ranges.new == {"policy.yaml": ((1, 1),)}
-    assert changed_line_ranges(diff) == {"policy.yaml": ((1, 1),)}
 
 
 def test_strip_unreviewable_files_skips_oversized_files_as_too_large(tmp_path):

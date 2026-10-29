@@ -53,7 +53,7 @@ def parse_role_response(
     try:
         obj = validate_response_object(parsed, response_schema)
     except ValueError as exc:
-        message = f"{role} reply violates {response_schema.name}: {exc}"
+        message = f"{role} reply violates the response schema: {exc}"
         record_model_parse(message)
         raise RoleResponseError(message) from exc
     record_model_parse()
