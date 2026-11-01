@@ -26,7 +26,7 @@ class CorrectableRoleResponseError(RoleResponseError):
         response_findings: tuple[Finding, ...] = (),
         fallback_findings: tuple[Finding, ...] = (),
     ) -> None:
-        """Separate valid carried candidates from invalid correction fallbacks."""
+        """Carry the findings accepted as-is and the full finding set kept if the correction never arrives."""
         self.instruction = instruction
         self.response_findings = response_findings
         self.fallback_findings = fallback_findings

@@ -26,6 +26,19 @@ def git(cwd: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+def two_commits(repo: Path) -> tuple[str, str]:
+    """Create a repository whose app.py reads base in the first commit and head in the second, and return both."""
+    repo.mkdir()
+    git(repo, "init", "--quiet")
+    (repo / "app.py").write_text("base\n", encoding="utf-8")
+    git(repo, "add", "app.py")
+    git(repo, "commit", "--quiet", "-m", "base")
+    base = git(repo, "rev-parse", "HEAD")
+    (repo / "app.py").write_text("head\n", encoding="utf-8")
+    git(repo, "commit", "--quiet", "-am", "head")
+    return base, git(repo, "rev-parse", "HEAD")
+
+
 type MockResponder = Callable[[str, str], str]
 
 

@@ -22,6 +22,23 @@ def _finding(**values) -> Finding:
     return Finding(**(fields | values))
 
 
+_FIELDS = {
+    "id",
+    "title",
+    "category",
+    "severity",
+    "file",
+    "line",
+    "entrypoint",
+    "evidence",
+    "attack_path",
+    "evidence_refs",
+    "issue_id",
+    "change_anchor",
+    "unit_complete",
+}
+
+
 def test_findings_artifact_maps_every_target_onto_the_same_fields():
     """Diff and repository findings serialize to one v1 field set, with change_anchor None for the repo one."""
     diff = _finding(
@@ -42,22 +59,7 @@ def test_findings_artifact_maps_every_target_onto_the_same_fields():
     assert [record["file"] for record in document["findings"]] == ["app.py", "views.py"]
     assert document["findings"][0]["change_anchor"] == {"file": "middleware.py", "line": 8, "side": "old"}
     assert document["findings"][1]["change_anchor"] is None
-    assert set(document["findings"][0]) == {
-        "id",
-        "fingerprint",
-        "title",
-        "category",
-        "severity",
-        "file",
-        "line",
-        "entrypoint",
-        "evidence",
-        "attack_path",
-        "evidence_refs",
-        "issue_id",
-        "change_anchor",
-        "unit_complete",
-    }
+    assert all(set(record) == _FIELDS for record in document["findings"])
 
 
 def test_findings_artifact_records_every_member_of_a_grouped_issue_with_its_issue_id():

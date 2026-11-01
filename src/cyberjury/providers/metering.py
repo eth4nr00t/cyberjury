@@ -97,7 +97,7 @@ class UsageMeter:
         return {"schema": MODEL_CALLS_SCHEMA, **semantic, "content_sha256": canonical_sha256(semantic)}
 
     def record_call(self, record: dict[str, object]) -> tuple[ParseUpdate, ExchangeUpdate]:
-        """Persist one call and return its validation and exchange updaters."""
+        """Append one call record and return its validation and exchange updaters."""
         with self._lock:
             index = len(self.calls)
             self.calls.append(record)

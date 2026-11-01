@@ -4,34 +4,20 @@ from __future__ import annotations
 
 import dataclasses
 
+from cyberjury.review import finder
 from cyberjury.review.context import SourceEvidence, SourceSpan, cited_location_file
 from cyberjury.review.diff.model import DiffLineRanges, DiffUnit, canonical_diff_path
 from cyberjury.review.diff.prompts import FINDER_RESPONSE_SCHEMA, diff_finder_system
-from cyberjury.review.finder import ReviewTarget, finding_from_item, finding_violations
+from cyberjury.review.finder import ReviewTarget
 from cyberjury.review.finding import Finding
-from cyberjury.review.replies import CorrectableRoleResponseError, RoleReply
+from cyberjury.review.replies import RoleReply
 
 
 def findings_from_reply(unit: DiffUnit, reply: RoleReply) -> list[Finding]:
     """Map the shared finding fields and request a correction for a change anchor outside the unit's changes."""
-    findings = []
-    valid_findings = []
-    corrections = []
-    for index, item in enumerate(reply["findings"]):
-        violations = finding_violations(item, index)
-        if violations:
-            corrections.extend(violations)
-            continue
-        finding = finding_from_item(item)
-        findings.append(finding)
-        correction = _change_anchor_correction(item["change_anchor"], index, unit.line_ranges)
-        if correction:
-            corrections.append(correction)
-        else:
-            valid_findings.append(finding)
-    if corrections:
-        raise CorrectableRoleResponseError(" ".join(corrections), tuple(valid_findings), tuple(findings))
-    return findings
+    return finder.findings_from_reply(
+        reply, lambda item, index: _change_anchor_correction(item["change_anchor"], index, unit.line_ranges)
+    )
 
 
 def _change_anchor_correction(anchor: dict[str, object], index: int, ranges: DiffLineRanges) -> str:

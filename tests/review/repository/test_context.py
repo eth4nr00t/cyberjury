@@ -49,7 +49,7 @@ def _route_load_navigator(tmp_path):
     return graph.caller, navigator, snapshot
 
 
-def test_repository_grounding_exposes_the_same_candidate_call_clues(tmp_path):
+def test_repository_grounding_exposes_candidate_callee_clues_and_delivers_their_source(tmp_path):
     """A route.py seed calling load lists service.py:load as a candidate and delivers its source."""
     caller, navigator, snapshot = _route_load_navigator(tmp_path)
     unit = source_unit(
@@ -148,10 +148,6 @@ def test_repository_prompt_never_carries_the_unit_name(tmp_path):
     assert "next heading" not in prompt
 
 
-def _prompt_of(prov):
-    return prov.calls[0]["prompt"]
-
-
 def _grounded(tmp_path, name, facts_by_file):
     return _ground(
         source_unit(tmp_path, name),
@@ -165,13 +161,13 @@ def _grounded(tmp_path, name, facts_by_file):
 def test_reviewer_grounds_a_unit_with_only_its_own_files_facts(tmp_path):
     """The views.py prompt carries its calls[load_owner] hints while admin.py delete_all hints stay out."""
     (tmp_path / "views.py").write_text("def list_items():\n    return load_owner()\n")
-    prov = MockProvider(default=EMPTY_REPLY)
+    provider = MockProvider(default=EMPTY_REPLY)
     by_file = {
         "views.py": "def list_items()  calls[load_owner]",
         "admin.py": "def delete_all()  calls[purge]",
     }
-    review(finder(prov), _grounded(tmp_path, "views.py", by_file))
-    prompt = _prompt_of(prov)
+    review(finder(provider), _grounded(tmp_path, "views.py", by_file))
+    prompt = provider.calls[0]["prompt"]
     assert "views.py: syntax hints (unverified, cite only delivered source):\n```\n" in prompt
     assert "calls[load_owner]" in prompt
     assert "delete_all" not in prompt
@@ -189,7 +185,7 @@ def test_repository_syntax_hints_are_bounded_per_file_with_a_visible_marker(tmp_
         _grounded(tmp_path, "large.py", {"large.py": facts}),
     )
 
-    prompt = _prompt_of(provider)
+    prompt = provider.calls[0]["prompt"]
     assert f"large.py: syntax hints (unverified, cite only delivered source), first {limit} characters:" in prompt
     assert facts[:limit] in prompt
     assert facts not in prompt
@@ -223,9 +219,9 @@ def test_repository_units_with_seed_definitions_get_no_syntax_hints(tmp_path):
 def test_reviewer_adds_no_facts_block_without_a_map(tmp_path):
     """An empty facts map leaves the finder prompt without any 'syntax hints' block."""
     (tmp_path / "v.py").write_text("x = 1")
-    prov = MockProvider(default=EMPTY_REPLY)
-    review(finder(prov), _grounded(tmp_path, "v.py", {}))
-    assert "syntax hints" not in _prompt_of(prov)
+    provider = MockProvider(default=EMPTY_REPLY)
+    review(finder(provider), _grounded(tmp_path, "v.py", {}))
+    assert "syntax hints" not in provider.calls[0]["prompt"]
 
 
 def test_grounding_uses_only_the_exact_facts_path_when_basenames_repeat(tmp_path):

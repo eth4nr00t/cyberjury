@@ -60,7 +60,7 @@ def test_candidate_call_clues_use_line_numbers_and_name_only_usable_receipts(tmp
         f"  - `load(value)` at route.py:4, candidate callee service.py:load lines 1-2, source `{published.id}` in "
         "the evidence catalog, candidate callee calls: `execute`",
     ]
-    assert not any(prefix in context.text for prefix in ("def-", "callrel-", "call-"))
+    assert not any(prefix in context.text for prefix in ("def-", "call-"))
 
 
 def test_candidate_callee_source_delivered_initially_names_its_source_receipt(tmp_path):

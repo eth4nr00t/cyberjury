@@ -26,16 +26,16 @@ def case_state_dir(state_dir: Path, case: BenchmarkCase, number: int) -> Path:
 def run(
     cases: list[BenchmarkCase],
     *,
-    runs: int,
+    repeat: int,
     state_dir: Path,
     progress: Progress,
     on_attempt: Callable[[dict[str, object]], None],
 ) -> list[dict[str, object]]:
     """Review each diff case once per run and return one attempt record per case and run."""
     records = []
-    for number in range(1, runs + 1):
+    for number in range(1, repeat + 1):
         for index, case in enumerate(cases, 1):
-            prefix = f"{f'run {number}/{runs} ' if runs > 1 else ''}[{index}/{len(cases)}] {case.name}"
+            prefix = f"{f'run {number}/{repeat} ' if repeat > 1 else ''}[{index}/{len(cases)}] {case.name}"
             progress(f"{prefix} started")
             started = time.monotonic()
             record = _review_case(case, number, case_state_dir(state_dir, case, number))

@@ -31,14 +31,14 @@ class IssueSettings:
     """Source and model output settings for the issue link judgment."""
 
     max_source_lines_per_finding: int = 60
-    max_output_tokens: int = 1_024
+    max_output_tokens: int = 8_000
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReviewExecutionSettings:
     """Cross target limits on model calls, evidence, source navigation, and reviewed sources."""
 
-    reviewer_max_output_tokens: int = 4_096
+    reviewer_max_output_tokens: int = 8_000
     default_model_call_concurrency: int = 8
     target_evidence_request_chars: int = 48_000
     max_evidence_requests_per_batch: int = 64

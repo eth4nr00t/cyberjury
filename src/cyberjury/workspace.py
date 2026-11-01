@@ -20,11 +20,16 @@ from cyberjury.record import Record, is_attempt_id, parse_timestamp, render, utc
 SESSION_SCHEMA = "cyberjury.session/v1"
 LOCATOR_SCHEMA = "cyberjury.locator/v1"
 _SESSION_KIND = "review"
+_SESSIONS_DIR = "reviews"
 _SESSION_ID = re.compile(r"^review-\d{8}-\d{6}-[0-9a-f]{8}$")
 
 
 class WorkspaceCorruptionError(RuntimeError):
     """Persisted session state cannot be trusted or resumed."""
+
+
+class WorkspacePathError(RuntimeError):
+    """A state or session directory is a symlink, not a plain directory, or readable by other users."""
 
 
 class SessionConflictError(RuntimeError):
@@ -97,14 +102,18 @@ def _atomic_text(path: Path, text: str) -> None:
             os.fsync(stream.fileno())
         os.chmod(temporary, 0o600)
         os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        _fsync_directory(path.parent)
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
+
+
+def _fsync_directory(path: Path) -> None:
+    directory = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def write_record(path: Path, record: Record) -> None:
@@ -120,29 +129,22 @@ def read_record(path: str | Path) -> Record:
         raise WorkspaceCorruptionError(f"{Path(path).name} is not a valid record: {exc}") from exc
 
 
-def _safe_directory(path: Path) -> None:
+def _safe_directory(path: Path, *, label: str = "session path", private: bool = True) -> None:
     if path.is_symlink():
-        raise ValueError(f"session path cannot be a symlink: {path}")
+        raise WorkspacePathError(f"{label} cannot be a symlink: {path}")
     created = not path.exists()
     path.mkdir(parents=True, mode=0o700, exist_ok=True)
     if not path.is_dir() or path.is_symlink():
-        raise ValueError(f"session path is not a plain directory: {path}")
+        raise WorkspacePathError(f"{label} is not a plain directory: {path}")
     if created:
         os.chmod(path, 0o700)
-    elif path.stat().st_mode & 0o077:
-        raise ValueError(f"session path permissions are too broad: {path}")
+    elif private and path.stat().st_mode & 0o077:
+        raise WorkspacePathError(f"{label} permissions are too broad: {path}")
 
 
 def _state_directory(root: str | Path, *parts: str) -> Path:
     raw_root = Path(root).expanduser()
-    if raw_root.is_symlink():
-        raise ValueError("state directory cannot be a symlink")
-    root_created = not raw_root.exists()
-    raw_root.mkdir(parents=True, mode=0o700, exist_ok=True)
-    if not raw_root.is_dir() or raw_root.is_symlink():
-        raise ValueError("state directory path is not a plain directory")
-    if root_created:
-        os.chmod(raw_root, 0o700)
+    _safe_directory(raw_root, label="state directory", private=False)
     current = raw_root.resolve()
     for part in parts:
         current /= part
@@ -218,7 +220,7 @@ class SessionWorkspace(_JsonDirectory):
     @classmethod
     def open_or_create(cls, root: str | Path, *, session_id: str) -> SessionWorkspace:
         """Open one matching session or create its immutable identity file."""
-        path = _state_directory(root, "reviews") / session_id
+        path = _state_directory(root, _SESSIONS_DIR) / session_id
         _safe_directory(path)
         attempts = path / "attempts"
         _safe_directory(attempts)
@@ -229,7 +231,7 @@ class SessionWorkspace(_JsonDirectory):
             if set(data) != expected or data["schema"] != SESSION_SCHEMA:
                 raise WorkspaceCorruptionError("session identity has an invalid schema")
             if data["session_id"] != session_id or data["kind"] != _SESSION_KIND:
-                raise WorkspaceCorruptionError("session identity does not match the requested workflow")
+                raise WorkspaceCorruptionError("session identity does not match its session id or review kind")
             try:
                 parse_timestamp(data["created_at"])
             except (TypeError, ValueError) as exc:
@@ -245,6 +247,12 @@ class SessionWorkspace(_JsonDirectory):
                 },
             )
         return cls(session_id=session_id, path=path)
+
+    @staticmethod
+    def exists(root: str | Path, *, session_id: str) -> bool:
+        """Report whether a session directory exists under the state directory, without creating anything."""
+        path = Path(root).expanduser() / _SESSIONS_DIR / session_id
+        return path.is_dir() and not path.is_symlink()
 
     def start_attempt(
         self,
@@ -288,11 +296,7 @@ class SessionWorkspace(_JsonDirectory):
             )
             path = attempts / attempt_id
             os.replace(temporary_path, path)
-            directory = os.open(attempts, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            _fsync_directory(attempts)
             attempt.path = path
             return attempt
         except BaseException:

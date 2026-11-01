@@ -91,7 +91,10 @@ def test_a_seat_without_a_key_is_rejected_before_review_work(monkeypatch):
     built = []
     monkeypatch.setattr(configuration_module, "make_provider", lambda *args, **kwargs: built.append(kwargs))
     configuration = ProviderConfiguration(
-        seat=ProviderSeat(provider="openai", model="m"), api_key=None, retries=0, timeout=10
+        seat=ProviderSeat(provider="openai", model="m", base_url="https://api.openai.com/v1"),
+        api_key=None,
+        retries=0,
+        timeout=10,
     )
 
     with pytest.raises(ProviderSettingError, match="has no API key, set CYBERJURY_API_KEY"):

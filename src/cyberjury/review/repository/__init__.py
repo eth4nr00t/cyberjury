@@ -1,1 +1,1 @@
-"""The shared review orchestration adapted to repository workspaces."""
+"""The shared review orchestration adapted to a captured repository snapshot."""

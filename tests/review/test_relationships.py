@@ -1,5 +1,6 @@
 """Relationship evidence keeps stable ids, explicit source hashes, and derived call candidates."""
 
+from cyberjury.canonical import text_sha256
 from cyberjury.review.relationships import (
     AnalysisObservation,
     CallsiteEvidence,
@@ -7,11 +8,11 @@ from cyberjury.review.relationships import (
     RelationshipEvidenceBundle,
     SourceReference,
 )
+from tests.review.support import definition
 
 
-def _definition(path: str, name: str, text: str) -> DefinitionEvidence:
-    source = SourceReference.create(path=path, start=0, end=len(text), content=text)
-    return DefinitionEvidence.create(source=source, kind="function", name=name)
+def _whole(path: str, name: str, text: str) -> DefinitionEvidence:
+    return definition(path, name, 0, len(text), source=text)
 
 
 def _call(caller: DefinitionEvidence, callee: str) -> CallsiteEvidence:
@@ -27,16 +28,14 @@ def _bundle():
     target_text = "def load(x):\n    return x"
     call_text = "load(x)"
     call_start = caller_text.index(call_text)
-    caller_source = SourceReference.create(path="route.py", start=0, end=len(caller_text), content=caller_text)
-    target_source = SourceReference.create(path="service.py", start=0, end=len(target_text), content=target_text)
     call_source = SourceReference.create(
         path="route.py",
         start=call_start,
         end=call_start + len(call_text),
         content=call_text,
     )
-    caller = DefinitionEvidence.create(source=caller_source, kind="function", name="route")
-    target = DefinitionEvidence.create(source=target_source, kind="function", name="load")
+    caller = _whole("route.py", "route", caller_text)
+    target = _whole("service.py", "load", target_text)
     callsite = CallsiteEvidence.create(
         caller_definition_id=caller.id,
         source=call_source,
@@ -48,7 +47,7 @@ def _bundle():
         producer_version="0.26.0",
         kind="syntax_call",
         subject_ids=(callsite.id,),
-        provenance_source_ids=(call_source.id, target_source.id),
+        provenance_source_ids=(call_source.id, target.source.id),
         label="direct imported name",
     )
     return RelationshipEvidenceBundle(
@@ -59,7 +58,7 @@ def _bundle():
 
 
 def test_relationship_evidence_has_stable_ids_and_explicit_source_hashes():
-    """Rebuilding the route-to-load bundle gives equal ids, a candidate callee, and 64-hex content hashes."""
+    """Rebuilding the route-to-load bundle gives equal ids, a candidate callee, and the sha256 of each source."""
     bundle = _bundle()
 
     assert bundle == _bundle()
@@ -67,14 +66,18 @@ def test_relationship_evidence_has_stable_ids_and_explicit_source_hashes():
     assert list(bundle.call_candidates.values()) == [
         (next(item.id for item in bundle.definitions if item.name == "load"),)
     ]
-    assert len(data["definitions"][0]["source"]["content_sha256"]) == 64
+    route = next(item for item in bundle.definitions if item.name == "route")
+    assert route.source.content_sha256 == text_sha256("def route(x):\n    return load(x)")
+    assert {item["source"]["content_sha256"] for item in data["definitions"]} == {
+        definition.source.content_sha256 for definition in bundle.definitions
+    }
 
 
 def test_same_name_definitions_are_all_call_candidates():
     """A load() call with load defined in one.py and two.py lists both definitions as candidates."""
-    route = _definition("route.py", "route", "def route(value):\n    return load(value)")
-    first = _definition("one.py", "load", "def load(value):\n    return value")
-    second = _definition("two.py", "load", "def load(value):\n    return value + 1")
+    route = _whole("route.py", "route", "def route(value):\n    return load(value)")
+    first = _whole("one.py", "load", "def load(value):\n    return value")
+    second = _whole("two.py", "load", "def load(value):\n    return value + 1")
     call = _call(route, "load")
 
     bundle = RelationshipEvidenceBundle(definitions=(route, first, second), callsites=(call,))
@@ -84,7 +87,7 @@ def test_same_name_definitions_are_all_call_candidates():
 
 def test_a_call_without_a_matching_definition_has_no_candidates():
     """A call to an undefined external() has an empty candidate list."""
-    route = _definition("route.py", "route", "def route(value):\n    return external(value)")
+    route = _whole("route.py", "route", "def route(value):\n    return external(value)")
     call = _call(route, "external")
 
     assert RelationshipEvidenceBundle(definitions=(route,), callsites=(call,)).call_candidates == {call.id: ()}

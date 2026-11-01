@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, fields
-from typing import Any, Literal
+from typing import Literal
 
-from cyberjury.review.context import SourceSpan
-from cyberjury.review.identity import candidate_identity, location_fingerprint
-from cyberjury.severity import SEVERITIES, index
+from cyberjury.review.context import SourceSpan, is_line
+from cyberjury.review.identity import candidate_identity
+from cyberjury.severity import SEVERITIES, severity_rank
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -21,6 +21,15 @@ class ChangeAnchor:
     def to_dict(self) -> dict[str, str | int]:
         """Return the stable patch location wire form."""
         return {"file": self.file, "line": self.line, "side": self.side}
+
+    @classmethod
+    def from_dict(cls, value: object) -> ChangeAnchor:
+        """Parse one patch location written by `to_dict`."""
+        if not isinstance(value, dict) or set(value) != {"file", "line", "side"}:
+            raise ValueError("change anchor fields are invalid")
+        if not isinstance(value["file"], str) or not is_line(value["line"]) or value["side"] not in ("old", "new"):
+            raise ValueError("change anchor values are invalid")
+        return cls(file=value["file"], line=value["line"], side=value["side"])
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -42,28 +51,17 @@ class Finding:
 
     @property
     def candidate_id(self) -> str:
-        """Return one security violation identity on the shared attack path."""
+        """Return one violation identity from its location, class, entrypoint, anchors, and root cause."""
         anchor = self.change_anchor
         return candidate_identity(
             target="diff" if anchor is not None else "repository",
             file=self.file,
             line=self.line,
             category=self.category,
-            path_anchor=self.entrypoint or f"{self.file}:{self.line}",
+            entrypoint=self.entrypoint,
             anchor=(anchor.file, anchor.line, anchor.side) if anchor is not None else None,
             root_cause=self.title,
             source_operation_id=self.source_operation_id,
-        )
-
-    @property
-    def fingerprint(self) -> str:
-        """Return the identity of this problem across runs, which wording changes never move."""
-        anchor = self.change_anchor
-        return location_fingerprint(
-            file=self.file,
-            line=self.line,
-            category=self.category,
-            anchor=(anchor.file, anchor.line, anchor.side) if anchor is not None else None,
         )
 
     def reply_record(self) -> dict[str, object]:
@@ -85,13 +83,11 @@ class Finding:
             "evidence_refs": list(self.evidence_refs),
         }
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         """Return the complete form a unit findings record stores."""
         data = asdict(self)
         data["evidence_refs"] = list(self.evidence_refs)
-        data["cited_spans"] = [
-            {"file": span.file, "start_line": span.start_line, "end_line": span.end_line} for span in self.cited_spans
-        ]
+        data["cited_spans"] = [span.to_dict() for span in self.cited_spans]
         return data
 
     @classmethod
@@ -104,30 +100,28 @@ class Finding:
         if not all(isinstance(value[name], str) for name in text) or value["severity"] not in SEVERITIES:
             raise ValueError("finding text fields are invalid")
         line = value["line"]
-        if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+        if not is_line(line):
             raise ValueError("finding line must be a positive integer")
         refs = value["evidence_refs"]
         if not isinstance(refs, list) or not all(isinstance(item, str) for item in refs):
             raise ValueError("finding evidence_refs must be a list of strings")
         spans = value["cited_spans"]
-        if not isinstance(spans, list) or not all(
-            isinstance(span, dict) and set(span) == {"file", "start_line", "end_line"} for span in spans
-        ):
-            raise ValueError("finding cited spans are invalid")
-        anchor = value["change_anchor"]
-        if anchor is not None:
-            if not isinstance(anchor, dict) or set(anchor) != {"file", "line", "side"}:
-                raise ValueError("finding change anchor is invalid")
-            anchor = ChangeAnchor(file=anchor["file"], line=anchor["line"], side=anchor["side"])
+        if not isinstance(spans, list):
+            raise ValueError("finding cited spans must be a list")
+        try:
+            anchor = ChangeAnchor.from_dict(value["change_anchor"]) if value["change_anchor"] is not None else None
+            cited_spans = tuple(SourceSpan.from_dict(span) for span in spans)
+        except ValueError as exc:
+            raise ValueError(f"finding {exc}") from exc
         return cls(
             **{name: value[name] for name in text},
             line=line,
             change_anchor=anchor,
             evidence_refs=tuple(refs),
-            cited_spans=tuple(SourceSpan(**span) for span in spans),
+            cited_spans=cited_spans,
         )
 
 
 def report_order(finding: Finding) -> tuple[int, str, int, str]:
     """Order findings by severity, then file, line, and candidate id, as every review output lists them."""
-    return index(finding.severity), finding.file, finding.line, finding.candidate_id
+    return severity_rank(finding.severity), finding.file, finding.line, finding.candidate_id

@@ -72,7 +72,7 @@ def route_call(
 
 
 def navigator_from_definitions(
-    root: Path, ranges: dict[str, dict[str, list[tuple[int, int]]]], **values: object
+    root: Path, ranges: dict[str, dict[str, list[tuple[int, int]]]]
 ) -> SourceNavigator | None:
     """Build a navigator over definitions given as character ranges per file and name of real source files."""
     definitions = []
@@ -81,8 +81,16 @@ def navigator_from_definitions(
         for name, spans in names.items():
             definitions.extend(definition(path, name, start, end, source=source) for start, end in spans)
     return SourceNavigator.from_facts(
-        root, relationship_evidence=RelationshipEvidenceBundle(definitions=tuple(definitions)), **values
+        root, relationship_evidence=RelationshipEvidenceBundle(definitions=tuple(definitions))
     )
+
+
+def single_definition_navigator(root: Path, file: str, name: str, source: str) -> SourceNavigator:
+    """Write one source file and navigate it through a single definition that spans the whole file."""
+    (root / file).write_text(source, encoding="utf-8")
+    navigator = navigator_from_definitions(root, {file: {name: [(0, len(source))]}})
+    assert navigator is not None
+    return navigator
 
 
 def shared_grounding(
@@ -103,10 +111,10 @@ def shared_grounding(
     )
 
 
-def prepared_units(units, root: Path, *, facts: Facts | None = None) -> PreparedReview:
+def prepared_units(units, root: Path) -> PreparedReview:
     """Wrap already grounded units as review work over an empty manifest of one source root."""
     return PreparedReview(
-        shared=shared_grounding(root, facts=facts, snapshot=SourceSnapshot.capture(root, ())),
+        shared=shared_grounding(root, snapshot=SourceSnapshot.capture(root, ())),
         units=tuple(units),
     )
 

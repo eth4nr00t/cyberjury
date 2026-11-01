@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from cyberjury.review.target import (
@@ -12,25 +10,13 @@ from cyberjury.review.target import (
     resolve_diff_target,
     resolve_repository_target,
 )
-from tests.support import git
-
-
-def _repository(root: Path) -> tuple[Path, str, str]:
-    root.mkdir()
-    git(root, "init", "--quiet")
-    (root / "app.py").write_text("base\n", encoding="utf-8")
-    git(root, "add", "app.py")
-    git(root, "commit", "--quiet", "-m", "base")
-    base = git(root, "rev-parse", "HEAD")
-    (root / "app.py").write_text("head\n", encoding="utf-8")
-    git(root, "commit", "--quiet", "-am", "head")
-    head = git(root, "rev-parse", "HEAD")
-    return root, base, head
+from tests.support import git, two_commits
 
 
 def test_two_dot_target_materializes_resolved_head(tmp_path):
     """A base..head range patches from base, and the materialized root holds app.py as head without .git."""
-    repository, base, head = _repository(tmp_path / "repo")
+    repository = tmp_path / "repo"
+    base, head = two_commits(repository)
 
     target = resolve_diff_target(repository, f"{base}..{head}")
     assert target.git is not None
@@ -79,7 +65,8 @@ def test_three_dot_target_keeps_left_endpoint_and_unique_merge_base(tmp_path):
 
 def test_resolved_target_is_immune_to_later_symbolic_ref_movement(tmp_path):
     """A base..HEAD target keeps the original head commit after a later commit moves HEAD."""
-    repository, base, head = _repository(tmp_path / "repo")
+    repository = tmp_path / "repo"
+    base, head = two_commits(repository)
     target = resolve_diff_target(repository, f"{base}..HEAD")
     (repository / "app.py").write_text("later\n", encoding="utf-8")
     git(repository, "commit", "--quiet", "-am", "later")
@@ -95,7 +82,8 @@ def test_resolved_target_is_immune_to_later_symbolic_ref_movement(tmp_path):
 
 def test_diff_target_uses_git_top_level_for_subdirectory_input(tmp_path):
     """Resolving from the src subdirectory reports the repository top level as repository_root."""
-    repository, base, head = _repository(tmp_path / "repo")
+    repository = tmp_path / "repo"
+    base, head = two_commits(repository)
     subdirectory = repository / "src"
     subdirectory.mkdir()
 
@@ -110,7 +98,8 @@ def test_diff_target_uses_git_top_level_for_subdirectory_input(tmp_path):
 )
 def test_diff_target_rejects_a_range_that_is_not_two_revisions(tmp_path, git_range):
     """HEAD, ..HEAD, HEAD.., HEAD..HEAD..HEAD, and HEAD HEAD all raise TargetResolutionError."""
-    repository, _base, _head = _repository(tmp_path / "repo")
+    repository = tmp_path / "repo"
+    two_commits(repository)
 
     with pytest.raises(TargetResolutionError):
         resolve_diff_target(repository, git_range)
@@ -118,7 +107,8 @@ def test_diff_target_rejects_a_range_that_is_not_two_revisions(tmp_path, git_ran
 
 def test_option_like_git_range_cannot_write_an_output_file(tmp_path):
     """A --output=<path> range is rejected as a git option and no patch file is created."""
-    repository, _base, _head = _repository(tmp_path / "repo")
+    repository = tmp_path / "repo"
+    two_commits(repository)
     unexpected = tmp_path / "unexpected.patch"
 
     with pytest.raises(TargetResolutionError, match="git option"):

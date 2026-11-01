@@ -1,4 +1,4 @@
-"""The language-independent source map and bounded repository units."""
+"""Bounded repository review units over source windows, bound to the definitions they contain."""
 
 from __future__ import annotations
 

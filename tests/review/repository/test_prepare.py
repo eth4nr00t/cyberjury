@@ -31,7 +31,7 @@ def _target(tmp_path):
     return d
 
 
-def test_prepare_assigns_downstream_logic_to_review_units(tmp_path):
+def test_prepare_plans_source_files_and_leaves_out_test_directories(tmp_path):
     """The file app/managers/auth_manager.py gets its own unit while files under app/tests get none."""
     d = tmp_path / "dj"
     (d / "app" / "managers").mkdir(parents=True)

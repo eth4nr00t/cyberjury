@@ -8,7 +8,7 @@
   "required": ["id", "repository", "cases"],
   "properties": {
     "id": {
-      "description": "The project directory name, which equals the repository name at the end of repository.url when a url is given.",
+      "description": "The project directory name. When a url is given, it equals the repository name at the end of repository.url, lowercased, without a .git suffix, and with each run of . and _ replaced by -.",
       "$ref": "#/$defs/slug"
     },
     "repository": {"$ref": "#/$defs/repository"},

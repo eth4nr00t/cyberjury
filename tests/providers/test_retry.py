@@ -24,15 +24,16 @@ def _retry(inner, *, max_attempts=3, hard_timeout=10.0, **values):
     return RetryProvider(inner, max_attempts=max_attempts, hard_timeout=hard_timeout, **values)
 
 
-class _Flaky(Provider):
-    def __init__(self, fail_times):
+class _FailsThenReplies(Provider):
+    def __init__(self, fail_times, exc):
         self._fail_times = fail_times
+        self._exc = exc
         self.calls = 0
 
     def complete(self, **kwargs):
         self.calls += 1
         if self.calls <= self._fail_times:
-            raise RuntimeError("transient")
+            raise self._exc
         return CompletionResult(text=_OK)
 
 
@@ -43,7 +44,7 @@ def _call(provider):
 def test_retries_then_succeeds():
     """Two transient failures under max_attempts=3 return the reply on attempt 3 after sleeping 1.0 then 2.0."""
     slept = []
-    inner = _Flaky(fail_times=2)
+    inner = _FailsThenReplies(fail_times=2, exc=RuntimeError("transient"))
     provider = _retry(inner, max_attempts=3, sleep=slept.append)
     result = _call(provider)
     assert result.text == _OK
@@ -54,7 +55,7 @@ def test_retries_then_succeeds():
 
 def test_reraises_after_exhausting_attempts():
     """Five failures with max_attempts=3 re-raise the RuntimeError tagged with cyberjury_attempts=3."""
-    inner = _Flaky(fail_times=5)
+    inner = _FailsThenReplies(fail_times=5, exc=RuntimeError("transient"))
     provider = _retry(inner, max_attempts=3, sleep=lambda _: None)
     with pytest.raises(RuntimeError, match="transient") as caught:
         _call(provider)
@@ -135,19 +136,6 @@ def test_returns_the_last_incomplete_response_for_fail_loud_downstream_validatio
     assert result.usage == Usage(input_tokens=21, output_tokens=5)
 
 
-class _RateLimited(Provider):
-    def __init__(self, fail_times, exc):
-        self._fail_times = fail_times
-        self._exc = exc
-        self.calls = 0
-
-    def complete(self, **kwargs):
-        self.calls += 1
-        if self.calls <= self._fail_times:
-            raise self._exc
-        return CompletionResult(text=_OK)
-
-
 def _rate_limit_exc():
     exc = RuntimeError("429 too many requests")
     exc.status_code = 429
@@ -157,7 +145,7 @@ def _rate_limit_exc():
 def test_rate_limit_backs_off_exponentially_with_jitter():
     """Three 429 errors with jitter at its upper bound sleep 1.0, 2.0, then 4.0 seconds."""
     slept = []
-    inner = _RateLimited(fail_times=3, exc=_rate_limit_exc())
+    inner = _FailsThenReplies(fail_times=3, exc=_rate_limit_exc())
     provider = _retry(inner, max_attempts=4, sleep=slept.append, rand=lambda _lo, hi: hi)
     assert _call(provider).text == _OK
     assert slept == [1.0, 2.0, 4.0]
@@ -172,7 +160,7 @@ def test_rate_limit_honors_retry_after_header():
     exc = RuntimeError("rate limit")
     exc.response = _Resp()
     slept = []
-    inner = _RateLimited(fail_times=1, exc=exc)
+    inner = _FailsThenReplies(fail_times=1, exc=exc)
     provider = _retry(inner, max_attempts=3, sleep=slept.append, rand=lambda _lo, hi: hi)
     assert _call(provider).text == _OK
     assert slept == [5.0]
@@ -187,7 +175,7 @@ def test_rate_limit_caps_at_max_delay():
     exc = RuntimeError("rate limit")
     exc.response = _Resp()
     slept = []
-    inner = _RateLimited(fail_times=1, exc=exc)
+    inner = _FailsThenReplies(fail_times=1, exc=exc)
     provider = _retry(inner, max_attempts=3, sleep=slept.append)
     assert _call(provider).text == _OK
     assert slept == [60.0]
@@ -209,7 +197,7 @@ class _RateLimitError(Exception):
 def test_rate_limits_are_recognized_by_class_name_and_message(exc, expected):
     """A RateLimitError class or a 429 or rate limit message takes jittered backoff, and a reset takes 1.0 second."""
     slept = []
-    inner = _RateLimited(fail_times=1, exc=exc)
+    inner = _FailsThenReplies(fail_times=1, exc=exc)
     provider = _retry(inner, max_attempts=2, sleep=slept.append, rand=lambda lo, _hi: lo)
     assert _call(provider).text == _OK
     assert slept == expected
@@ -221,7 +209,7 @@ def test_retry_after_attribute_sets_the_delay_unless_it_is_not_a_number(raw, exp
     exc = RuntimeError("transient")
     exc.retry_after = raw
     slept = []
-    inner = _RateLimited(fail_times=1, exc=exc)
+    inner = _FailsThenReplies(fail_times=1, exc=exc)
     provider = _retry(inner, max_attempts=2, sleep=slept.append)
     assert _call(provider).text == _OK
     assert slept == expected
@@ -232,7 +220,7 @@ def test_a_non_rate_limit_error_honors_its_structured_retry_delay():
     exc = RuntimeError("502 bad gateway")
     exc.body = {"retry_after": 7}
     slept = []
-    inner = _RateLimited(fail_times=1, exc=exc)
+    inner = _FailsThenReplies(fail_times=1, exc=exc)
     provider = _retry(inner, max_attempts=2, sleep=slept.append)
 
     assert _call(provider).text == _OK
@@ -293,7 +281,7 @@ def test_a_rejected_key_is_not_retried():
     exc = RuntimeError("invalid x-api-key")
     exc.status_code = 401
     slept = []
-    inner = _RateLimited(fail_times=5, exc=exc)
+    inner = _FailsThenReplies(fail_times=5, exc=exc)
 
     with pytest.raises(ProviderAccessError, match="invalid x-api-key"):
         _call(_retry(inner, max_attempts=3, sleep=slept.append))

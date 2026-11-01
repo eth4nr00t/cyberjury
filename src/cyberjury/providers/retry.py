@@ -1,4 +1,4 @@
-"""A provider wrapper that retries `complete` on transient failure."""
+"""A provider wrapper that retries `complete` on every failure except an access rejection."""
 
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ def _retry_after(exc: BaseException) -> float | None:
 
 
 class RetryProvider(Provider):
-    """Provider wrapper that retries transient backend failures."""
+    """Provider wrapper that retries failures other than an access rejection, and also blank or unparsable replies."""
 
     def __init__(
         self,

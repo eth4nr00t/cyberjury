@@ -13,8 +13,8 @@ from cyberjury.providers.retry import RetryProvider
 from tests.support import EMPTY_SCHEMA
 
 
-def _make(name: str, *, retries: int = 2):
-    return make_provider(name, api_key="k", base_url=None, retries=retries, timeout=10.0)
+def _make(name: str):
+    return make_provider(name, api_key="k", base_url="https://gateway.example.test", retries=2, timeout=10.0)
 
 
 def test_selects_provider_by_name_behind_a_retry_wrapper():

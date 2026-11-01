@@ -14,7 +14,7 @@ class ProviderAccessError(RuntimeError):
 
 @dataclass(frozen=True, kw_only=True)
 class Usage:
-    """Token counts for one call, normalized so cache changes are measured."""
+    """Token counts for one call, where input_tokens is uncached input and cache reads and writes are separate."""
 
     input_tokens: int = 0
     output_tokens: int = 0

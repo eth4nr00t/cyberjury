@@ -1,11 +1,11 @@
-"""Syntax facts extraction coordinates analysis and graph failures."""
+"""A tree without analyzable source has empty facts, and only review files of grammar languages reach the analyzer."""
 
 from cyberjury.review.facts import Facts
 from cyberjury.review.syntax.facts import analyzable_sources
 from tests.review.syntax.support import syntax_facts
 
 
-def test_an_empty_tree_yields_empty_facts(tmp_path):
+def test_a_tree_without_analyzable_source_yields_empty_facts(tmp_path):
     """A tree holding only notes.md produces facts equal to an empty Facts()."""
     (tmp_path / "notes.md").write_text("no code here\n")
     facts = syntax_facts(tmp_path)

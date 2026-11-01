@@ -45,7 +45,7 @@ def _validate_semantics(benchmark: dict, *, source_root: Path | None) -> None:
         _validate_checks(case)
     case_ids = [str(case["id"]) for case in cases]
     if len(case_ids) != len(set(case_ids)):
-        raise ValueError("benchmark.yaml has duplicate case ids")
+        raise ValueError("benchmark has duplicate case ids")
     if source_root is not None:
         _validate_source_locations(cases, source_root)
 
@@ -88,6 +88,9 @@ def validate_benchmark(path: str | Path, *, source_root: str | Path | None = Non
     benchmark_file = benchmark_path(path)
     benchmark = yaml.safe_load(benchmark_file.read_text(encoding="utf-8"))
     validate_document(benchmark, BENCHMARK_SCHEMA, benchmark_file)
-    _validate_project_id(benchmark, benchmark_file.parent.name)
-    _validate_semantics(benchmark, source_root=Path(source_root) if source_root else None)
+    try:
+        _validate_project_id(benchmark, benchmark_file.parent.name)
+        _validate_semantics(benchmark, source_root=Path(source_root) if source_root else None)
+    except ValueError as exc:
+        raise ValueError(f"{benchmark_file}: {exc}") from exc
     return benchmark

@@ -10,7 +10,7 @@ import pytest
 
 import cyberjury.sources.git as gitmod
 from cyberjury.sources.git import GitSourceError, canonical_patch, materialize_revision, worktree_files
-from tests.support import git
+from tests.support import git, two_commits
 
 
 def _commit_symlink(repo: Path, target: bytes) -> str:
@@ -33,18 +33,6 @@ def _commit_symlink(repo: Path, target: bytes) -> str:
     return git(repo, "rev-parse", "HEAD")
 
 
-def _two_commits(repo: Path) -> tuple[str, str]:
-    repo.mkdir()
-    git(repo, "init", "--quiet")
-    (repo / "app.py").write_text("base\n", encoding="utf-8")
-    git(repo, "add", "app.py")
-    git(repo, "commit", "--quiet", "-m", "base")
-    base = git(repo, "rev-parse", "HEAD")
-    (repo / "app.py").write_text("head\n", encoding="utf-8")
-    git(repo, "commit", "--quiet", "-am", "head")
-    return base, git(repo, "rev-parse", "HEAD")
-
-
 def test_worktree_files_leaves_out_a_checked_out_submodule(tmp_path):
     """A gitlink at lib/dep whose directory is checked out is left out, and app.py is listed."""
     git(tmp_path, "init", "--quiet")
@@ -61,7 +49,7 @@ def test_worktree_files_leaves_out_a_checked_out_submodule(tmp_path):
 def test_operator_git_diff_configuration_does_not_change_the_patch(tmp_path):
     """Setting diff.external, color.ui, and core.abbrev leaves the patch text unchanged."""
     repo = tmp_path / "repo"
-    base, head = _two_commits(repo)
+    base, head = two_commits(repo)
     first = canonical_patch(repo, base, head)
     git(repo, "config", "diff.external", "/bin/false")
     git(repo, "config", "color.ui", "always")
@@ -111,7 +99,7 @@ def test_canonical_patch_keeps_the_default_rename_representation(tmp_path):
 def test_canonical_patch_ignores_a_repository_submodule_diff_setting(tmp_path):
     """With diff.submodule=log in the repository config, the gitlink still appears as a 160000 patch section."""
     repo = tmp_path / "repo"
-    base, _head = _two_commits(repo)
+    base, _head = two_commits(repo)
     git(repo, "update-index", "--add", "--cacheinfo", f"160000,{base},lib/dependency")
     git(repo, "commit", "--quiet", "-m", "gitlink")
     git(repo, "config", "diff.submodule", "log")
@@ -124,7 +112,7 @@ def test_canonical_patch_ignores_a_repository_submodule_diff_setting(tmp_path):
 def test_canonical_patch_fails_loud_above_the_patch_byte_limit(monkeypatch, tmp_path):
     """With the patch byte limit set to 1, canonical_patch raises Git patch exceeds the byte limit."""
     repo = tmp_path / "repo"
-    base, head = _two_commits(repo)
+    base, head = two_commits(repo)
     monkeypatch.setattr(gitmod, "_MAX_PATCH_BYTES", 1)
 
     with pytest.raises(GitSourceError, match="patch exceeds the byte limit"):
@@ -149,7 +137,7 @@ def test_materialization_writes_exact_blobs_without_a_smudge_filter(tmp_path):
 def test_materialization_leaves_out_a_committed_submodule(tmp_path):
     """A head commit holding a gitlink at lib/dependency materializes app.py without lib/dependency."""
     repo = tmp_path / "repo"
-    base, _head = _two_commits(repo)
+    base, _head = two_commits(repo)
     git(repo, "update-index", "--add", "--cacheinfo", f"160000,{base},lib/dependency")
     git(repo, "commit", "--quiet", "-m", "gitlink")
 
@@ -161,7 +149,7 @@ def test_materialization_leaves_out_a_committed_submodule(tmp_path):
 def test_a_materialized_revision_is_removed_on_exit(tmp_path):
     """The materialized root of a revision is deleted once its context exits."""
     repo = tmp_path / "repo"
-    _base, head = _two_commits(repo)
+    _base, head = two_commits(repo)
 
     with materialize_revision(repo, head) as root:
         assert root.is_dir()
@@ -232,7 +220,7 @@ def test_an_oversized_symlink_target_fails_materialization_and_leaves_nothing_be
 def test_materialization_fails_loud_above_the_source_byte_limits(monkeypatch, tmp_path, limit, message):
     """A 5-byte app.py blob over a 1-byte file or tree limit raises GitSourceError naming that limit."""
     repo = tmp_path / "repo"
-    _base, head = _two_commits(repo)
+    _base, head = two_commits(repo)
     monkeypatch.setattr(gitmod, limit, 1)
 
     with pytest.raises(GitSourceError, match=message), materialize_revision(repo, head):

@@ -62,10 +62,8 @@ class HunkLine:
 
 @dataclass(frozen=True, kw_only=True)
 class ParsedHunk:
-    """One hunk and its parsed lines with both side counters."""
+    """One hunk's parsed lines, each with both side counters."""
 
-    old_start: int
-    new_start: int
     lines: tuple[HunkLine, ...]
 
 
@@ -87,14 +85,14 @@ def split_diff_by_file(diff: str) -> list[str]:
 def _parsed_hunks(chunk: str) -> tuple[ParsedHunk, ...]:
     hunks: list[ParsedHunk] = []
     lines: list[HunkLine] | None = None
-    old_start = new_start = old_line = new_line = 0
+    old_line = new_line = 0
     for raw in split_lines(chunk):
         header = HUNK_HEADER.match(raw)
         if header:
             if lines is not None:
-                hunks.append(ParsedHunk(old_start=old_start, new_start=new_start, lines=tuple(lines)))
-            old_start = old_line = int(header.group(1))
-            new_start = new_line = int(header.group(3))
+                hunks.append(ParsedHunk(lines=tuple(lines)))
+            old_line = int(header.group(1))
+            new_line = int(header.group(3))
             lines = []
             continue
         if lines is None:
@@ -110,7 +108,7 @@ def _parsed_hunks(chunk: str) -> tuple[ParsedHunk, ...]:
             old_line += 1
             new_line += 1
     if lines is not None:
-        hunks.append(ParsedHunk(old_start=old_start, new_start=new_start, lines=tuple(lines)))
+        hunks.append(ParsedHunk(lines=tuple(lines)))
     return tuple(hunks)
 
 
@@ -278,11 +276,7 @@ def _split_oversized_file_chunk(chunk: str, max_chars: int) -> list[str]:
 
 
 def _split_hunk(header: str, hunk: ParsedHunk, max_chars: int) -> list[str]:
-    groups: list[tuple[int, int, tuple[HunkLine, ...]]] = []
-    old_line = hunk.old_start
-    new_line = hunk.new_start
-    group_old = old_line
-    group_new = new_line
+    groups: list[tuple[HunkLine, ...]] = []
     current: list[HunkLine] = []
     current_chars = 0
     header_headroom = len("@@ -0000000000,0000000000 +0000000000,0000000000 @@\n")
@@ -290,20 +284,14 @@ def _split_hunk(header: str, hunk: ParsedHunk, max_chars: int) -> list[str]:
     for line in hunk.lines:
         rendered_chars = len(line.text) + 2
         if current and current_chars + rendered_chars > available:
-            groups.append((group_old, group_new, tuple(current)))
+            groups.append(tuple(current))
             current = []
             current_chars = 0
-            group_old = old_line
-            group_new = new_line
         current.append(line)
         current_chars += rendered_chars
-        if line.kind != "add":
-            old_line += 1
-        if line.kind != "delete":
-            new_line += 1
     if current:
-        groups.append((group_old, group_new, tuple(current)))
-    return [_render_hunk(old_start, new_start, lines) for old_start, new_start, lines in groups]
+        groups.append(tuple(current))
+    return [_render_hunk(lines[0].old_line, lines[0].new_line, lines) for lines in groups]
 
 
 def _render_hunk(old_start: int, new_start: int, lines: tuple[HunkLine, ...]) -> str:
@@ -360,12 +348,12 @@ def diff_line_ranges(diff: str) -> DiffLineRanges:
         new_path = _side_path(chunk, "+++") or fallback
         for hunk in _parsed_hunks(chunk):
             for line in hunk.lines:
-                if line.kind == "add":
-                    new.setdefault(new_path, []).append((line.new_line, line.new_line))
                 if line.kind == "delete":
                     old.setdefault(old_path, []).append((line.old_line, line.old_line))
-                else:
-                    current.setdefault(new_path, []).append((line.new_line, line.new_line))
+                    continue
+                current.setdefault(new_path, []).append((line.new_line, line.new_line))
+                if line.kind == "add":
+                    new.setdefault(new_path, []).append((line.new_line, line.new_line))
     return DiffLineRanges(
         current={path: tuple(merge_ranges(ranges)) for path, ranges in current.items()},
         old={path: tuple(merge_ranges(ranges)) for path, ranges in old.items()},

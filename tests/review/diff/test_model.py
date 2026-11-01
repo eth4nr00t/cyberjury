@@ -2,6 +2,7 @@
 
 import pytest
 
+from cyberjury.canonical import text_sha256
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.detection import detection_for, load_detection
 from cyberjury.review.diff.model import (
@@ -89,7 +90,7 @@ def test_diff_unit_plan_record_exposes_patch_ownership():
 
     assert record.kind == "diff"
     assert record.owned_paths == ("a.py",)
-    assert record.patch_sha256 is not None
+    assert record.patch_sha256 == text_sha256(FILE_A_DIFF)
 
 
 _SRC = "diff --git a/app.py b/app.py\n@@ -0,0 +1 @@\n+cursor.execute('SELECT * FROM u WHERE n=' + name)\n"

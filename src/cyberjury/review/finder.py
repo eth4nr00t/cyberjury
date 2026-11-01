@@ -70,18 +70,27 @@ def finding_from_item(item: Mapping[str, object]) -> Finding:
     )
 
 
-def findings_from_reply(reply: RoleReply) -> list[Finding]:
-    """Map schema-valid findings and request a correction for values the schema cannot reject."""
+def findings_from_reply(
+    reply: RoleReply, target_correction: Callable[[Mapping[str, object], int], str] | None = None
+) -> list[Finding]:
+    """Map schema-valid findings and request a correction for values the schema or the target cannot accept."""
     findings: list[Finding] = []
+    accepted: list[Finding] = []
     corrections: list[str] = []
     for index, item in enumerate(reply["findings"]):
         violations = finding_violations(item, index)
         if violations:
             corrections.extend(violations)
+            continue
+        finding = finding_from_item(item)
+        findings.append(finding)
+        correction = target_correction(item, index) if target_correction is not None else ""
+        if correction:
+            corrections.append(correction)
         else:
-            findings.append(finding_from_item(item))
+            accepted.append(finding)
     if corrections:
-        raise CorrectableRoleResponseError(" ".join(corrections), tuple(findings))
+        raise CorrectableRoleResponseError(" ".join(corrections), tuple(accepted), tuple(findings))
     return findings
 
 
@@ -190,13 +199,13 @@ class UnitFinder[U: ReviewUnit]:
             (finding, self._target.locate(unit, finding, evidence, unit.grounding.source_spans))
             for finding in cycle.findings
         ]
-        valid = [finding for _finding, finding in located if finding is not None]
+        valid = [placed for _original, placed in located if placed is not None]
         if len(valid) == len(cycle.findings):
             return cycle if valid == cycle.findings else replace(cycle, findings=valid)
         return replace(
             cycle,
             findings=valid,
-            incomplete=[*cycle.incomplete, *(finding for finding, kept in located if kept is None)],
+            incomplete=[*cycle.incomplete, *(original for original, placed in located if placed is None)],
             failure_reason=". ".join(part for part in (cycle.failure_reason, self._target.location_failure) if part),
         )
 

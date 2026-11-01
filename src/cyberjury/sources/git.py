@@ -16,6 +16,7 @@ from cyberjury.sources.paths import (
     MAX_SOURCE_TREE_BYTES,
     READ_CHUNK_BYTES,
     SourceSnapshotError,
+    contained_target,
     portable_paths,
     safe_link_target,
 )
@@ -59,7 +60,7 @@ def _git(repository: str | Path, *arguments: str) -> str:
     try:
         return output.decode("utf-8")
     except UnicodeError as exc:
-        raise GitSourceError(f"Git source acquisition failed: {exc}") from exc
+        raise GitSourceError("Git output is not UTF-8") from exc
 
 
 def _git_limited_bytes(
@@ -310,9 +311,5 @@ def _drop_uncontained_symlinks(source_root: Path, links: Iterable[str]) -> None:
     root = source_root.resolve()
     for relative in links:
         path = source_root / relative
-        if not path.is_symlink():
-            continue
-        try:
-            path.resolve(strict=True).relative_to(root)
-        except (OSError, ValueError):
+        if path.is_symlink() and contained_target(root, path) is None:
             path.unlink()

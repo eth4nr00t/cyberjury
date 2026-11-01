@@ -42,7 +42,7 @@ def _result(packets, verdicts):
                     "check_ids": ["create-missing-owner"] if verdicts.get(report["title"]) == "supported" else [],
                     "evidence": [{"file": "views.py", "line": 2}],
                     "reason": "The view saves without an ownership check at views.py:2.",
-                    "proof_gap": None,
+                    "proof_gap": "",
                 }
                 for report in entry["reports"]
             ],
@@ -55,7 +55,7 @@ def _result(packets, verdicts):
 
 
 def test_packets_hide_report_provenance(tmp_path, cases, runs_dirs):
-    """Two runs give reports labelled by run A/B that keep the claim and drop ids, fingerprints, refs, and issues."""
+    """Two runs give reports labelled by run A/B that keep the claim and drop ids, refs, and issues."""
     out = tmp_path / "adjudication"
 
     build_packets(cases, list(runs_dirs), out, groups=1)
@@ -165,14 +165,12 @@ def test_a_duplicate_of_a_duplicate_resolves_to_the_first_canonical(tmp_path, ca
     out = tmp_path / "adjudication"
     build_packets(cases, [runs], out, groups=1)
     result = _result(out, {f"Claim {A}": "supported"})
-    by_title = {
-        report["title"]: report["label"] for report in json.loads((out / "packet-1.json").read_text())[0]["reports"]
-    }
+    by_candidate = _labels_by_candidate(out)
     for record in result[0]["records"]:
-        if record["label"] == by_title[f"Claim {B}"]:
-            record.update(verdict="duplicate", canonical=by_title[f"Claim {A}"])
-        if record["label"] == by_title[f"Claim {C}"]:
-            record.update(verdict="duplicate", canonical=by_title[f"Claim {B}"])
+        if record["label"] == by_candidate[B]:
+            record.update(verdict="duplicate", canonical=by_candidate[A])
+        if record["label"] == by_candidate[C]:
+            record.update(verdict="duplicate", canonical=by_candidate[B])
     (out / "result-1.json").write_text(json.dumps(result), encoding="utf-8")
 
     assert write_ledgers(cases, out) == (1, [])

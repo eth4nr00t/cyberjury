@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from cyberjury.providers.base import ResponseSchema, Usage
-from cyberjury.providers.openai import OpenAIProvider, _responses_usage
+from cyberjury.providers.openai import OpenAIProvider, _usage
 
 _SCHEMA = ResponseSchema(
     name="review_reply",
@@ -20,17 +20,14 @@ _SCHEMA = ResponseSchema(
 
 
 class _FakeResponsesClient:
-    def __init__(self, output_text="{}", status="completed", error=None):
+    def __init__(self, output_text="{}", status="completed"):
         self.kwargs = {}
         self._out = output_text
         self._status = status
-        self._error = error
         self.responses = SimpleNamespace(create=self._create)
 
     def _create(self, **kwargs):
         self.kwargs = kwargs
-        if self._error is not None:
-            raise self._error
         return SimpleNamespace(output_text=self._out, status=self._status)
 
 
@@ -52,10 +49,10 @@ def _sent(content: str, **kw) -> dict:
 
 
 @pytest.mark.parametrize(
-    ("base_url", "expected"),
-    [("https://gateway.example.test", "https://gateway.example.test"), (None, "https://api.openai.com/v1")],
+    ("endpoint", "expected"),
+    [({"base_url": "https://gateway.example.test"}, "https://gateway.example.test"), ({}, "https://api.openai.com/v1")],
 )
-def test_the_client_gets_the_key_and_the_configured_or_official_endpoint(monkeypatch, base_url, expected):
+def test_the_client_gets_the_key_and_the_configured_or_official_endpoint(monkeypatch, endpoint, expected):
     """The SDK gets the key, the gateway or else the official OpenAI API, and max_retries=0."""
     captured = {}
 
@@ -65,22 +62,22 @@ def test_the_client_gets_the_key_and_the_configured_or_official_endpoint(monkeyp
 
     monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=_OpenAI))
 
-    OpenAIProvider(api_key="k", base_url=base_url)._get_client()
+    OpenAIProvider(api_key="k", **endpoint)._get_client()
 
     assert captured == {"api_key": "k", "base_url": expected, "max_retries": 0}
 
 
-def test_responses_usage_reads_the_cached_tokens_detail():
+def test_usage_reads_the_cached_tokens_detail():
     """Of 2700 input tokens with 2600 cached, 100 count as input and 2600 as cache reads."""
     response = SimpleNamespace(
         usage=SimpleNamespace(
             input_tokens=2700, output_tokens=40, input_tokens_details=SimpleNamespace(cached_tokens=2600)
         )
     )
-    assert _responses_usage(response) == Usage(input_tokens=100, output_tokens=40, cache_read_tokens=2600)
+    assert _usage(response) == Usage(input_tokens=100, output_tokens=40, cache_read_tokens=2600)
 
 
-def test_responses_usage_separates_cache_writes_from_uncached_input():
+def test_usage_separates_cache_writes_from_uncached_input():
     """Of 2700 input tokens, 500 cached reads and 2000 cache writes leave 200 uncached input."""
     response = SimpleNamespace(
         usage=SimpleNamespace(
@@ -89,7 +86,7 @@ def test_responses_usage_separates_cache_writes_from_uncached_input():
             input_tokens_details=SimpleNamespace(cached_tokens=500, cache_write_tokens=2000),
         )
     )
-    assert _responses_usage(response) == Usage(
+    assert _usage(response) == Usage(
         input_tokens=200,
         output_tokens=40,
         cache_read_tokens=500,
@@ -97,9 +94,9 @@ def test_responses_usage_separates_cache_writes_from_uncached_input():
     )
 
 
-def test_usage_defaults_to_zero_when_unreported():
+def test_unreported_usage_is_zero():
     """A response object with no usage attribute yields an all-zero Usage."""
-    assert _responses_usage(SimpleNamespace(model="m")) == Usage()
+    assert _usage(SimpleNamespace(model="m")) == Usage()
 
 
 def test_a_cached_prefix_becomes_a_stable_routing_key():
@@ -123,13 +120,13 @@ def test_a_repeated_system_prompt_alone_gets_a_routing_key():
 
 
 def test_responses_maps_system_to_instructions_and_returns_output_text():
-    """System goes to instructions, messages to input, output_text is returned, and no temperature is sent."""
+    """System goes to instructions, messages to input, output_text returns, max_tokens 8 passes, and no temperature."""
     client = _FakeResponsesClient(output_text='{"holds": true}')
     result = _complete(client, "audit this", system="review carefully")
     assert result.text == '{"holds": true}'
     assert client.kwargs["instructions"] == "review carefully"
     assert client.kwargs["input"] == [{"role": "user", "content": "audit this"}]
-    assert client.kwargs["max_output_tokens"] >= 8000
+    assert client.kwargs["max_output_tokens"] == 8
     assert "temperature" not in client.kwargs
 
 

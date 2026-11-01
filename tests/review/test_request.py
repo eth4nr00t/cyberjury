@@ -14,18 +14,14 @@ from cyberjury.review.request import (
 )
 
 
-def _seat(provider: str = "openai", model: str = "model") -> ProviderSeatRecord:
-    endpoint = endpoint_identity(None)
-    return ProviderSeatRecord(
-        seat_id=seat_identity(provider, model, endpoint),
-        provider=provider,
-        model=model,
+def _request() -> ReviewAttemptRequest:
+    endpoint = endpoint_identity("https://api.openai.com/v1")
+    seat = ProviderSeatRecord(
+        seat_id=seat_identity("openai", "model", endpoint),
+        provider="openai",
+        model="model",
         endpoint_identity=endpoint,
     )
-
-
-def _request() -> ReviewAttemptRequest:
-    seat = _seat()
     return ReviewAttemptRequest(
         engine_version="test",
         concurrency=ConcurrencyRecord(review=8),
@@ -60,7 +56,7 @@ def test_attempt_request_hash_changes_only_with_effective_behavior():
 
 
 def test_provider_endpoint_identity_names_one_endpoint_without_persisting_it():
-    """A URL with api_key=secret hashes to a sha256: id with no host or secret, and None and empty give default."""
+    """A URL with api_key=secret hashes to a sha256: id with no host or secret, and another URL hashes differently."""
     secret_url = "https://example.test/v1?api_key=secret"
     identity = endpoint_identity(secret_url)
 
@@ -69,7 +65,6 @@ def test_provider_endpoint_identity_names_one_endpoint_without_persisting_it():
     assert "example.test" not in identity
     assert endpoint_identity(secret_url) == identity
     assert endpoint_identity("https://other.test/v1") != identity
-    assert endpoint_identity(None) == endpoint_identity("") == "default"
 
 
 def test_wire_request_contains_no_credential_fields():

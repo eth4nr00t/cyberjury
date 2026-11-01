@@ -30,7 +30,7 @@ def load_languages() -> dict[str, Language]:
     """Load every language file, resolving each `inherits` chain of syntax queries."""
     raw = {path.stem: yaml.safe_load(path.read_text(encoding="utf-8")) for path in LANGUAGE_FILES}
     for name, config in raw.items():
-        unknown = sorted(set(config) - _FIELDS) or sorted(set(config.get("files", {})) - _FILE_CONVENTIONS)
+        unknown = sorted(set(config) - _FIELDS) or sorted(set(config.get("files") or {}) - _FILE_CONVENTIONS)
         if unknown:
             raise ValueError(f"language {name} contains unknown fields: {', '.join(unknown)}")
 

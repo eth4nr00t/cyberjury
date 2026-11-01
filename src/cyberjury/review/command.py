@@ -48,7 +48,13 @@ from cyberjury.review.target import (
 from cyberjury.sources.git import GitSourceError
 from cyberjury.sources.paths import SourceSnapshotError
 from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
-from cyberjury.workspace import SessionBusyError, SessionConflictError, WorkspaceCorruptionError, new_attempt_id
+from cyberjury.workspace import (
+    SessionBusyError,
+    SessionConflictError,
+    WorkspaceCorruptionError,
+    WorkspacePathError,
+    new_attempt_id,
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -86,6 +92,7 @@ def classify_error(exc: BaseException) -> RecordError:
             ProviderAccessError,
             ReviewSettingError,
             WorkspaceCorruptionError,
+            WorkspacePathError,
             SessionConflictError,
         ),
     ):

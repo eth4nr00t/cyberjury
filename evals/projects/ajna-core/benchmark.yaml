@@ -52,6 +52,11 @@ cases:
           - {file: src/libraries/external/Auctions.sol, line: 430}
           - {file: src/libraries/external/Auctions.sol, line: 437}
           - {file: src/libraries/external/Auctions.sol, line: 787}
+      - id: lp-transfer-bankrupt-balance-accounting-error
+        root_cause: LenderActions.transferLPs adds the transferred LPs to the receiver's balance (src/libraries/external/LenderActions.sol:545) and raises the receiver's depositTime (src/libraries/external/LenderActions.sol:547) without first clearing a balance recorded before the bucket's bankruptcy, as Buckets.addLenderLPs does (src/libraries/internal/Buckets.sol:82), so LPs wiped by a bankruptcy become redeemable against later depositors' funds
+        locations:
+          - {file: src/libraries/external/LenderActions.sol, line: 545}
+          - {file: src/libraries/external/LenderActions.sol, line: 547}
       - id: lp-transfer-denial-of-service
         root_cause: LenderActions.transferLPs reverts unless the approved amount equals the owner's entire LP balance (src/libraries/external/LenderActions.sol:538), so any change to that balance, including PositionManager holding several positions in one bucket, blocks the transfer that PositionManager.reedemPositions performs (src/PositionManager.sol:303, src/PositionManager.sol:311)
         locations:
@@ -131,11 +136,6 @@ cases:
         locations:
           - {file: src/ERC20Pool.sol, line: 460}
           - {file: src/ERC721Pool.sol, line: 463}
-      - id: transfer-lps-bankrupt-balance-accounting-error
-        root_cause: LenderActions.transferLPs adds the transferred LPs to the receiver's balance (src/libraries/external/LenderActions.sol:545) and raises the receiver's depositTime (src/libraries/external/LenderActions.sol:547) without first clearing a balance recorded before the bucket's bankruptcy, as Buckets.addLenderLPs does (src/libraries/internal/Buckets.sol:82), so LPs wiped by a bankruptcy become redeemable against later depositors' funds
-        locations:
-          - {file: src/libraries/external/LenderActions.sol, line: 545}
-          - {file: src/libraries/external/LenderActions.sol, line: 547}
   - id: diff-36dcaa4
     kind: diff
     base: ae2d12f8833edf76b1a41f95d38b1db804185fa1
@@ -200,6 +200,15 @@ cases:
           - {file: src/libraries/Auctions.sol, line: 377, side: new}
           - {file: src/libraries/Auctions.sol, line: 378, side: new}
           - {file: src/libraries/Auctions.sol, line: 385, side: new}
+      - id: lp-transfer-bankrupt-balance-accounting-error
+        root_cause: Buckets.transferLPs adds the transferred LPs to the receiver's balance and raises the receiver's depositTime (src/libraries/Buckets.sol:187, src/libraries/Buckets.sol:188) without first clearing a balance recorded before the bucket's bankruptcy, as Buckets.addQuoteToken does (src/libraries/Buckets.sol:60), so LPs wiped when Auctions.heal bankrupts the bucket (src/libraries/Auctions.sol:128) become redeemable against later depositors' funds
+        locations:
+          - {file: src/libraries/Buckets.sol, line: 187}
+          - {file: src/libraries/Buckets.sol, line: 188}
+        change_anchors:
+          - {file: src/libraries/Auctions.sol, line: 128, side: new}
+          - {file: src/libraries/Buckets.sol, line: 187, side: new}
+          - {file: src/libraries/Buckets.sol, line: 188, side: new}
       - id: position-bankrupt-lps-accounting-error
         root_cause: PositionManager records each token's LPs in lps (src/base/PositionManager.sol:84) and moveLiquidity moves quote tokens against that record (src/base/PositionManager.sol:113, src/base/PositionManager.sol:124) without checking whether the bucket went bankrupt after memorialization, which the new Auctions.heal can now cause (src/libraries/Auctions.sol:128), so a position whose LPs a bankruptcy wiped moves the LPs that later memorializations placed in PositionManager's shared balance
         locations:
@@ -226,15 +235,6 @@ cases:
         change_anchors:
           - {file: src/base/Pool.sol, line: 375, side: new}
           - {file: src/base/Pool.sol, line: 376, side: new}
-      - id: transfer-lps-bankrupt-balance-accounting-error
-        root_cause: Buckets.transferLPs adds the transferred LPs to the receiver's balance and raises the receiver's depositTime (src/libraries/Buckets.sol:187, src/libraries/Buckets.sol:188) without first clearing a balance recorded before the bucket's bankruptcy, as Buckets.addQuoteToken does (src/libraries/Buckets.sol:60), so LPs wiped when Auctions.heal bankrupts the bucket (src/libraries/Auctions.sol:128) become redeemable against later depositors' funds
-        locations:
-          - {file: src/libraries/Buckets.sol, line: 187}
-          - {file: src/libraries/Buckets.sol, line: 188}
-        change_anchors:
-          - {file: src/libraries/Auctions.sol, line: 128, side: new}
-          - {file: src/libraries/Buckets.sol, line: 187, side: new}
-          - {file: src/libraries/Buckets.sol, line: 188, side: new}
   - id: diff-9bae5e8
     kind: diff
     base: 2ef3ecbb5cf579a5763f344057285e76a29d839d

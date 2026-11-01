@@ -30,6 +30,7 @@ from cyberjury.review.relationships import (
     RelationshipEvidenceBundle,
     SourceReference,
     StructuralRelationshipEvidence,
+    source_identity,
 )
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -94,7 +95,7 @@ class SourceTarget:
         source_kind: Literal["production", "documentation", "dependency"] = "production",
     ) -> SourceTarget:
         """Build an opaque id from one exact repository source range."""
-        identity = f"{file}:{name}:{start}:{end}"
+        identity = source_identity(file, name, start, end)
         return cls(
             id=source_id(identity),
             identity=identity,
@@ -181,7 +182,9 @@ class SourceNavigationSession:
         self._callsites = {callsite.id: callsite for callsite in navigator.relationship_evidence.callsites}
         self._call_candidates = navigator.relationship_evidence.call_candidates
         self._structural_relationships = navigator.relationship_evidence.structural_relationships
-        self._observations_by_callsite = self._group_callsite_observations(navigator.relationship_evidence.observations)
+        self._observations_by_callsite = self._group_callsite_observations(
+            navigator.relationship_evidence.observations, self._callsites.keys()
+        )
         self._discovered_definition_ids: set[str] = set()
         self._executed_query_keys: set[str] = set()
         self._delivered: dict[str, tuple[str, int, int] | None] = {}
@@ -698,11 +701,13 @@ class SourceNavigationSession:
     @staticmethod
     def _group_callsite_observations(
         observations: tuple[AnalysisObservation, ...],
+        callsite_ids: Iterable[str],
     ) -> dict[str, tuple[AnalysisObservation, ...]]:
+        callsites = set(callsite_ids)
         grouped: dict[str, list[AnalysisObservation]] = {}
         for observation in observations:
             for subject in observation.subject_ids:
-                if subject.startswith("call-"):
+                if subject in callsites:
                     grouped.setdefault(subject, []).append(observation)
         return {key: tuple(values) for key, values in grouped.items()}
 
@@ -723,8 +728,7 @@ class SourceNavigationSession:
 
     def _source(self, file: str) -> str:
         if file not in self._sources:
-            text = (self._navigator.root / file).read_bytes().decode("utf-8")
-            self._sources[file] = text.replace("\r\n", "\n").replace("\r", "\n")
+            self._sources[file] = (self._navigator.root / file).read_text(encoding="utf-8")
         return self._sources[file]
 
 

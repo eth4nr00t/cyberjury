@@ -9,15 +9,13 @@ Structural code analysis covers C, C++, Go, Java, JavaScript, Python, Rust, Soli
 
 ## Install
 
-Requires Python 3.12 or newer.
-
 ```bash
 pip install cyberjury
 ```
 
 ## Configure
 
-All settings come from a `.env` file in the working directory. An exported shell value wins over the file. Copy [.env.example](.env.example) to `.env` and fill in what you use. Its endpoint and model are the OpenAI defaults, so change or clear them when you set `CYBERJURY_PROVIDER=anthropic`:
+All settings come from a `.env` file in the working directory, and an exported shell value overrides the file. Copy [.env.example](.env.example) to `.env` and fill in what you use.
 
 | Setting | Meaning |
 | :--- | :--- |

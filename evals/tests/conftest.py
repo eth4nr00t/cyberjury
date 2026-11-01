@@ -64,7 +64,7 @@ def cases(benchmark_project):
 
 
 @pytest.fixture
-def write_attempt(benchmark_project):
+def write_attempt(case):
     """Record an attempt of the diff case with one finding per candidate id, each its own issue unless given."""
 
     def write(
@@ -75,7 +75,6 @@ def write_attempt(benchmark_project):
         complete: bool = True,
         issues: tuple[tuple[str, ...], ...] | None = None,
     ) -> Path:
-        case = find_case(benchmark_project.diff_case, [benchmark_project.benchmark])
         path = attempt_path(runs, case.name, number)
         path.parent.mkdir(parents=True, exist_ok=True)
         groups = issues if issues is not None else tuple((identity,) for identity in candidates)
@@ -88,7 +87,6 @@ def write_attempt(benchmark_project):
             "findings": [
                 {
                     "id": identity,
-                    "fingerprint": f"fingerprint-{identity}",
                     "file": "views.py",
                     "line": 2,
                     "title": f"Claim {identity}",

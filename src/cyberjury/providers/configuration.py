@@ -6,16 +6,8 @@ from dataclasses import dataclass, field
 
 from cyberjury.envfile import env_setting
 from cyberjury.providers.base import REQUEST_TIMEOUT_SECONDS, Provider
-from cyberjury.providers.factory import (
-    DEFAULT_RETRIES,
-    default_base_url_for_provider,
-    default_model_for_provider,
-    make_provider,
-)
+from cyberjury.providers.factory import DEFAULT_PROVIDER, DEFAULT_RETRIES, PROVIDERS, make_provider
 from cyberjury.providers.metering import MeteringProvider, UsageMeter
-
-_PROVIDERS = ("openai", "anthropic")
-_DEFAULT_PROVIDER = "openai"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -24,7 +16,7 @@ class ProviderSeat:
 
     provider: str
     model: str
-    base_url: str | None = None
+    base_url: str
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -43,14 +35,15 @@ class ProviderSettingError(ValueError):
 
 def provider_configuration_from_env() -> ProviderConfiguration:
     """Resolve the model seat from the `CYBERJURY_*` environment, which a working directory `.env` fills."""
-    provider = env_setting("CYBERJURY_PROVIDER") or _DEFAULT_PROVIDER
-    if provider not in _PROVIDERS:
-        raise ProviderSettingError(f"CYBERJURY_PROVIDER is not {' or '.join(_PROVIDERS)}: {provider}")
+    provider = env_setting("CYBERJURY_PROVIDER") or DEFAULT_PROVIDER
+    if provider not in PROVIDERS:
+        raise ProviderSettingError(f"CYBERJURY_PROVIDER is not {' or '.join(PROVIDERS)}: {provider}")
+    defaults = PROVIDERS[provider]
     return ProviderConfiguration(
         seat=ProviderSeat(
             provider=provider,
-            model=env_setting("CYBERJURY_MODEL") or default_model_for_provider(provider),
-            base_url=env_setting("CYBERJURY_BASE_URL") or default_base_url_for_provider(provider),
+            model=env_setting("CYBERJURY_MODEL") or defaults.default_model,
+            base_url=env_setting("CYBERJURY_BASE_URL") or defaults.default_base_url,
         ),
         api_key=env_setting("CYBERJURY_API_KEY"),
         retries=DEFAULT_RETRIES,

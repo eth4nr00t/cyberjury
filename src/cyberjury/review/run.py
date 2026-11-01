@@ -79,7 +79,7 @@ def _unit_item_writer[U: ReviewUnit](
         unit_store.save(
             item, {"schema": _UNIT_FINDINGS_SCHEMA, "findings": [finding.to_dict() for finding in cycle.findings]}
         )
-        recorder.item(item)
+        recorder.emit(item, write=False)
 
     return write
 

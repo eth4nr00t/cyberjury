@@ -16,7 +16,7 @@ from evals.benchmarks.targets import source_root, target_repository
 from evals.benchmarks.validate import validate_document
 
 RUBRIC = Path(__file__).resolve().parent / "adjudication-rubric-v1.md"
-_PROVENANCE = frozenset({"id", "fingerprint", "evidence_refs", "issue_id", "unit_complete"})
+_PROVENANCE = frozenset({"id", "evidence_refs", "issue_id", "unit_complete"})
 _INDEX = ("label", "run", "file", "line", "title")
 
 
@@ -174,7 +174,7 @@ def write_ledgers(
     by_attempt: dict[str, list[str]] = {path: [] for path in mapping["attempts"]}
     for label, where in labels.items():
         by_attempt[where["attempt"]].append(label)
-    attempts = []
+    ledgers = []
     for path, sha256 in mapping["attempts"].items():
         attempt = load_attempt(path)
         if attempt.sha256 != sha256:
@@ -185,14 +185,14 @@ def write_ledgers(
         if digest != mapping["checks_sha256"].get(attempt.case):
             raise ValueError(f"the checks of {attempt.case} changed after these packets were built")
         ledger = _ledger(attempt, cases[attempt.case].target["commit"], by_attempt[path], labels, results)
-        attempts.append(
+        ledgers.append(
             (
                 attempt,
                 ledger | {"round_id": round_id, "rubric_sha256": rubric_sha256, "checks_sha256": digest},
             )
         )
     stale = [
-        attempt.ledger_path for attempt, _ in attempts if _ledger_round(attempt.ledger_path) not in {None, round_id}
+        attempt.ledger_path for attempt, _ in ledgers if _ledger_round(attempt.ledger_path) not in {None, round_id}
     ]
     if stale and not supersede:
         raise ValueError(
@@ -202,10 +202,10 @@ def write_ledgers(
     for path in stale:
         path.unlink()
     written, failures = 0, []
-    for name in sorted({attempt.case for attempt, _ in attempts}):
+    for name in sorted({attempt.case for attempt, _ in ledgers}):
         case = cases[name]
         with source_root(case.target) as root:
-            for attempt, ledger in attempts:
+            for attempt, ledger in ledgers:
                 if attempt.case != name:
                     continue
                 try:
@@ -258,7 +258,7 @@ def _ledger(attempt: Attempt, commit: str, attempt_labels: list[str], labels: di
                 "canonical_id": labels[canonical]["candidate_id"] if canonical is not None else None,
                 "check_ids": result["check_ids"],
                 "reason": result["reason"],
-                "proof_gap": result["proof_gap"] or "",
+                "proof_gap": result["proof_gap"],
                 "evidence": result["evidence"],
             }
         )

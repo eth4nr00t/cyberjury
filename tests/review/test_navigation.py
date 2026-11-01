@@ -20,7 +20,7 @@ from cyberjury.review.relationships import (
     SourceReference,
     StructuralRelationshipEvidence,
 )
-from tests.review.support import navigator_from_definitions
+from tests.review.support import navigator_from_definitions, single_definition_navigator
 from tests.review.syntax.support import syntax_facts
 
 
@@ -29,13 +29,6 @@ def _graph(*, first_end: int, second_end: int) -> dict[str, object]:
         "src/one.py": {"Record": [(0, first_end)]},
         "plugins/two.py": {"Record": [(0, second_end)]},
     }
-
-
-def _record_navigator(tmp_path, source: str) -> SourceNavigator:
-    (tmp_path / "model.py").write_text(source, encoding="utf-8")
-    navigator = navigator_from_definitions(tmp_path, {"model.py": {"Record": [(0, len(source))]}})
-    assert navigator is not None
-    return navigator
 
 
 def test_navigation_contract_states_the_exact_search_semantics():
@@ -51,7 +44,7 @@ def test_navigation_contract_states_the_exact_search_semantics():
 
 
 def test_dependency_text_hits_are_labeled_and_bounded_on_minified_lines(tmp_path):
-    """A hit in a one-line 200,000 character vendor bundle is [dependency], third-party, and read in 24,000 chars."""
+    """A hit in a one-line 200,000 character vendor bundle is a third-party [dependency] read in under 30,000 chars."""
     (tmp_path / "app.py").write_text("def app(): pass\n", encoding="utf-8")
     (tmp_path / "vendor").mkdir()
     bundle = "a" * 100_000 + "innerHTML=cell" + "b" * 100_000
@@ -180,7 +173,7 @@ def test_symbol_search_returns_every_real_candidate_without_evidence(tmp_path):
 def test_unique_symbol_search_delivers_exact_source_in_the_same_exchange(tmp_path):
     """A single Record definition is read inline with one receipt and coverage for model.py:Record."""
     source = "class Record:\n    owner = 'user'\n"
-    navigator = _record_navigator(tmp_path, source)
+    navigator = single_definition_navigator(tmp_path, "model.py", "Record", source)
 
     result = navigator.session().execute(
         [{"kind": "search_symbols", "query": "Record", "page": 0}],
@@ -295,24 +288,9 @@ def test_last_symbol_page_is_not_mistaken_for_a_unique_result(tmp_path):
 
 def test_navigation_cannot_read_a_target_that_was_not_published_on_the_requested_page(tmp_path):
     """A session that saw only page 0 cannot read or expand source and definition ids from page 1."""
-    source = "value = 1\n" * 21
-    (tmp_path / "model.py").write_text(source, encoding="utf-8")
-    definitions = tuple(
-        DefinitionEvidence.create(
-            source=SourceReference.create(
-                path="model.py",
-                start=index * 10,
-                end=index * 10 + 9,
-                content=source[index * 10 : index * 10 + 9],
-            ),
-            kind="function",
-            name="Repeated",
-        )
-        for index in range(21)
-    )
-    navigator = SourceNavigator.from_facts(
-        tmp_path,
-        relationship_evidence=RelationshipEvidenceBundle(definitions=definitions),
+    (tmp_path / "model.py").write_text("value = 1\n" * 21, encoding="utf-8")
+    navigator = navigator_from_definitions(
+        tmp_path, {"model.py": {"Repeated": [(index * 10, index * 10 + 9) for index in range(21)]}}
     )
     assert navigator is not None
     first_page_session = navigator.session()
@@ -389,10 +367,33 @@ def test_navigation_rejects_more_than_eight_queries_per_batch():
         parse_source_queries([{"kind": "search_text", "query": f"q{index}", "page": 0} for index in range(9)])
 
 
+def test_source_queries_are_trimmed_before_they_run():
+    """A search_text query of "  owner  " runs as "owner", and a definition query passes unchanged."""
+    definition_query = {"kind": "search_call_candidates", "definition_id": "def-1", "direction": "both", "page": 0}
+
+    assert parse_source_queries([{"kind": "search_text", "query": "  owner  ", "page": 0}, definition_query]) == [
+        {"kind": "search_text", "query": "owner", "page": 0},
+        definition_query,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("query", "message"),
+    [
+        ({"kind": "search_symbols", "query": "   ", "page": 0}, "query must be a nonempty string"),
+        ({"kind": "search_text", "query": "owner", "page": -1}, "page must be a nonnegative integer"),
+    ],
+)
+def test_source_queries_reject_a_blank_query_or_a_negative_page(query, message):
+    """A whitespace-only query or page -1 raises SourceNavigationError naming the field."""
+    with pytest.raises(SourceNavigationError, match=message):
+        parse_source_queries([query])
+
+
 def test_navigation_rejects_more_than_the_session_query_budget(tmp_path):
     """After eight batches of eight unique queries, a 65th query raises the 64-query budget error."""
     source = "class Record:\n    pass\n"
-    navigator = _record_navigator(tmp_path, source)
+    navigator = single_definition_navigator(tmp_path, "model.py", "Record", source)
     session = navigator.session()
     for batch in range(8):
         session.execute(
@@ -410,7 +411,7 @@ def test_navigation_rejects_more_than_the_session_query_budget(tmp_path):
 def test_navigation_rejects_a_repeated_query_in_one_session(tmp_path):
     """Re-sending the same search_symbols Record query in one session raises a repeat error."""
     source = "class Record:\n    pass\n"
-    navigator = _record_navigator(tmp_path, source)
+    navigator = single_definition_navigator(tmp_path, "model.py", "Record", source)
     session = navigator.session()
     query = [{"kind": "search_symbols", "query": "Record", "page": 0}]
     session.execute(query, target_chars=10_000)
@@ -422,7 +423,7 @@ def test_navigation_rejects_a_repeated_query_in_one_session(tmp_path):
 def test_navigation_rejects_a_duplicate_batch_before_committing_any_query(tmp_path):
     """A batch with the same query twice fails, and the query still runs afterwards in that session."""
     source = "class Record:\n    pass\n"
-    navigator = _record_navigator(tmp_path, source)
+    navigator = single_definition_navigator(tmp_path, "model.py", "Record", source)
     session = navigator.session()
     query = {"kind": "search_symbols", "query": "Record", "page": 0}
 
@@ -462,9 +463,7 @@ def test_reading_requires_a_target_published_by_the_same_session(tmp_path):
     source = "class Record:\n    owner = 'user'\n"
     (tmp_path / "src").mkdir()
     (tmp_path / "src/one.py").write_text(source, encoding="utf-8")
-    graph = _graph(first_end=len(source), second_end=len(source))
-    graph = {"src/one.py": graph["src/one.py"]}
-    navigator = navigator_from_definitions(tmp_path, graph)
+    navigator = navigator_from_definitions(tmp_path, {"src/one.py": {"Record": [(0, len(source))]}})
 
     assert navigator is not None
     session = navigator.session()
@@ -775,7 +774,7 @@ def test_structural_candidate_navigation_pages_expanded_same_name_candidates(tmp
 def test_navigation_transaction_rolls_back_an_oversized_query(tmp_path):
     """A query over a 10-char target inside a transaction is not recorded and can run again."""
     source = "class Record:\n    value = 1\n"
-    navigator = _record_navigator(tmp_path, source)
+    navigator = single_definition_navigator(tmp_path, "model.py", "Record", source)
     session = navigator.session()
     query = {"kind": "search_symbols", "query": "Record", "page": 0}
 

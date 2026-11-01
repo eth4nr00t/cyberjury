@@ -273,19 +273,22 @@ def test_an_interrupted_run_resumes_only_open_units(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "payload",
-    ["{ this is not valid json", "{}", '{"schema": "cyberjury.unit-findings/v0", "findings": []}', None],
+    "corrupt",
+    [
+        pytest.param(lambda _document: "{ this is not valid json", id="invalid-json"),
+        pytest.param(lambda _document: "{}", id="no-schema"),
+        pytest.param(lambda _document: '{"schema": "cyberjury.unit-findings/v0", "findings": []}', id="old-schema"),
+        pytest.param(
+            lambda document: json.dumps(document | {"findings": [{"title": "missing fields"}]}), id="malformed-finding"
+        ),
+    ],
 )
-def test_a_corrupt_unit_payload_on_resume_raises_loud(custody_repository, tmp_path, payload):
+def test_a_corrupt_unit_payload_on_resume_raises_loud(custody_repository, tmp_path, corrupt):
     """Invalid JSON, wrong schema, or malformed findings in a unit payload raise before any provider call."""
     ws = tmp_path / "ws"
     run_repository_review(custody_repository, ws, provider=_wallet_provider())
     path = sorted((ws / "review" / "findings").glob("*.json"))[0]
-    if payload is None:
-        document = json.loads(path.read_text())
-        document["findings"] = [{"title": "missing fields"}]
-        payload = json.dumps(document)
-    path.write_text(payload, encoding="utf-8")
+    path.write_text(corrupt(json.loads(path.read_text())), encoding="utf-8")
     resumed = _wallet_provider()
 
     with pytest.raises(WorkspaceCorruptionError, match=r"corrupt.*--fresh"):

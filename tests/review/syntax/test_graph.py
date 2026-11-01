@@ -43,11 +43,12 @@ def test_relationship_evidence_preserves_calls_but_does_not_assign_targets(tmp_p
         "from service import load\n\ndef route(x):\n    first = load(x)\n    return load(x + 1)\n"
     )
 
-    evidence = syntax_facts(tmp_path).relationships.to_dict()
+    relationships = syntax_facts(tmp_path).relationships
+    evidence = relationships.to_dict()
 
     assert [item["expression"] for item in evidence["callsites"]] == ["load(x)", "load(x + 1)"]
     load = next(item for item in evidence["definitions"] if item["name"] == "load")
-    assert set(syntax_facts(tmp_path).relationships.call_candidates.values()) == {(load["id"],)}
+    assert set(relationships.call_candidates.values()) == {(load["id"],)}
     assert {item["kind"] for item in evidence["observations"] if item["kind"] != "syntax_call"} == {
         "import_declaration"
     }
@@ -61,7 +62,8 @@ def test_import_alias_remains_unresolved_with_its_declaration_clue(tmp_path):
         "from one import load as selected_load\n\ndef route(value):\n    return selected_load(value)\n"
     )
 
-    evidence = syntax_facts(tmp_path).relationships.to_dict()
+    relationships = syntax_facts(tmp_path).relationships
+    evidence = relationships.to_dict()
     callsite = next(item for item in evidence["callsites"] if item["callee_spelling"] == "selected_load")
     declaration = next(
         item
@@ -69,7 +71,7 @@ def test_import_alias_remains_unresolved_with_its_declaration_clue(tmp_path):
         if item["kind"] == "import_declaration" and callsite["id"] in item["subject_ids"]
     )
 
-    assert syntax_facts(tmp_path).relationships.call_candidates[callsite["id"]] == ()
+    assert relationships.call_candidates[callsite["id"]] == ()
     assert declaration["label"] == "selected_load from one"
 
 

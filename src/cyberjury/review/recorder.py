@@ -11,6 +11,7 @@ from typing import TextIO
 
 from cyberjury.providers.metering import UsageMeter, usage_from_calls
 from cyberjury.record import Record, RecordError, error_message, utc_timestamp
+from cyberjury.review.failures import exception_reason
 
 type Classify = Callable[[BaseException], RecordError]
 type Bind = Callable[[object], str]
@@ -34,7 +35,7 @@ def interruption_reason(exc: BaseException | None) -> str:
 
 def internal_error(exc: BaseException) -> RecordError:
     """Classify any exception as an internal error with its redacted message."""
-    return RecordError(code="internal", message=error_message(f"{type(exc).__name__}: {exc}"))
+    return RecordError(code="internal", message=error_message(exception_reason(exc)))
 
 
 def usage_metrics(calls: list[dict[str, object]]) -> dict[str, int]:
@@ -71,7 +72,7 @@ class Measure:
         self._progress(finished, items)
 
     def incomplete(self, message: str) -> None:
-        """Finish the stage incomplete with the reason."""
+        """Mark the stage to end incomplete with this reason as a model error."""
         self.error = RecordError(code="model", message=error_message(message))
 
 
@@ -125,10 +126,6 @@ class Recorder:
         """Return the model usage metrics of the calls made for one review or link item."""
         calls = self.meter.call_snapshot()
         return usage_metrics([call for call in calls if call.get("unit_id") == unit_id])
-
-    def item(self, record: Record) -> None:
-        """Print one item record line that the item store has already written."""
-        self.emit(record, write=False)
 
     @contextmanager
     def stage(self, name: str, *, usage: bool = False) -> Iterator[Measure]:

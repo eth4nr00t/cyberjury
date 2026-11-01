@@ -6,7 +6,6 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
-from cyberjury.review.facts import Facts
 from cyberjury.review.finder import UnitFinder
 from cyberjury.review.repository.context import ground_repository_unit
 from cyberjury.review.repository.finder import REPOSITORY_TARGET
@@ -84,15 +83,15 @@ def unit_provider(reply_for: Callable[[str], UnitReply]) -> MockProvider:
     return MockProvider(responder=respond)
 
 
-def ground(units, *, limitations=(), navigator=None) -> list[RepositoryUnit]:
-    """Ground ungrounded units against one shared context with explicit limitations and navigation."""
-    shared = shared_grounding(Path(units[0].root), facts=Facts(limitations=tuple(limitations)), navigator=navigator)
+def ground(units, *, navigator=None) -> list[RepositoryUnit]:
+    """Ground ungrounded units against one shared context with an optional navigator."""
+    shared = shared_grounding(Path(units[0].root), navigator=navigator)
     return [replace(unit, grounding=ground_repository_unit(unit, shared)) for unit in units]
 
 
-def finder(provider, *, model: str = "mock") -> UnitFinder[RepositoryUnit]:
+def finder(provider) -> UnitFinder[RepositoryUnit]:
     """Return the repository finder bound to one test provider."""
-    return UnitFinder(REPOSITORY_TARGET, provider=provider, model=model)
+    return UnitFinder(REPOSITORY_TARGET, provider=provider, model="mock")
 
 
 class UnitReviewError(RuntimeError):
@@ -114,7 +113,6 @@ def run_repository_review(
     workspace,
     *,
     provider=None,
-    concurrency=1,
     issue_judge=None,
     stages=None,
 ) -> ReviewRun:
@@ -128,7 +126,7 @@ def run_repository_review(
             finder_model="mock",
             issue_judge=issue_judge or StubIssueJudge(lambda _pair: False),
         ),
-        concurrency=concurrency,
+        concurrency=1,
         review=Path(workspace),
         stages=stages,
     )

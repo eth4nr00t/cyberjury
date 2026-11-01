@@ -62,7 +62,6 @@ def findings_artifact(
         findings=tuple(
             {
                 "id": finding.candidate_id,
-                "fingerprint": finding.fingerprint,
                 "title": finding.title,
                 "category": finding.category,
                 "severity": finding.severity,

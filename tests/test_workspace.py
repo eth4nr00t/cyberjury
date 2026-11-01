@@ -13,6 +13,7 @@ from cyberjury.workspace import (
     SessionLocator,
     SessionWorkspace,
     WorkspaceCorruptionError,
+    WorkspacePathError,
     new_attempt_id,
     read_json_object,
 )
@@ -40,7 +41,7 @@ def _simulate_process_exit(attempt: AttemptWorkspace) -> None:
 
 
 def test_session_and_attempt_use_private_json_files_only(tmp_path):
-    """A session holds only session.json, session/intent.json, attempts at 0700, and the attempt files are 0600."""
+    """A 0700 session holds only session.json, session/intent.json, and 0700 attempts, whose files are 0600."""
     session = _session(tmp_path, "a")
     session.write_json_once("session/intent.json", {"schema": "test.review/v1"})
     attempt = _start(session)
@@ -49,6 +50,7 @@ def test_session_and_attempt_use_private_json_files_only(tmp_path):
     assert {path.name for path in session.path.iterdir()} == {"session.json", "session", "attempts"}
     assert {path.name for path in attempt.path.iterdir()} == {"request.json", "record.json"}
     assert stat.S_IMODE(session.path.stat().st_mode) == 0o700
+    assert stat.S_IMODE((session.path / "attempts").stat().st_mode) == 0o700
     assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in attempt.path.iterdir())
     assert attempt.read_record().status == "running"
     attempt.finish(_terminal(attempt))
@@ -158,8 +160,8 @@ def _symlinked_namespace(tmp_path):
 
 @pytest.mark.parametrize("layout", [_symlinked_state_dir, _symlinked_namespace])
 def test_symlinked_state_directories_are_rejected(tmp_path, layout):
-    """A state directory or reviews namespace that is a symlink to another directory raises a symlink ValueError."""
-    with pytest.raises(ValueError, match="symlink"):
+    """A state directory or reviews namespace that is a symlink to another directory raises a symlink path error."""
+    with pytest.raises(WorkspacePathError, match="symlink"):
         SessionWorkspace.open_or_create(layout(tmp_path), session_id="review-20260101-000000-" + "5" * 8)
 
 

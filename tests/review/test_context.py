@@ -92,7 +92,7 @@ def test_evidence_request_ids_collapse_repeated_identical_requests():
     assert evidence_request_ids(["ev-one", "ev-one", "ev-two"]) == ("ev-one", "ev-two")
 
 
-def test_evidence_request_ids_reject_oversized_model_batches():
+def test_evidence_request_ids_reject_oversized_batches_and_malformed_ids():
     """A batch of 65 ids, a 129-character id, and an id containing a newline each raise EvidenceRequestError."""
     with pytest.raises(EvidenceRequestError, match="more than 64 ids"):
         evidence_request_ids([f"ev-{index}" for index in range(65)])

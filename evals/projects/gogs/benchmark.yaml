@@ -19,9 +19,9 @@ cases:
           - {file: internal/database/issue.go, line: 933}
           - {file: internal/route/api/v1/repo/issue.go, line: 43}
       - id: attachment-download-idor
-        root_cause: The /attachments/:uuid handler serves an attachment looked up by UUID (internal/cmd/web.go:309) without resolving the issue or release repository that owns it and checking the requester's read access, so attachments of private repositories are served to anyone holding the UUID
+        root_cause: The /attachments/:uuid handler serves an attachment looked up by UUID (internal/cmd/web.go:307) without resolving the issue or release repository that owns it and checking the requester's read access, so attachments of private repositories are served to anyone holding the UUID
         locations:
-          - {file: internal/cmd/web.go, line: 306}
+          - {file: internal/cmd/web.go, line: 307}
       - id: attachment-upload-denial-of-service
         root_cause: The configured attachment size limit only sets the multipart memory threshold (internal/context/context.go:266) and NewAttachment copies the whole upload to disk with no size limit (internal/database/attachment.go:73), so any signed-in user stores uploads of unbounded size
         locations:
@@ -127,10 +127,6 @@ cases:
           - {file: internal/cmd/web.go, line: 626}
           - {file: internal/context/go_get.go, line: 32}
           - {file: internal/context/go_get.go, line: 34}
-      - id: ipynb-markdown-stored-xss
-        root_cause: The notebook preview script renders markdown cells with marked and inserts the result with jQuery html (templates/repo/view_file.tmpl:68) without sanitizing it or filtering link URL schemes, so markup in a committed .ipynb file runs in the viewer's session
-        locations:
-          - {file: templates/repo/view_file.tmpl, line: 68}
       - id: issue-attachment-idor
         root_cause: newIssue selects attachments by UUID only (internal/database/attachment.go:121) and reassigns them to the new issue (internal/database/issue.go:745) without checking ownership or an existing association, so creating an issue anywhere moves attachments off issues of other repositories
         locations:
@@ -196,6 +192,10 @@ cases:
           - {file: internal/database/mirror.go, line: 350}
           - {file: internal/process/manager.go, line: 101}
           - {file: internal/process/manager.go, line: 124}
+      - id: notebook-markdown-stored-xss
+        root_cause: The notebook preview script renders markdown cells with marked and inserts the result with jQuery html (templates/repo/view_file.tmpl:68) without sanitizing it or filtering link URL schemes, so markup in a committed .ipynb file runs in the viewer's session
+        locations:
+          - {file: templates/repo/view_file.tmpl, line: 68}
       - id: notebook-raw-link-stored-xss
         root_cause: The notebook preview passes the unencoded tree path in RawFileLink (internal/route/repo/view.go:132) to jQuery getJSON (templates/repo/view_file.tmpl:44), so a committed notebook named with ?callback=? turns the request into same-origin JSONP and jQuery evaluates another committed file as script in the viewer's session
         locations:
@@ -492,7 +492,7 @@ cases:
     base: c69a38652da09cb10bfe31714b6b39fec3f8ede8
     commit: a43fc9ad17d4337dd26b9b8d867470ca8c548b41
     checks:
-      - id: ipynb-markdown-stored-xss
+      - id: notebook-markdown-stored-xss
         root_cause: The notebook preview script renders markdown cells with marked and inserts the result with jQuery html (templates/repo/view_file.tmpl:68) after the server-side sanitization step, so markup in a committed .ipynb file runs in the viewer's session
         locations:
           - {file: templates/repo/view_file.tmpl, line: 68}

@@ -60,7 +60,7 @@ def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Pa
             raise ValueError(f"{identity} needs a distinct canonical report that is not itself a duplicate")
         if source is not None:
             for location in record["evidence"]:
-                _source_line(source, location, identity)
+                _require_source_line(source, location, identity)
     counts = Counter(record["verdict"] for record in ledger["records"])
     causes = [
         {
@@ -86,7 +86,7 @@ def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Pa
     )
 
 
-def _source_line(root: Path, location: dict, identity: str) -> None:
+def _require_source_line(root: Path, location: dict, identity: str) -> None:
     file, line = location["file"], location["line"]
     path = (root / file).resolve()
     if not path.is_relative_to(root.resolve()) or not path.is_file():

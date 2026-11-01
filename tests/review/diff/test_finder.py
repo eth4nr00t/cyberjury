@@ -34,6 +34,14 @@ def _finding(file, line, change_anchor):
     )
 
 
+_HANDLER_EVIDENCE = SourceEvidence(
+    id="src-handler",
+    identity="handler.py:handle:0:80",
+    text="40 | def handle(request):\n41 |     dangerous(request.data)",
+    source_span=SourceSpan(file="handler.py", start_line=40, end_line=41),
+)
+
+
 def _locate(finding, ranges, source_evidence=(), seed_spans=()):
     return locate(SimpleNamespace(line_ranges=ranges), finding, source_evidence, seed_spans)
 
@@ -270,16 +278,7 @@ def test_diff_review_rejects_an_anchor_that_is_only_context():
 
 def test_diff_review_accepts_a_cited_repository_location_outside_the_patch():
     """A handler.py:41 location outside the patch is accepted when it cites evidence covering lines 40-41."""
-    evidence = SourceEvidence(
-        id="src-handler",
-        identity="handler.py:handle:0:80",
-        text="40 | def handle(request):\n41 |     dangerous(request.data)",
-        source_span=SourceSpan(
-            file="handler.py",
-            start_line=40,
-            end_line=41,
-        ),
-    )
+    evidence = _HANDLER_EVIDENCE
     context = GroundingContext(
         text="repository context",
         source_evidence=(evidence,),
@@ -318,16 +317,7 @@ def test_diff_review_rejects_an_uncited_repository_location_outside_the_patch():
         old={},
         new={"routes.py": ((1, 1),)},
     )
-    evidence = SourceEvidence(
-        id="src-handler",
-        identity="handler.py:handle:0:80",
-        text="40 | def handle(request):\n41 |     dangerous(request.data)",
-        source_span=SourceSpan(
-            file="handler.py",
-            start_line=40,
-            end_line=41,
-        ),
-    )
+    evidence = _HANDLER_EVIDENCE
     finding = _finding("handler.py", 41, ChangeAnchor(file="routes.py", line=1, side="new"))
 
     assert _locate(finding, ranges, (evidence,)) is None

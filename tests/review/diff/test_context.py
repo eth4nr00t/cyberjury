@@ -23,7 +23,7 @@ def _prepare(shared: SharedGrounding, diff: str) -> list[DiffUnit]:
     return [replace(unit, grounding=ground_diff_unit(unit, shared)) for unit in plan_diff_units(diff, shared, ()).units]
 
 
-def _collect(shared: SharedGrounding, diff: str, plan: DefinitionUnitPlan) -> GroundingContext:
+def _ground_with_plan(shared: SharedGrounding, diff: str, plan: DefinitionUnitPlan) -> GroundingContext:
     return ground_diff_unit(DiffUnit(index=1, diff=diff, paths=(), definition_plan=plan), shared)
 
 
@@ -52,9 +52,9 @@ def test_changed_definition_is_requestable_without_an_initial_prefix(tmp_path):
         "-class Handler:\n"
         "+class Handler(Base):\n"
     )
-    collector = shared_grounding(tmp_path)
+    shared = shared_grounding(tmp_path)
 
-    context = ground_diff_unit(DiffUnit(index=1, diff=diff, paths=("app.py",), definition_plan=plan), collector)
+    context = ground_diff_unit(DiffUnit(index=1, diff=diff, paths=("app.py",), definition_plan=plan), shared)
 
     assert context.source_evidence == ()
     assert "control = check(owner)" not in context.prompt.source
@@ -72,18 +72,18 @@ def test_importing_source_stays_behind_navigation_instead_of_being_preselected(t
     (tmp_path / "service.py").write_text(changed, encoding="utf-8")
     (tmp_path / "views.py").write_text(related, encoding="utf-8")
     facts = syntax_facts(tmp_path)
-    collector = shared_grounding(tmp_path, facts=facts)
+    shared = shared_grounding(tmp_path, facts=facts)
     plan = DefinitionUnitPlan(seeds=(definition("service.py", "apply", 0, len(changed)),))
     diff = "diff --git a/service.py b/service.py\n+++ b/service.py\n@@ -1,1 +1,1 @@\n+def apply(value):\n"
 
-    context = _collect(collector, diff, plan)
+    context = _ground_with_plan(shared, diff, plan)
 
     assert any(relationship.source.path == "views.py" for relationship in facts.relationships.structural_relationships)
     assert "views.py" not in context.prompt.source
     assert "permission = require_user" not in context.prompt.source
 
 
-def test_diff_context_collects_a_changed_source_path_with_spaces(tmp_path):
+def test_diff_grounding_delivers_a_changed_source_path_with_spaces(tmp_path):
     """A new file named 'app route.py' is grounded with its source window and complete coverage."""
     source = "def route():\n    return sink()\n"
     (tmp_path / "app route.py").write_text(source)
@@ -110,7 +110,7 @@ def test_diff_context_discloses_only_source_limitations_in_the_unit_scope(tmp_pa
         (tmp_path / name).write_text(source)
     route = definition("app.py", "route", 0, len(source))
     related = definition("related.py", "route", 0, len(source))
-    collector = shared_grounding(
+    shared = shared_grounding(
         tmp_path,
         facts=Facts(
             limitations=(
@@ -121,7 +121,7 @@ def test_diff_context_discloses_only_source_limitations_in_the_unit_scope(tmp_pa
     )
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -1 +1 @@\n+def route(): return 2\n"
 
-    context = _collect(collector, diff, DefinitionUnitPlan(seeds=(route, related)))
+    context = _ground_with_plan(shared, diff, DefinitionUnitPlan(seeds=(route, related)))
 
     assert context.coverage.limitations == ("facts:related.py:1:1",)
     assert "related.py at 1:1" in context.text
@@ -188,13 +188,12 @@ def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_p
         diff_context, "_EXECUTION", replace(diff_context._EXECUTION, max_initial_candidate_source_chars=1)
     )
     requestable = ground_diff_unit(replace(unit, grounding=None), prepared.shared)
-    assert requestable is not None
     assert requestable.source_evidence == ()
     assert any(item.source_span and item.source_span.file == "service.py" for item in requestable.evidence)
     assert "service.py" in requestable.snapshot_files
 
 
-def test_collect_diff_context_respects_total_budget(tmp_path):
+def test_diff_grounding_respects_the_context_budget(tmp_path):
     """Forty changed 200-line files yield units whose source text stays within the per-unit context cap."""
     diff_parts: list[str] = []
     for i in range(40):
@@ -229,7 +228,7 @@ def test_diff_planning_and_grounding_are_distinct_deterministic_steps(tmp_path):
     assert _prepare(shared, diff) == grounded
 
 
-def test_collect_diff_context_reports_only_rendered_files(tmp_path):
+def test_diff_grounding_reports_only_delivered_files(tmp_path):
     """A diff for a missing.py absent from disk yields no files and empty context text."""
     diff = "diff --git a/missing.py b/missing.py\n+++ b/missing.py\n@@ -1,0 +1,1 @@\n+print(1)\n"
 
@@ -255,7 +254,7 @@ def test_deleted_diff_source_is_bound_by_the_patch_not_the_post_change_snapshot(
     assert unit.grounding.snapshot_files == ()
 
 
-def test_collect_diff_context_handles_hunk_lines_beyond_current_source(tmp_path):
+def test_diff_grounding_reports_hunk_lines_beyond_current_source(tmp_path):
     """A hunk at line 100 of a one-line app.py is reported as outside current source length 1."""
     (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -100,1 +100,1 @@\n-print(0)\n+print(1)\n"
@@ -265,7 +264,7 @@ def test_collect_diff_context_handles_hunk_lines_beyond_current_source(tmp_path)
     assert "outside current source length 1" in ctx.text
 
 
-def test_diff_units_share_one_facts_context_for_batch_context(tmp_path):
+def test_units_from_one_shared_grounding_deliver_only_their_own_file(tmp_path):
     """Units for a.py and b.py built from one shared grounding each deliver only their own file."""
     (tmp_path / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
     (tmp_path / "b.py").write_text("def b():\n    return 2\n", encoding="utf-8")
@@ -291,10 +290,10 @@ def test_diff_units_share_one_facts_context_for_batch_context(tmp_path):
 def test_prepared_fallback_units_keep_current_repository_context(tmp_path, path, source, expected):
     """Unseeded app.py or policy.yaml changes deliver one window starting at line 1 with current content."""
     (tmp_path / path).write_text(source)
-    collector = shared_grounding(tmp_path)
+    shared = shared_grounding(tmp_path)
     diff = f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n"
 
-    unit = _prepare(collector, diff)[0]
+    unit = _prepare(shared, diff)[0]
 
     assert unit.grounding is not None
     [window] = unit.grounding.source_evidence
@@ -302,7 +301,7 @@ def test_prepared_fallback_units_keep_current_repository_context(tmp_path, path,
     assert expected in window.text
 
 
-def test_changed_file_windows_center_on_every_changed_region_of_any_text_file(tmp_path):
+def test_a_changed_html_region_gets_a_centered_window_before_the_file_head(tmp_path):
     """A change at line 900 of a 2000-line HTML file yields a 895-905 window before a line-1 window."""
     lines = [f"<p>line {number}</p>" for number in range(1, 2001)]
     (tmp_path / "page.html").write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -27,7 +27,21 @@ def test_cases_carry_their_nested_checks_and_targets(benchmark_project):
         "base": benchmark_project.base,
         "local_path": str(benchmark_project.repo),
     }
-    assert (len(repository.checks), len(diff.checks)) == (1, 1)
+    assert [check.to_dict() for check in repository.checks] == [
+        {
+            "id": "create-missing-owner",
+            "root_cause": "create saves without an owner check",
+            "locations": [{"file": "views.py", "line": 2}],
+        }
+    ]
+    assert [check.to_dict() for check in diff.checks] == [
+        {
+            "id": "create-missing-owner",
+            "root_cause": "create saves without an owner check",
+            "locations": [{"file": "views.py", "symbol": "create"}],
+            "change_anchors": [{"file": "views.py", "line": 2, "side": "new"}],
+        }
+    ]
 
 
 def test_checks_digest_ignores_check_and_location_order(benchmark_project):
@@ -48,7 +62,7 @@ def test_checks_digest_ignores_check_and_location_order(benchmark_project):
 
 
 def test_one_case_name_cannot_come_from_two_benchmarks(benchmark_project):
-    """Loading one benchmark directory alongside its parent raises "two benchmark definitions define"."""
+    """Loading a benchmark.yaml and its directory together raises "two benchmark definitions define"."""
     with pytest.raises(ValueError, match="two benchmark definitions define"):
         load_cases([benchmark_project.benchmark, benchmark_project.benchmark.parent])
 

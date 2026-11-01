@@ -28,7 +28,7 @@ def test_specs_ship_a_grammar_and_every_query_per_language():
             *(query.query for query in spec.imports),
             *spec.namespace_imports,
             spec.type_definitions,
-            *(query for query in (spec.qualified_uses,) if query),
+            *([spec.qualified_uses] if spec.qualified_uses else []),
             *(relationship.query for relationship in spec.structural_relationships),
         )
         for query in queries:
@@ -86,13 +86,14 @@ def test_an_unexpected_error_in_one_file_becomes_its_limitation(tmp_path, monkey
 
 
 def test_a_syntax_error_placeholder_never_becomes_an_empty_name(tmp_path):
-    """A Python call typo `x.(1)` yields a partially parsed limitation, and facts extraction still succeeds."""
+    """A Python call typo `x.(1)` yields a partially parsed limitation, one run definition, and no empty callee."""
     (tmp_path / "app.py").write_text("def run(x):\n    y = x.(1)\n    return y\n")
 
     facts = syntax_facts(tmp_path)
 
     assert [(item.source, item.reason) for item in facts.limitations] == [("app.py", "partially parsed")]
     assert [item["name"] for item in facts.relationships.to_dict()["definitions"]] == ["run"]
+    assert all(callsite.callee_spelling for callsite in facts.relationships.callsites)
 
 
 def test_a_three_edge_call_chain_is_recovered_edge_by_edge(tmp_path):
@@ -477,9 +478,8 @@ def test_native_analyzer_recovers_the_cross_language_structure(tmp_path):
         definition = definitions[identity]
         assert definition.calls == (callee,)
         assert [(call.callee, call.expression) for call in definition.callsites] == [(callee, expression)]
-    for (file, _name), definition in definitions.items():
-        body = analyzed.sources[file][definition.start : definition.end]
-        assert body
+    for (file, name), definition in definitions.items():
+        assert name in analyzed.sources[file][definition.start : definition.end]
 
 
 def test_native_analyzer_output_does_not_depend_on_input_enumeration(tmp_path):

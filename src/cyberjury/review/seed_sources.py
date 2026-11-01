@@ -44,7 +44,6 @@ _CALL_CANDIDATE_HEADER = (
     "Unverified direct call candidates from this unit. Each candidate callee is a syntax match, and "
     "each line states where its source is available:"
 )
-_RECEIPT_PLACEHOLDER = f"source `src-{'0' * 12}` in the evidence catalog"
 
 
 def _delivered_receipt(item_id: str) -> str:
@@ -55,10 +54,13 @@ def _catalog_receipt(item_id: str) -> str:
     return f"source `{item_id}` in the evidence catalog"
 
 
+_RECEIPT_PLACEHOLDER = _catalog_receipt(source_id(""))
+
+
 type _Call = tuple[CallsiteEvidence, DefinitionEvidence, DefinitionEvidence]
 
 
-class _CandidateSources:
+class _SourceTexts:
     def __init__(self, root: str | Path) -> None:
         self._base = Path(root).resolve()
         self._texts: dict[str, str] = {}
@@ -68,7 +70,7 @@ class _CandidateSources:
             try:
                 self._texts[path] = (self._base / path).read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
-                raise BackendUnavailable(f"could not materialize candidate call source {subject}: {exc}") from exc
+                raise BackendUnavailable(f"could not materialize {subject}: {exc}") from exc
         return self._texts[path]
 
     def lines(self, reference: SourceReference, subject: str) -> tuple[int, int]:
@@ -77,15 +79,15 @@ class _CandidateSources:
 
 @dataclass(frozen=True)
 class _CallListing:
-    sources: _CandidateSources
+    sources: _SourceTexts
     calls_by_definition: Mapping[str, list[str]]
 
     def caller_line(self, caller: DefinitionEvidence) -> str:
         return f"- caller {one_line_source(caller.source.path)}: {_inline_code(caller.signature or caller.name)}"
 
     def call_line(self, callsite: CallsiteEvidence, callee: DefinitionEvidence, receipt: str) -> str:
-        line, _ = self.sources.lines(callsite.source, callsite.id)
-        callee_start, callee_end = self.sources.lines(callee.source, callee.id)
+        line, _ = self.sources.lines(callsite.source, f"candidate call source {callsite.id}")
+        callee_start, callee_end = self.sources.lines(callee.source, f"candidate call source {callee.id}")
         expression = " ".join(callsite.expression.split())
         expression = expression if len(expression) <= 120 else expression[:117] + "..."
         text = (
@@ -159,7 +161,7 @@ def _budgeted_calls(listing: _CallListing, calls: list[_Call], max_chars: int) -
 
 
 def _callee_sources(
-    sources: _CandidateSources,
+    sources: _SourceTexts,
     included: list[_Call],
     seed_ids: set[str],
     budget: int,
@@ -170,7 +172,7 @@ def _callee_sources(
     for callee in dict.fromkeys(callee for _callsite, _caller, callee in included):
         if callee.id in seed_ids:
             continue
-        source = sources.text(callee.source.path, callee.id)
+        source = sources.text(callee.source.path, f"candidate call source {callee.id}")
         selected = source[callee.source.start : callee.source.end]
         text, span = numbered_source_range(callee.source.path, source, callee.source.start, callee.source.end)
         evidence = SourceEvidence(id=source_id(callee.identity), identity=callee.identity, text=text, source_span=span)
@@ -227,7 +229,7 @@ def candidate_call_context(
     calls = _single_candidate_calls(relationships, seed_ids, callsite_ids)
     if not calls:
         return CandidateCallContext()
-    listing = _CallListing(_CandidateSources(root), _calls_by_definition(relationships))
+    listing = _CallListing(_SourceTexts(root), _calls_by_definition(relationships))
     included, omitted = _budgeted_calls(listing, calls, max_chars)
     listed_chars = len("\n".join(listing.render(included, lambda _callee: _RECEIPT_PLACEHOLDER)))
     callee_sources, source_omitted = _callee_sources(listing.sources, included, seed_ids, max_chars - listed_chars)
@@ -256,19 +258,13 @@ def _inline_code(source: str) -> str:
 
 def definition_evidence(root: str | Path, plan: DefinitionUnitPlan) -> tuple[EvidenceItem, ...]:
     """Publish each complete seed definition as exact retrievable evidence."""
-    base = Path(root).resolve()
-    sources: dict[str, str] = {}
+    sources = _SourceTexts(root)
     items: list[EvidenceItem] = []
     for seed in plan.seeds:
         if seed.kind == "file":
             continue
         file, start, end = seed.source.path, seed.source.start, seed.source.end
-        try:
-            if file not in sources:
-                sources[file] = (base / file).read_text(encoding="utf-8")
-            source = sources[file]
-        except (OSError, UnicodeDecodeError) as exc:
-            raise BackendUnavailable(f"could not materialize definition evidence {seed.identity}: {exc}") from exc
+        source = sources.text(file, f"definition evidence {seed.identity}")
         text, span = numbered_source_range(file, source, start, end)
         items.append(
             EvidenceItem.create(

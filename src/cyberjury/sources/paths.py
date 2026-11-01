@@ -42,12 +42,18 @@ def safe_link_target(target: str) -> bool:
     return bool(target) and "\x00" not in target and "\\" not in target and not Path(target).is_absolute()
 
 
+def contained_target(root: Path, path: Path) -> Path | None:
+    """Return the existing target a path resolves to when it stays inside the resolved root."""
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return None
+    return resolved if resolved.is_relative_to(root) else None
+
+
 def require_contained_symlinks(root: Path, files: Iterable[str]) -> None:
     """Fail when any materialized symlink is broken or resolves outside its root."""
     for relative in files:
         path = root / relative
-        if path.is_symlink():
-            try:
-                path.resolve(strict=True).relative_to(root)
-            except (OSError, ValueError) as exc:
-                raise SourceSnapshotError(f"materialized source symlink is unsafe: {relative}") from exc
+        if path.is_symlink() and contained_target(root, path) is None:
+            raise SourceSnapshotError(f"materialized source symlink is unsafe: {relative}")

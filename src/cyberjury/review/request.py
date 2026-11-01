@@ -58,10 +58,8 @@ class ConcurrencyRecord:
         return {"review": self.review}
 
 
-def endpoint_identity(base_url: str | None) -> str:
+def endpoint_identity(base_url: str) -> str:
     """Identify the exact configured endpoint without persisting its value."""
-    if not base_url:
-        return "default"
     return f"sha256:{hashlib.sha256(base_url.encode()).hexdigest()}"
 
 

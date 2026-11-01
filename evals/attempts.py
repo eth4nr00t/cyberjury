@@ -194,7 +194,7 @@ def _describe_root(root: str) -> str:
         head = git("rev-parse", "HEAD")
     except (OSError, subprocess.CalledProcessError):
         return f"{root}, a plain directory outside any Git checkout"
-    relative = path.resolve().relative_to(top).as_posix() if path.resolve().is_relative_to(top) else str(path)
+    relative = path.resolve().relative_to(top).as_posix()
     dirty = bool(git("status", "--porcelain", "--untracked-files=all", "--", "."))
     state = " with uncommitted or untracked changes" if dirty else ""
     return f"{root}, a Git checkout of commit {head} path {relative!r}{state}"

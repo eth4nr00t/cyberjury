@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 
 from cyberjury.numbering import line_span, split_lines
@@ -67,6 +66,11 @@ def ground_diff_unit(unit: DiffUnit, shared: SharedGrounding) -> GroundingContex
     text = "\n\n".join(part for part in (notices, candidate.text) if part)
     delivered = (*candidate.delivered, *windows)
     files = tuple(dict.fromkeys(item.source_span.file for item in windows))
+    planned_scope_files = tuple(
+        dict.fromkeys((*files, *definition_plan_source_files(definition_plan), *candidate.source_files))
+    )
+    snapshot_files = set(shared.snapshot.files)
+    scope_files = tuple(file for file in planned_scope_files if file in snapshot_files)
     context = GroundingContext(
         text=text,
         seed=seed,
@@ -80,13 +84,8 @@ def ground_diff_unit(unit: DiffUnit, shared: SharedGrounding) -> GroundingContex
             max_chars_per_file=_EXECUTION.max_syntax_hint_chars_per_file,
         ),
         navigator=shared.navigator,
+        snapshot_files=scope_files,
     )
-    planned_scope_files = tuple(
-        dict.fromkeys((*files, *definition_plan_source_files(definition_plan), *candidate.source_files))
-    )
-    snapshot_files = set(shared.snapshot.files)
-    scope_files = tuple(file for file in planned_scope_files if file in snapshot_files)
-    context = replace(context, snapshot_files=scope_files)
     return with_scoped_fact_limitations(context, shared.facts.limitations, source_files=scope_files)
 
 
@@ -97,7 +96,7 @@ def changed_file_sources(
     *,
     budget: int,
 ) -> tuple[str, tuple[SourceEvidence, ...]]:
-    """Deliver bounded current source of changed files without seed definitions, centered on their changed lines."""
+    """Deliver bounded current source of the given changed files, centered on their changed lines."""
     sources = [
         (rel, source)
         for rel in paths

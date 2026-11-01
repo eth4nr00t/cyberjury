@@ -12,7 +12,7 @@ from cyberjury.review.replies import CorrectableRoleResponseError
 from cyberjury.review.repository.model import RepositoryUnit
 from tests.review.diff import support as diff
 from tests.review.repository import support as repository
-from tests.review.support import navigator_from_definitions
+from tests.review.support import single_definition_navigator
 from tests.support import MockProvider
 
 
@@ -25,12 +25,6 @@ def _diff_findings(provider, diff_text=diff.SQL_DIFF, *, context=""):
     if not cycle.clean:
         raise RuntimeError(cycle.failure_reason)
     return cycle.findings
-
-
-def _model_navigator(root):
-    source = "class ModelWithOwner:\n    owner_scope = True\n"
-    (root / "models.py").write_text(source, encoding="utf-8")
-    return navigator_from_definitions(root, {"models.py": {"ModelWithOwner": [(0, len(source))]}})
 
 
 def test_finder_parses_findings_and_canonicalizes_the_category():
@@ -94,8 +88,8 @@ def test_semantic_violation_in_one_finding_keeps_the_valid_findings_of_the_reply
     assert "findings[1] must have nonempty fields: title" in provider.calls[1]["prompt"]
 
 
-def test_location_correction_echoes_the_accepted_findings():
-    """The correction for an unlocatable line-0 finding echoes the accepted line-2 finding."""
+def test_a_semantic_correction_echoes_the_accepted_findings():
+    """The correction for a line-0 finding echoes the accepted line-2 finding."""
     provider = MockProvider(
         responses=[
             repository.finder_reply([repository.finding("app.py", 2), repository.finding("app.py", 0, title="second")]),
@@ -106,7 +100,8 @@ def test_location_correction_echoes_the_accepted_findings():
     repository.finder(provider).review_unit(_unit("u", GroundingContext(text="")))
 
     correction = provider.calls[1]["prompt"]
-    assert '"entrypoint": "GET /records/<id>"' in correction
+    assert '"line": 2' in correction
+    assert '"title": "second"' not in correction
 
 
 def test_finder_fails_the_unit_on_an_unparseable_reply():
@@ -286,7 +281,9 @@ def test_model_call_after_exact_evidence_delivery_is_a_followup():
 
 def test_a_navigation_follow_up_reuses_the_system_prompt_and_cache_prefix(tmp_path):
     """A search_symbols query triggers a follow-up call sharing system and prefix that shows the source."""
-    navigator = _model_navigator(tmp_path)
+    navigator = single_definition_navigator(
+        tmp_path, "models.py", "ModelWithOwner", "class ModelWithOwner:\n    owner_scope = True\n"
+    )
     raw_provider = MockProvider(
         responses=[
             repository.finder_reply(

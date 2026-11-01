@@ -333,7 +333,7 @@ def link_issues(
             error=RecordError(code="model", message=error_message(error)) if error else None,
         )
         store.save(item)
-        recorder.item(item)
+        recorder.emit(item, write=False)
         return _PairOutcome(ids=ids, decision=decision, error=error)
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:

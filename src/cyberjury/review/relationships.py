@@ -20,6 +20,11 @@ def _stable_id(prefix: str, *parts: object) -> str:
     return f"{prefix}-{hashlib.sha256(payload.encode()).hexdigest()[:16]}"
 
 
+def source_identity(path: str, name: str, start: int, end: int) -> str:
+    """Identify one exact named source range, whichever producer publishes it."""
+    return f"{path}:{name}:{start}:{end}"
+
+
 def _candidate_name(value: str) -> str:
     return value.rsplit(".", 1)[-1]
 
@@ -39,7 +44,7 @@ class SourceReference:
         """Build a stable reference to the selected source content."""
         digest = text_sha256(content)
         return cls(
-            id=_stable_id("src", path, start, end, digest), path=path, start=start, end=end, content_sha256=digest
+            id=_stable_id("ref", path, start, end, digest), path=path, start=start, end=end, content_sha256=digest
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -66,7 +71,7 @@ class DefinitionEvidence:
     @property
     def identity(self) -> str:
         """Identify the exact named source range published to a reviewer."""
-        return f"{self.source.path}:{self.name}:{self.source.start}:{self.source.end}"
+        return source_identity(self.source.path, self.name, self.source.start, self.source.end)
 
     @classmethod
     def create(

@@ -23,20 +23,19 @@ from cyberjury.review.command import ReviewCommand, attempt_output, classify_err
 from cyberjury.review.recorder import TERMINATED
 from cyberjury.review.request import TargetInput
 from cyberjury.review.result import findings_artifact
-from cyberjury.workspace import SessionBusyError
+from cyberjury.workspace import SessionBusyError, WorkspacePathError
+from tests.review.repository.support import EMPTY_REPLY
 from tests.support import MockProvider, git
-
-_EMPTY_REPLY = '{"findings": [], "evidence_requests": [], "source_queries": []}'
 
 
 @pytest.fixture(autouse=True)
 def _no_env_file(monkeypatch):
-    monkeypatch.setattr(commandmod, "load_env_file", lambda: [])
+    monkeypatch.setattr(commandmod, "load_env_file", lambda: None)
 
 
 @pytest.fixture(autouse=True)
 def _scripted_seat(monkeypatch):
-    _live_provider(monkeypatch)
+    _scripted_provider(monkeypatch)
 
 
 @dataclass(frozen=True)
@@ -110,16 +109,14 @@ def _stub_review(*, incomplete: str = "", seen: dict | None = None):
     return review
 
 
-def _live_provider(monkeypatch, default: str = _EMPTY_REPLY) -> None:
+def _scripted_provider(monkeypatch, default: str = EMPTY_REPLY) -> None:
     monkeypatch.setenv("CYBERJURY_API_KEY", "k")
     monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(default=default))
 
 
 def _seed_source(repository: Path) -> Path:
     repository.mkdir(parents=True, exist_ok=True)
-    source = repository / "app.py"
-    if not source.exists():
-        source.write_text("value = 1\n")
+    (repository / "app.py").write_text("value = 1\n")
     return repository
 
 
@@ -175,7 +172,7 @@ def test_a_review_prints_every_stage_record_file_and_then_the_attempt_record(dif
     records = _records(run.out)
     assert run.out == attempt_output(attempt)
     assert [record["id"] for record in records] == [*STAGES, attempt.name]
-    assert [record["status"] for record in records] == ["ok"] * 11
+    assert [record["status"] for record in records] == ["ok"] * (len(STAGES) + 1)
 
 
 def test_stderr_prints_the_line_of_every_record_it_writes(diff_target, tmp_path):
@@ -231,8 +228,8 @@ def test_every_record_kind_carries_its_fixed_metrics_and_attributes(diff_target,
     assert records[-1]["attributes"] == {"source_changed": False}
 
 
-def test_the_attempt_record_sums_failures_and_the_usage_of_every_call(diff_target, tmp_path):
-    """The attempt metrics carry the summed failed count and the model usage of every recorded call."""
+def test_the_attempt_record_counts_every_model_call_and_lists_the_call_record(diff_target, tmp_path):
+    """An ok attempt reports no failures, counts every call in model-calls.json, and lists that file."""
     state = tmp_path / "state"
 
     attempt = _records(_review(diff_target.target, state).out)[-1]
@@ -386,8 +383,8 @@ def test_hunkless_diff_sections_are_listed_as_skipped_files(tmp_path):
     ]
 
 
-def test_review_diff_grounds_units_and_judges_issue_links_on_the_finder(monkeypatch, diff_target, tmp_path):
-    """The single diff unit carries +x = 1 and a.py source, with an issue judge and concurrency 8."""
+def test_review_diff_grounds_its_unit_and_runs_at_the_default_concurrency(monkeypatch, diff_target, tmp_path):
+    """The single diff unit carries +x = 1 and a.py source, and the review runs at concurrency 8."""
     seen = {}
     monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
 
@@ -398,13 +395,11 @@ def test_review_diff_grounds_units_and_judges_issue_links_on_the_finder(monkeypa
     assert "# file: a.py lines 1-1" in unit.grounding.prompt.source
     assert Path(seen["root"]).name == diff_target.repository.name
     assert not Path(seen["root"]).exists()
-    assert seen["seats"].issue_judge is not None
     assert seen["concurrency"] == 8
 
 
-def test_review_diff_empty_git_range_is_ok(monkeypatch, diff_target, tmp_path):
+def test_review_diff_empty_git_range_is_ok(diff_target, tmp_path):
     """A HEAD..HEAD range ends ok with no findings."""
-    _live_provider(monkeypatch, '{"findings": []}')
     state = tmp_path / "state"
 
     run = _review(_diff(diff_target.repository, "HEAD..HEAD"), state)
@@ -427,7 +422,7 @@ def test_an_incomplete_review_makes_the_attempt_incomplete_with_its_reason(monke
 
 def test_repository_review_with_model_errors_marks_units_failed(tmp_path, monkeypatch):
     """A provider answering 'not json at all' fails every unit item and leaves the review stage incomplete."""
-    _live_provider(monkeypatch, "not json at all")
+    _scripted_provider(monkeypatch, "not json at all")
     state = tmp_path / "state"
 
     run = _review(_repository(_flask_repository(tmp_path / "svc")), state)
@@ -457,6 +452,11 @@ def test_a_provider_that_rejects_access_fails_the_review_with_a_config_error(tmp
 def test_a_session_busy_with_another_attempt_is_a_busy_error():
     """SessionBusyError classifies as busy, not as a config error that needs --fresh."""
     assert classify_error(SessionBusyError("another attempt is already running")).code == "busy"
+
+
+def test_an_unsafe_state_directory_is_a_config_error():
+    """A symlinked state directory classifies as a config error the operator fixes, not an internal error."""
+    assert classify_error(WorkspacePathError("state directory cannot be a symlink: /state")).code == "config"
 
 
 def test_partially_parsed_sources_are_counted_as_fact_limitations(tmp_path):
@@ -746,8 +746,7 @@ def test_repository_configuration_change_requires_fresh(monkeypatch, tmp_path):
 
     assert session["error"]["code"] == "config"
     assert "--fresh" in session["error"]["message"]
-    reviews = sorted((state / "reviews").iterdir(), key=lambda path: len(list(path.glob("attempts/*"))))
-    assert [len(list(review.glob("attempts/*"))) for review in reviews] == [1, 1]
+    assert [len(list(review.glob("attempts/*"))) for review in (state / "reviews").iterdir()] == [1, 1]
 
 
 def _terminate(*_args, **_kwargs):

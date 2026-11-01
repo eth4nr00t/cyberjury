@@ -21,6 +21,7 @@ from cyberjury.sources.paths import (
     MAX_SOURCE_TREE_BYTES,
     READ_CHUNK_BYTES,
     SourceSnapshotError,
+    contained_target,
     portable_paths,
     require_contained_symlinks,
 )
@@ -85,11 +86,8 @@ def source_snapshot_files(root: str | Path) -> tuple[str, ...]:
 
 
 def _contained_file(base: Path, path: Path) -> bool:
-    try:
-        resolved = path.resolve(strict=True)
-    except OSError:
-        return False
-    return resolved.is_relative_to(base) and resolved.is_file()
+    target = contained_target(base, path)
+    return target is not None and target.is_file()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -250,8 +248,8 @@ class SourceSnapshot:
         """Write captured bytes to one private source root for deterministic consumers."""
         temporary_root = Path(tempfile.mkdtemp(prefix="review-source-snapshot-")).resolve()
         source_root = temporary_root / name
-        source_root.mkdir(mode=0o700)
         try:
+            source_root.mkdir(mode=0o700)
             for expected in self.entries:
                 path = source_root / expected.path
                 path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

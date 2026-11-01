@@ -51,34 +51,29 @@ def test_cited_spans_never_change_the_candidate_identity():
         ("title", None),
         ("evidence", 1),
         ("change_anchor", {"file": "a.py"}),
+        ("change_anchor", {"file": "a.py", "line": "1", "side": "new"}),
+        ("change_anchor", {"file": "a.py", "line": 1, "side": "middle"}),
         ("cited_spans", [{"file": "a.py", "start_line": 1}]),
+        ("cited_spans", [{"file": "a.py", "range": [0, 1]}]),
         ("extra", 1),
     ],
 )
 def test_stored_form_rejects_mistyped_fields(field, value):
-    """Bad severities, string or bool lines, partial anchors or spans, and extra keys make from_dict raise."""
+    """Bad severities, string or bool lines, partial or mistyped anchors and spans, and extra keys raise."""
     with pytest.raises(ValueError, match="finding"):
         Finding.from_dict(_FINDING.to_dict() | {field: value})
 
 
-def test_fingerprint_ignores_wording_and_follows_the_location():
-    """Rewording title, entrypoint, and evidence keeps the fingerprint, and moving the line changes it."""
-    reworded = replace(_FINDING, title="Export lacks owner scope", entrypoint="export task", evidence="no check")
-
-    assert reworded.fingerprint == _FINDING.fingerprint
-    assert replace(_FINDING, line=11).fingerprint != _FINDING.fingerprint
-
-
 def test_candidate_id_hashes_the_target_identity_of_the_finding():
-    """A diff finding hashes its change anchor and operation id, and a repository finding anchors on file:line."""
-    repository = replace(_FINDING, entrypoint="", change_anchor=None, source_operation_id="")
+    """A diff finding hashes its change anchor and operation id, and a repository finding hashes no anchor."""
+    repository = replace(_FINDING, change_anchor=None, source_operation_id="")
 
     assert _FINDING.candidate_id == candidate_identity(
         target="diff",
         file="app/v.py",
         line=10,
         category="missing-authorization",
-        path_anchor="POST /export",
+        entrypoint="POST /export",
         anchor=("app/v.py", 9, "old"),
         root_cause="Unscoped account export",
         source_operation_id="call-account-export",
@@ -88,7 +83,7 @@ def test_candidate_id_hashes_the_target_identity_of_the_finding():
         file="app/v.py",
         line=10,
         category="missing-authorization",
-        path_anchor="app/v.py:10",
+        entrypoint="POST /export",
         anchor=None,
         root_cause="Unscoped account export",
         source_operation_id="",

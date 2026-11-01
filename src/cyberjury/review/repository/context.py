@@ -14,8 +14,8 @@ from cyberjury.review.context import (
     with_scoped_fact_limitations,
 )
 from cyberjury.review.prepare import SharedGrounding
-from cyberjury.review.prompts import fenced_source
 from cyberjury.review.repository.model import RepositoryUnit
+from cyberjury.review.repository.prompts import repository_seed
 from cyberjury.review.seed_sources import candidate_call_context
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -30,7 +30,7 @@ def gather_context(unit: RepositoryUnit) -> GroundingContext:
     numbered, span = numbered_source_range(rel, text, *unit.span)
     return GroundingContext(
         text="",
-        seed=f"Code under review, cited as `seed`:\n{fenced_source(numbered)}",
+        seed=repository_seed(numbered),
         files=(rel,),
         source_spans=(span,),
     )

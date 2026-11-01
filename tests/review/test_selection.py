@@ -6,11 +6,15 @@ from cyberjury.review.selection import select_files
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 
-def _select(root, files: dict[str, bytes]):
+def _write(root, files: dict[str, bytes]) -> None:
     for name, data in files.items():
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
+
+
+def _select(root, files: dict[str, bytes]):
+    _write(root, files)
     return select_files(root, sorted(files), load_detection())
 
 
@@ -66,7 +70,7 @@ def test_vendored_files_are_navigable_but_not_reviewed(tmp_path):
         "app.py": b"def handler(value):\n    return value\n",
         "public/plugins/lib.js": b"function helper(value) { return value }\n",
     }
-    _select(tmp_path, files)
+    _write(tmp_path, files)
 
     selection = select_files(tmp_path, sorted(files), detection_for(tmp_path, sorted(files)))
 
@@ -82,7 +86,7 @@ def test_files_over_the_size_limit_are_skipped_as_too_large(tmp_path):
         "app.py": b"def handler(value):\n    return value\n",
         "bindata.go": b"package bindata\n\nvar data = `" + b"a" * limit + b"`\n",
     }
-    _select(tmp_path, files)
+    _write(tmp_path, files)
 
     selection = select_files(tmp_path, sorted(files), detection_for(tmp_path, sorted(files)))
 

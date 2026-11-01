@@ -29,7 +29,7 @@ def _positive_int(value: str) -> int:
     except ValueError:
         parsed = 0
     if parsed < 1:
-        raise ValueError("must be a positive integer")
+        raise argparse.ArgumentTypeError("must be a positive integer")
     return parsed
 
 
@@ -40,9 +40,10 @@ def _progress(line: str) -> None:
 def _cmd_diff(args) -> int:
     cases = [case for case in load_cases(args.benchmark).values() if case.kind == "diff"]
     if args.case:
+        known = ", ".join(case.name for case in cases) or "none"
         cases = [case for case in cases if case.name == args.case]
         if not cases:
-            raise ValueError(f"unknown diff case {args.case!r}")
+            raise ValueError(f"unknown diff case {args.case!r}, known diff cases: {known}")
     runs_dir = Path(args.runs_dir)
     state_dir = Path(args.state_dir).expanduser().resolve()
     paths = [
@@ -59,7 +60,7 @@ def _cmd_diff(args) -> int:
 
     records = run(
         cases,
-        runs=args.repeat,
+        repeat=args.repeat,
         state_dir=state_dir,
         progress=_progress,
         on_attempt=save_attempt,

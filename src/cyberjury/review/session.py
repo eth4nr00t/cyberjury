@@ -57,8 +57,7 @@ class ReviewSession:
     @classmethod
     def open_existing(cls, root: str | Path, intent: ReviewIntent, *, review_id: str) -> ReviewSession:
         """Open the review a locator names without recreating a session that no longer exists."""
-        path = Path(root).expanduser() / "reviews" / review_id
-        if not path.is_dir() or path.is_symlink():
+        if not SessionWorkspace.exists(root, session_id=review_id):
             raise SessionConflictError(f"review session {review_id} no longer exists, start again with --fresh")
         return cls.open(root, intent, review_id=review_id)
 
@@ -77,7 +76,7 @@ class ReviewSession:
         return cls.open_existing(root, intent, review_id=review_id)
 
     def start_attempt(self, request: ReviewAttemptRequest, *, attempt_id: str, started_at: str) -> ReviewAttempt:
-        """Create one invocation whose wire request and runtime request are identical."""
+        """Bind or verify the repository judgment configuration, then start one attempt under the session lock."""
         self._bind_repository_judgment(request)
         workspace = self.workspace.start_attempt(
             request.to_dict(), attempt_id=attempt_id, started_at=started_at, attributes={"source_changed": None}

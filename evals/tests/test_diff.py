@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import replace
-from types import SimpleNamespace
 
 import pytest
 
@@ -22,7 +21,7 @@ def _finder_reply(findings: list[dict]) -> str:
 
 
 def _run(cases, state_dir, **values):
-    options = {"runs": 1, "progress": lambda _line: None, "on_attempt": lambda _record: None}
+    options = {"repeat": 1, "progress": lambda _line: None, "on_attempt": lambda _record: None}
     return diff.run(cases, state_dir=state_dir, **(options | values))
 
 
@@ -32,7 +31,7 @@ def scripted_model(monkeypatch):
     for name in list(os.environ):
         if name.startswith(("CYBERJURY_", "ANTHROPIC_", "OPENAI_")):
             monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(commandmod, "load_env_file", lambda: [])
+    monkeypatch.setattr(commandmod, "load_env_file", lambda: None)
     monkeypatch.setenv("CYBERJURY_API_KEY", "k")
 
     def install(findings=(), *, error: BaseException | None = None) -> MockProvider:
@@ -51,25 +50,23 @@ def scripted_model(monkeypatch):
 @pytest.fixture
 def owner_finding():
     """Return one complete finder finding on the benchmark diff's changed line."""
-    return SimpleNamespace(
-        reply={
-            "title": "Create saves without an owner",
-            "category": "missing-authorization",
-            "severity": "HIGH",
-            "entrypoint": "POST /create",
-            "file": "views.py",
-            "line": 2,
-            "change_anchor": {"file": "views.py", "line": 2, "side": "new"},
-            "evidence": "views.py:2 saves with owner=None",
-            "attack_path": "anyone creates an unowned record",
-            "evidence_refs": ["seed"],
-        }
-    )
+    return {
+        "title": "Create saves without an owner",
+        "category": "missing-authorization",
+        "severity": "HIGH",
+        "entrypoint": "POST /create",
+        "file": "views.py",
+        "line": 2,
+        "change_anchor": {"file": "views.py", "line": 2, "side": "new"},
+        "evidence": "views.py:2 saves with owner=None",
+        "attack_path": "anyone creates an unowned record",
+        "evidence_refs": ["seed"],
+    }
 
 
 def test_run_reviews_the_pinned_range_through_the_product_command(tmp_path, case, scripted_model, owner_finding):
     """A scripted finding is recorded with its anchor, and the prompt carries the pinned patch."""
-    provider = scripted_model([owner_finding.reply])
+    provider = scripted_model([owner_finding])
 
     (record,) = _run([case], tmp_path / "reviews")
 
@@ -89,7 +86,7 @@ def test_run_reviews_the_pinned_range_through_the_product_command(tmp_path, case
 
 def test_run_reports_each_case_start_and_finish(tmp_path, case, scripted_model, owner_finding):
     """One case with one scripted finding emits a started event and a finished event with reports 1."""
-    scripted_model([owner_finding.reply])
+    scripted_model([owner_finding])
     events = []
 
     _run([case], tmp_path / "reviews", progress=events.append)
@@ -100,11 +97,11 @@ def test_run_reports_each_case_start_and_finish(tmp_path, case, scripted_model, 
 
 
 def test_run_records_a_failed_review_with_its_reason(tmp_path, case, scripted_model):
-    """With runs=2 and a provider raising backend stalled, attempt 1 records the error and no findings."""
+    """With repeat=2 and a provider raising backend stalled, attempt 1 records the error and no findings."""
     scripted_model(error=RuntimeError("backend stalled"))
     events = []
 
-    failed, again = _run([case], tmp_path / "reviews", runs=2, progress=events.append)
+    failed, again = _run([case], tmp_path / "reviews", repeat=2, progress=events.append)
 
     assert (failed["attempt"], failed["complete"], again["attempt"]) == (1, False, 2)
     assert "backend stalled" in failed["error"]
@@ -124,7 +121,6 @@ def test_run_validates_change_anchors_before_any_model_call(tmp_path, case, scri
 
 def test_run_aborts_on_missing_provider_credentials(tmp_path, case, scripted_model, monkeypatch):
     """Removing CYBERJURY_API_KEY makes the run exit via SystemExit without recording an attempt."""
-    scripted_model()
     monkeypatch.delenv("CYBERJURY_API_KEY")
     records = []
 
@@ -133,9 +129,8 @@ def test_run_aborts_on_missing_provider_credentials(tmp_path, case, scripted_mod
     assert records == []
 
 
-def test_an_interrupted_review_stops_the_run(tmp_path, case, scripted_model, monkeypatch):
+def test_an_interrupted_review_stops_the_run(tmp_path, case, monkeypatch):
     """An interrupted review raises KeyboardInterrupt instead of recording the case and moving on."""
-    scripted_model()
     interrupted = Record(
         id="attempt-20260101-000000-11111111",
         status="interrupted",

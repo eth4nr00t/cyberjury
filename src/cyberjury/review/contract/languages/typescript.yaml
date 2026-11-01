@@ -3,8 +3,10 @@ grammar: [tree_sitter_typescript, language_typescript]
 inherits: javascript
 files:
   test_name_patterns:
+    - "*.spec.cts"
     - "*.spec.mts"
     - "*.spec.ts"
+    - "*.test.cts"
     - "*.test.mts"
     - "*.test.ts"
 syntax:

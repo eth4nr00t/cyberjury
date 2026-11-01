@@ -16,9 +16,9 @@ A = "candidate-" + "a" * 20
 def fake_diff_run(monkeypatch):
     """Replace the diff runner with one that records an empty attempt per case and run, complete only in run 1."""
 
-    def run(cases, *, runs, on_attempt, **kwargs):
+    def run(cases, *, repeat, on_attempt, **kwargs):
         records = []
-        for number in range(1, runs + 1):
+        for number in range(1, repeat + 1):
             for case in cases:
                 record = {"case": case.name, "attempt": number, "complete": number == 1, "error": "", "findings": []}
                 if number > 1:
@@ -83,7 +83,7 @@ def test_packets_ledger_and_report_measure_one_adjudicated_run(tmp_path, capsys,
         "check_ids": ["create-missing-owner"],
         "evidence": [{"file": "views.py", "line": 2}],
         "reason": "The view saves without an ownership check at views.py:2.",
-        "proof_gap": None,
+        "proof_gap": "",
     }
     result = [{"case": entry["case"], "records": [record], "check_notes": {"create-missing-owner": "valid"}}]
     (out / "result-1.json").write_text(json.dumps(result), encoding="utf-8")

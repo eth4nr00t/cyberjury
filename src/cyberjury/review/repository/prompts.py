@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cyberjury.review.prompts import finder_system, finding_fields, finding_schema
+from cyberjury.review.prompts import fenced_source, finder_system, finding_fields, finding_schema
 from cyberjury.review.schemas import finder_response_schema
 
 REPOSITORY_FINDING_SCHEMA = finding_schema()
@@ -23,3 +23,8 @@ def repository_finder_system(*, security_kernel: str, severity_rubric: str, navi
         severity_rubric=severity_rubric,
         navigation=navigation,
     )
+
+
+def repository_seed(numbered_source: str) -> str:
+    """Render one repository unit's numbered source as the code under review."""
+    return f"Code under review, cited as `seed`:\n{fenced_source(numbered_source)}"

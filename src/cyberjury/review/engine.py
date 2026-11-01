@@ -49,7 +49,7 @@ class ReviewCycle:
 
     @property
     def clean(self) -> bool:
-        """Allow judgment with visible limitations while rejecting unavailable evidence."""
+        """Report whether every finding is located, nothing failed, and all required evidence is resolved."""
         return not self.incomplete and not self.failure_reason and self.grounding.complete
 
 

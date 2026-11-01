@@ -69,6 +69,21 @@ class SourceSpan:
         """Return one exact source line range."""
         return {"file": self.file, "range": [self.start_line, self.end_line]}
 
+    @classmethod
+    def from_dict(cls, value: object) -> SourceSpan:
+        """Parse one source line range written by `to_dict`."""
+        if not isinstance(value, dict) or set(value) != {"file", "range"}:
+            raise ValueError("source span fields are invalid")
+        file, lines = value["file"], value["range"]
+        if not isinstance(file, str) or not isinstance(lines, list) or len(lines) != 2 or not all(map(is_line, lines)):
+            raise ValueError("source span values are invalid")
+        return cls(file=file, start_line=lines[0], end_line=lines[1])
+
+
+def is_line(value: object) -> bool:
+    """Report whether a value is a 1-based line number."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
 
 def numbered_source_range(file: str, source: str, start: int, end: int) -> tuple[str, SourceSpan]:
     """Number one exact character range of a file and record the lines it covers."""
@@ -198,14 +213,14 @@ def is_evidence_id(value: str) -> bool:
 
 
 def evidence_request_ids(requested: list[str]) -> tuple[str, ...]:
-    """Validate one exact request batch and collapse semantically identical ids."""
+    """Validate one request batch and drop repeated ids, keeping their first occurrence order."""
     if len(requested) > _EXECUTION.max_evidence_requests_per_batch:
         raise EvidenceRequestError(
             f"evidence_requests cannot contain more than {_EXECUTION.max_evidence_requests_per_batch} ids"
         )
     if any(len(item) > _MAX_EVIDENCE_ID_CHARS for item in requested):
         raise EvidenceRequestError("evidence_requests contain an oversized evidence id")
-    if any(not _EVIDENCE_ID.fullmatch(item) for item in requested):
+    if not all(is_evidence_id(item) for item in requested):
         raise EvidenceRequestError("evidence_requests contain a malformed evidence id")
     return tuple(dict.fromkeys(requested))
 

@@ -260,7 +260,7 @@ cases:
         root_cause: _is_public_ip treats an address as internal only when ipaddress reports it private, loopback, link-local, multicast or unspecified (src/documents/signals/handlers.py:680), so RFC 6598 shared address space 100.64.0.0/10 destinations count as public and pass send_webhook's internal-request block (src/documents/signals/handlers.py:727)
         locations:
           - {file: src/documents/signals/handlers.py, symbol: _is_public_ip}
-      - id: webhook-ssrf
+      - id: webhook-dns-rebinding-ssrf
         root_cause: send_webhook validates only the first resolved IP of the URL host (src/documents/signals/handlers.py:725), then httpx re-resolves it at request time (src/documents/signals/handlers.py:749), so the private-address block is not pinned to the connection actually made and a rebinding host reaches internal services
         locations:
           - {file: src/documents/signals/handlers.py, symbol: send_webhook}
@@ -459,7 +459,7 @@ cases:
           - {file: src-ui/src/app/components/manage/storage-path-list/storage-path-list.component.ts, line: 43, side: new}
           - {file: src-ui/src/app/components/manage/storage-path-list/storage-path-list.component.ts, line: 46, side: new}
       - id: storage-path-template-denial-of-service
-        root_cause: validate_filepath_template_and_render (src/documents/templating/filepath.py:317) renders filenames in a SandboxedEnvironment without intercepted binops or output limits, so string multiplication in a path template is unbounded
+        root_cause: validate_filepath_template_and_render (src/documents/templating/filepath.py:317) renders filenames in a SandboxedEnvironment without intercepted binops or output limits, so string multiplication in a path template allocates unbounded memory at render
         locations:
           - {file: src/documents/templating/filepath.py, line: 317}
         change_anchors:
@@ -512,7 +512,7 @@ cases:
         change_anchors:
           - {file: src/paperless_mail/views.py, line: 110, side: new}
       - id: oauth-mail-account-missing-owner
-        root_cause: OauthCallbackView creates the Gmail/Outlook MailAccount via update_or_create (src/paperless_mail/views.py:153) without setting owner=request.user, so the account and token are ownerless
+        root_cause: OauthCallbackView creates the Gmail/Outlook MailAccount via update_or_create (src/paperless_mail/views.py:153) without setting owner=request.user, so the account and token are ownerless and visible to every mail-permission holder
         locations:
           - {file: src/paperless_mail/views.py, line: 153}
         change_anchors:

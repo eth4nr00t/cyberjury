@@ -16,6 +16,7 @@ from cyberjury.review.request import (
     ReviewAttemptRequest,
     ReviewIntent,
     TargetInput,
+    endpoint_identity,
     seat_identity,
 )
 from cyberjury.review.result import SkippedFiles, findings_artifact
@@ -30,10 +31,10 @@ _FACTS = FactsReceipt.create(backend_id="test", facts=Facts())
 
 def _request() -> ReviewAttemptRequest:
     seat = ProviderSeatRecord(
-        seat_id=seat_identity("mock", "mock", "default"),
+        seat_id=seat_identity("mock", "mock", endpoint_identity("https://api.example.test")),
         provider="mock",
         model="mock",
-        endpoint_identity="default",
+        endpoint_identity=endpoint_identity("https://api.example.test"),
     )
     return ReviewAttemptRequest(
         engine_version="test",

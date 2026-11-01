@@ -14,7 +14,6 @@ from cyberjury.providers.base import (
 )
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
-_RESPONSES_MIN_OUTPUT_TOKENS = 8_000
 
 
 class OpenAIProvider(Provider):
@@ -24,7 +23,7 @@ class OpenAIProvider(Provider):
         self,
         *,
         api_key: str | None = None,
-        base_url: str | None = None,
+        base_url: str = DEFAULT_BASE_URL,
         client: Any | None = None,
         timeout: float = REQUEST_TIMEOUT_SECONDS,
     ) -> None:
@@ -38,9 +37,7 @@ class OpenAIProvider(Provider):
         if self._client is None:
             import openai
 
-            self._client = openai.OpenAI(
-                api_key=self._api_key, base_url=self._base_url or DEFAULT_BASE_URL, max_retries=0
-            )
+            self._client = openai.OpenAI(api_key=self._api_key, base_url=self._base_url, max_retries=0)
         return self._client
 
     def complete(
@@ -59,7 +56,7 @@ class OpenAIProvider(Provider):
             model=model,
             instructions=system,
             input=[{"role": "user", "content": prompt}],
-            max_output_tokens=max(max_tokens, _RESPONSES_MIN_OUTPUT_TOKENS),
+            max_output_tokens=max_tokens,
             timeout=self._timeout,
             prompt_cache_key=hashlib.sha256(f"{system}\x00{cache_prefix}".encode()).hexdigest()[:32],
             text={
@@ -74,10 +71,10 @@ class OpenAIProvider(Provider):
         status = getattr(response, "status", "completed")
         if status != "completed":
             raise RuntimeError(f"response did not complete: {status}")
-        return CompletionResult(text=getattr(response, "output_text", "") or "", usage=_responses_usage(response))
+        return CompletionResult(text=getattr(response, "output_text", "") or "", usage=_usage(response))
 
 
-def _responses_usage(response: Any) -> Usage:
+def _usage(response: Any) -> Usage:
     u = getattr(response, "usage", None)
     if u is None:
         return Usage()

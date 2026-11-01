@@ -288,6 +288,11 @@ def _check_queries(spec: LangSpec) -> None:
             raise AnalyzerConfigurationError(f"{spec.name} structural relationship query lacks required captures")
 
 
+def _first_capture(captures: dict[str, list[Node]], name: str) -> Node | None:
+    nodes = captures.get(name)
+    return nodes[0] if nodes else None
+
+
 def _matches(query: Query, node: Node) -> Iterator[dict[str, list[Node]]]:
     from tree_sitter import QueryCursor
 
@@ -355,8 +360,8 @@ def _nearest_definition(node: Node, index: _DefinitionIndex) -> tuple[Node, Node
 def _definition_nodes(root: Node, spec: LangSpec) -> tuple[tuple[Node, Node], ...]:
     by_name_range: dict[tuple[int, int], tuple[Node, Node]] = {}
     for captures in _matches(_compiled(spec, spec.definitions), root):
-        node = (captures.get("def") or [None])[0]
-        identifier = (captures.get("name") or [None])[0]
+        node = _first_capture(captures, "def")
+        identifier = _first_capture(captures, "name")
         if node is None or identifier is None:
             continue
         key = (identifier.start_byte, identifier.end_byte)
@@ -387,21 +392,21 @@ def _definition_calls(
 ) -> tuple[tuple[str, ...], tuple[AnalyzedCallsite, ...]]:
     callsites: dict[tuple[int, int], AnalyzedCallsite] = {}
     for captures in _matches(call_query, node):
-        call = (captures.get("call") or [None])[0]
+        call = _first_capture(captures, "call")
         owner = _nearest_definition(call, definition_index) if call is not None else None
         belongs = owner is None if file_scope else owner is not None and owner[0] == node
         if call is None or not belongs:
             continue
-        callee = (captures.get("callee") or [None])[0]
+        callee = _first_capture(captures, "callee")
         if callee is not None:
             called = _text(source, callee)
             callsite = _analyzed_callsite(source, call, called, offsets=offsets)
             callsites.setdefault((callsite.start, callsite.end), callsite)
             continue
-        member = (captures.get("member") or [None])[0]
+        member = _first_capture(captures, "member")
         if member is not None:
             called = _text(source, member)
-            receiver = (captures.get("receiver") or [None])[0]
+            receiver = _first_capture(captures, "receiver")
             receiver_text = _text(source, receiver) if receiver is not None else ""
             callsite = _analyzed_callsite(source, call, called, receiver=receiver_text, offsets=offsets)
             callsites.setdefault((callsite.start, callsite.end), callsite)
@@ -454,7 +459,7 @@ def _definitions(tree: _ParsedTree, file: str) -> tuple[AnalyzedDefinition, ...]
     type_ranges = {
         (node.start_byte, node.end_byte)
         for captures in _matches(_compiled(spec, spec.type_definitions), root)
-        if (node := (captures.get("type") or [None])[0]) is not None and captures.get("name")
+        if (node := _first_capture(captures, "type")) is not None and captures.get("name")
     }
     definitions: list[AnalyzedDefinition] = []
     for node, identifier in definition_nodes:
@@ -529,7 +534,7 @@ def _imports(tree: _ParsedTree) -> tuple[AnalyzedImport, ...]:
                 imported_names = (import_query.imported,)
             if not modules or not statements or not imported_names:
                 continue
-            module = _text(source, modules[0])
+            module = _text(source, modules[0]).strip("\"'")
             owner = _lexical_owner(source, modules[0], definition_index, offsets)
             statement = statements[0]
             start, end = _node_range(statement, offsets)

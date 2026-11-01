@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cyberjury.providers.anthropic import AnthropicProvider, _extract_usage
+from cyberjury.providers.anthropic import AnthropicProvider, _usage
 from cyberjury.providers.base import ResponseSchema, Usage
 
 _SCHEMA = ResponseSchema(
@@ -20,14 +20,16 @@ _SCHEMA = ResponseSchema(
 
 
 class _FakeClient:
-    def __init__(self):
+    def __init__(self, stop_reason: str = "end_turn"):
         self.create_kwargs = {}
+        self.stop_reason = stop_reason
         self.messages = SimpleNamespace(create=self._create)
 
     def _create(self, **kwargs):
         self.create_kwargs = kwargs
         return SimpleNamespace(
             content=[SimpleNamespace(text="he"), SimpleNamespace(text="llo")],
+            stop_reason=self.stop_reason,
         )
 
 
@@ -45,7 +47,7 @@ def _sent(content: str, **values) -> dict:
 
 
 def test_maps_the_request_and_joins_text_blocks():
-    """Text blocks he and llo join to hello, and the SDK gets messages, max_tokens 64, and temperature 0."""
+    """Text blocks he and llo join to hello, and the SDK gets messages, max_tokens 64, and no temperature."""
     client = _FakeClient()
     result = AnthropicProvider(client=client).complete(
         system="sys", prompt="hi", model="m", max_tokens=64, response_schema=_SCHEMA
@@ -54,7 +56,7 @@ def test_maps_the_request_and_joins_text_blocks():
     assert result.text == "hello"
     assert client.create_kwargs["messages"] == [{"role": "user", "content": "hi"}]
     assert client.create_kwargs["max_tokens"] == 64
-    assert client.create_kwargs["temperature"] == 0
+    assert "temperature" not in client.create_kwargs
 
 
 def test_caches_the_system_and_sends_the_strict_output_schema():
@@ -92,76 +94,35 @@ def test_cache_prefix_equal_to_the_message_marks_a_single_block():
     ]
 
 
-def test_extract_usage_maps_cache_read_and_write_separately():
-    """Usage cache_creation_input_tokens 2600 maps to cache_write_tokens, and cache reads map separately."""
+def test_usage_maps_cache_read_and_write_separately():
+    """Usage cache_creation_input_tokens 2600 maps to cache_write_tokens, and cache_read_input_tokens 700 to reads."""
     response = SimpleNamespace(
         usage=SimpleNamespace(
-            input_tokens=30, output_tokens=12, cache_creation_input_tokens=2600, cache_read_input_tokens=0
+            input_tokens=30, output_tokens=12, cache_creation_input_tokens=2600, cache_read_input_tokens=700
         )
     )
-    assert _extract_usage(response) == Usage(
-        input_tokens=30, output_tokens=12, cache_write_tokens=2600, cache_read_tokens=0
-    )
+    assert _usage(response) == Usage(input_tokens=30, output_tokens=12, cache_write_tokens=2600, cache_read_tokens=700)
 
 
-def test_extract_usage_defaults_to_zero_when_unreported():
+def test_unreported_usage_is_zero():
     """A response without a usage attribute yields an all-zero Usage."""
-    assert _extract_usage(SimpleNamespace(model="m")) == Usage()
+    assert _usage(SimpleNamespace(model="m")) == Usage()
 
 
-class _BadRequest(Exception):
-    status_code = 400
-
-
-class _RecordingClient:
-    def __init__(self, reject_temperature: bool):
-        self.reject_temperature = reject_temperature
-        self.calls: list[dict] = []
-        self.messages = SimpleNamespace(create=self._create)
-
-    def _create(self, **kwargs):
-        self.calls.append(kwargs)
-        if self.reject_temperature and "temperature" in kwargs:
-            raise _BadRequest("Error code: 400 - 'temperature' is deprecated for this model.")
-        return SimpleNamespace(content=[SimpleNamespace(text="ok")], model="m")
-
-
-def _run(provider):
-    return provider.complete(system="s", prompt="x", model="opus", max_tokens=8, response_schema=_SCHEMA)
-
-
-def test_drops_temperature_when_model_rejects_it_then_skips_it():
-    """A 400 rejecting temperature is retried without it, and later calls omit temperature from the start."""
-    client = _RecordingClient(reject_temperature=True)
-    provider = AnthropicProvider(client=client)
-    assert _run(provider).text == "ok"
-    assert "temperature" in client.calls[0]
-    assert "temperature" not in client.calls[1]
-    _run(provider)
-    assert len(client.calls) == 3
-    assert "temperature" not in client.calls[2]
-
-
-def test_non_temperature_bad_request_still_fails_loud():
-    """A 400 about max_tokens propagates after one call instead of triggering the temperature retry."""
-
-    class _OtherBadRequest(_RecordingClient):
-        def _create(self, **kwargs):
-            self.calls.append(kwargs)
-            raise _BadRequest("Error code: 400 - max_tokens exceeds the model limit.")
-
-    client = _OtherBadRequest(reject_temperature=False)
-    provider = AnthropicProvider(client=client)
-    with pytest.raises(_BadRequest):
-        _run(provider)
-    assert len(client.calls) == 1
+@pytest.mark.parametrize("stop_reason", ["refusal", "max_tokens"])
+def test_a_refused_or_truncated_reply_raises_instead_of_returning_partial_output(stop_reason):
+    """A refusal or max_tokens stop raises 'response did not complete' with the stop reason."""
+    with pytest.raises(RuntimeError, match=f"response did not complete: {stop_reason}"):
+        AnthropicProvider(client=_FakeClient(stop_reason)).complete(
+            system="s", prompt="x", model="m", max_tokens=64, response_schema=_SCHEMA
+        )
 
 
 @pytest.mark.parametrize(
-    ("base_url", "expected"),
-    [("https://gateway.example.test", "https://gateway.example.test"), (None, "https://api.anthropic.com")],
+    ("endpoint", "expected"),
+    [({"base_url": "https://gateway.example.test"}, "https://gateway.example.test"), ({}, "https://api.anthropic.com")],
 )
-def test_the_client_gets_the_key_and_the_configured_or_official_endpoint(monkeypatch, base_url, expected):
+def test_the_client_gets_the_key_and_the_configured_or_official_endpoint(monkeypatch, endpoint, expected):
     """The SDK gets the key, the gateway or else the official Anthropic API, and max_retries=0."""
     captured = {}
 
@@ -171,6 +132,6 @@ def test_the_client_gets_the_key_and_the_configured_or_official_endpoint(monkeyp
 
     monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(Anthropic=_Anthropic))
 
-    AnthropicProvider(api_key="k", base_url=base_url)._get_client()
+    AnthropicProvider(api_key="k", **endpoint)._get_client()
 
     assert captured == {"api_key": "k", "base_url": expected, "max_retries": 0}

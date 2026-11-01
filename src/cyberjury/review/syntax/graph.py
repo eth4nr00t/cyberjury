@@ -13,6 +13,7 @@ from cyberjury.review.relationships import (
 )
 from cyberjury.review.syntax.analyzer import (
     AnalyzedDefinition,
+    AnalyzedImport,
     AnalyzedNamespace,
     AnalyzedOwner,
     AnalyzedRepository,
@@ -108,7 +109,7 @@ def _declaration_observations(
                 kind="import_declaration",
                 subject_ids=(callsite.id,),
                 provenance_source_ids=(definition.source.id, call_source.id, declaration.id),
-                label=f"{item.local} from {_module_name(item.module)}",
+                label=_import_label(item),
             )
         )
     for item in repository.namespaces.get(analyzed.file, ()):
@@ -139,37 +140,6 @@ def _structural_relationships(
         (analyzed.file, analyzed.name, analyzed.start, analyzed.end): evidence.id
         for analyzed, evidence in zip(repository.definitions, definitions, strict=True)
     }
-    relationships: dict[str, StructuralRelationshipEvidence] = {}
-    for file, imports in repository.imports.items():
-        source = repository.sources[file]
-        for item in imports:
-            relationship = StructuralRelationshipEvidence.create(
-                kind="import",
-                source=_source_reference(file, source, item.start, item.end),
-                reference=item.imported,
-                source_definition_id=_owner_id(file, item.owner, by_owner),
-            )
-            relationships.setdefault(relationship.id, relationship)
-    for file, namespaces in repository.namespaces.items():
-        source = repository.sources[file]
-        for item in namespaces:
-            relationship = StructuralRelationshipEvidence.create(
-                kind="namespace",
-                source=_source_reference(file, source, item.start, item.end),
-                reference=_namespace_label(item),
-                source_definition_id=_owner_id(file, item.owner, by_owner),
-            )
-            relationships.setdefault(relationship.id, relationship)
-    for file, uses in repository.qualified_uses.items():
-        source = repository.sources[file]
-        for item in uses:
-            relationship = StructuralRelationshipEvidence.create(
-                kind="reference",
-                source=_source_reference(file, source, item.start, item.end),
-                reference=f"{item.qualifier}.{item.name}",
-                source_definition_id=_owner_id(file, item.owner, by_owner),
-            )
-            relationships.setdefault(relationship.id, relationship)
     definitions_by_name: dict[str, tuple[str, ...]] = {}
     for definition in definitions:
         if definition.kind != "type":
@@ -177,17 +147,29 @@ def _structural_relationships(
         definitions_by_name[definition.name] = tuple(
             sorted((*definitions_by_name.get(definition.name, ()), definition.id))
         )
-    for file, values in repository.structural_relationships.items():
-        source = repository.sources[file]
-        for item in values:
-            relationship = StructuralRelationshipEvidence.create(
-                kind=item.kind,
-                source=_source_reference(file, source, item.start, item.end),
-                reference=item.reference,
-                source_definition_id=_owner_id(file, item.owner, by_owner),
-                candidate_target_definition_ids=definitions_by_name.get(item.target_name, ()),
-            )
-            relationships.setdefault(relationship.id, relationship)
+    families = (
+        (repository.imports, lambda item: ("import", item.imported, ())),
+        (repository.namespaces, lambda item: ("namespace", _namespace_label(item), ())),
+        (repository.qualified_uses, lambda item: ("reference", f"{item.qualifier}.{item.name}", ())),
+        (
+            repository.structural_relationships,
+            lambda item: (item.kind, item.reference, definitions_by_name.get(item.target_name, ())),
+        ),
+    )
+    relationships: dict[str, StructuralRelationshipEvidence] = {}
+    for items_by_file, describe in families:
+        for file, items in items_by_file.items():
+            source = repository.sources[file]
+            for item in items:
+                kind, reference, candidates = describe(item)
+                relationship = StructuralRelationshipEvidence.create(
+                    kind=kind,
+                    source=_source_reference(file, source, item.start, item.end),
+                    reference=reference,
+                    source_definition_id=_owner_id(file, item.owner, by_owner),
+                    candidate_target_definition_ids=candidates,
+                )
+                relationships.setdefault(relationship.id, relationship)
     return tuple(sorted(relationships.values(), key=lambda item: (item.source.path, item.source.start, item.id)))
 
 
@@ -262,7 +244,7 @@ def render_by_file(repository: AnalyzedRepository) -> dict[str, str]:
             line += "  observes calls " + ", ".join(definition.calls)
         output.setdefault(definition.file, []).append(line)
     for file, imports in repository.imports.items():
-        values = tuple(dict.fromkeys(f"{item.local} from {_module_name(item.module)}" for item in imports))
+        values = tuple(dict.fromkeys(_import_label(item) for item in imports))
         if values:
             output.setdefault(file, []).insert(0, "  observes imports " + ", ".join(values))
     for file, namespaces in repository.namespaces.items():
@@ -272,8 +254,8 @@ def render_by_file(repository: AnalyzedRepository) -> dict[str, str]:
     return {file: f"{file}\n" + "\n".join(lines) for file, lines in output.items()}
 
 
-def _module_name(value: str) -> str:
-    return value.strip("\"'")
+def _import_label(value: AnalyzedImport) -> str:
+    return f"{value.local} from {value.module}"
 
 
 def _namespace_label(value: AnalyzedNamespace) -> str:

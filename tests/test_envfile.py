@@ -45,8 +45,8 @@ def test_env_example_documents_cli_runtime_environment():
     assert sorted(name for name in names if f"{name}=" not in text) == []
 
 
-def test_the_example_copied_as_is_selects_the_defaults(tmp_path, monkeypatch):
-    """An unedited .env.example copy selects the openai seat defaults, concurrency 8, and the default state dir."""
+def test_the_example_spells_out_the_openai_defaults(tmp_path, monkeypatch):
+    """A .env.example copy selects openai, gpt-6-astra, the OpenAI API, concurrency 8, and the state dir."""
     (tmp_path / ".env").write_text((_ROOT / ".env.example").read_text(encoding="utf-8"), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     _forget_after_test(monkeypatch, *_environment_names_read_by_the_cli())

@@ -40,7 +40,6 @@ def _review_attempt(directory, reviewed_root, *, target=None):
         "findings": [
             {
                 "id": A,
-                "fingerprint": "fingerprint-" + "0" * 20,
                 "title": "Create saves without an owner check",
                 "category": "missing-authorization",
                 "severity": "HIGH",

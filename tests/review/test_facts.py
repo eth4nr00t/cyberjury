@@ -4,12 +4,14 @@ from cyberjury.review.facts import FactLimitation, Facts, FactsReceipt
 
 
 def test_facts_receipt_binds_the_backend_and_its_evidence():
-    """Two v1 receipts from one backend whose a.py facts differ ("one" vs "two") have different hashes."""
+    """A v1 receipt hash changes when the a.py facts change and when the same facts come from another backend."""
     first = FactsReceipt.create(backend_id="backend", facts=Facts(by_file={"a.py": "one"}))
     second = FactsReceipt.create(backend_id="backend", facts=Facts(by_file={"a.py": "two"}))
+    other_backend = FactsReceipt.create(backend_id="other-backend", facts=Facts(by_file={"a.py": "one"}))
 
     assert first.to_dict()["schema"] == "cyberjury.facts/v1"
     assert first.receipt_sha256 != second.receipt_sha256
+    assert first.receipt_sha256 != other_backend.receipt_sha256
 
 
 def test_fact_limitation_identity_names_its_location():

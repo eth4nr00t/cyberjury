@@ -11,7 +11,7 @@ from cyberjury.review.failures import BackendUnavailable
 from tests.review.support import definition
 
 
-def test_diff_unit_planners_return_an_empty_worklist_for_empty_input(tmp_path):
+def test_build_diff_units_of_an_empty_diff_is_empty(tmp_path):
     """An empty diff string with no definitions plans no units."""
     assert build_diff_units("", root=tmp_path, definitions=()) == []
 

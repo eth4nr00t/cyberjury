@@ -122,7 +122,7 @@ def finding_fields(extension: str = "") -> str:
     return "\n".join(part for part in (location, extension, claim) if part)
 
 
-REQUEST_FIELDS = (
+_REQUEST_FIELDS = (
     "- `evidence_requests`: unread published ids needed to decide exploitability, empty when none is needed.\n"
     "- `source_queries`: searches needed to decide exploitability, empty when none is needed or source "
     "navigation is unavailable."
@@ -149,6 +149,6 @@ def finder_system(
         _EVIDENCE_RULES,
         navigation.strip(),
         "# Output Fields\n\nThe provider enforces the response schema. Field meanings:\n"
-        f"{output_fields}\n{REQUEST_FIELDS}",
+        f"{output_fields}\n{_REQUEST_FIELDS}",
     )
     return "\n\n".join(section for section in sections if section)

@@ -60,7 +60,7 @@ _REPEATED_QUERY_CORRECTION = (
 
 @dataclass(frozen=True, kw_only=True)
 class EvidenceJudgment:
-    """Findings and grounding receipt from one bounded evidence exchange."""
+    """Findings, grounding coverage, delivered source evidence, and any failure reason from one evidence exchange."""
 
     findings: list[Finding]
     grounding: GroundingCoverage = field(default_factory=GroundingCoverage)
@@ -275,8 +275,7 @@ class _EvidenceExchange:
         if self.evidence_exchanges >= self.followup_budget:
             return self.finish(
                 ("source navigation round limit reached",),
-                self.unknown_evidence_failure_reason
-                or f"finder requested evidence after {self.followup_budget} follow-ups",
+                self.unknown_evidence_failure_reason or _exhausted_followups_reason(self.followup_budget),
             )
         return self._deliver(requested, source_queries)
 
@@ -400,6 +399,12 @@ def _exchange_record(turn: _Turn, result: EvidenceJudgment | None) -> dict[str, 
     }
 
 
+def _exhausted_followups_reason(budget: int) -> str:
+    if budget == 0:
+        return "finder requested evidence, but this judgment has no evidence catalog or source navigation"
+    return f"finder requested evidence after {budget} follow-up{'' if budget == 1 else 's'}"
+
+
 def _malformed_request_correction(failure: str, valid_ids: tuple[str, ...]) -> str:
     resubmit = (
         " These requested ids are published and may be requested again: "
@@ -446,16 +451,17 @@ def _delivery_rejection(
     if isinstance(exc, UnknownEvidenceRequest):
         valid_requested_ids = tuple(item for item in requested if item in available_ids)
         valid_text = (
-            " The other ids in the rejected batch were valid but were not delivered. Resubmit only these exact ids: "
+            "The other ids in the rejected batch were valid but were not delivered. Resubmit only these exact ids: "
             + ", ".join(f"`{item}`" for item in valid_requested_ids)
-            + "."
+            + ". "
             if valid_requested_ids
             else ""
         )
+        count = len(exc.ids)
         return _RejectedBatch(
             "unknown_evidence",
-            f"The previous response requested {len(exc.ids)} unpublished evidence ids. "
-            f"{valid_text} Use only an exact id published earlier in this judgment. Do not invent or "
+            f"The previous response requested {count} unpublished evidence {'id' if count == 1 else 'ids'}. "
+            f"{valid_text}Use only an exact id published earlier in this judgment. Do not invent or "
             "transform ids. Use already delivered evidence or return the final judgment.",
             failure_reason=failure,
             unresolved=unresolved,
