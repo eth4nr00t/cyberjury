@@ -4,15 +4,21 @@ from __future__ import annotations
 
 from cyberjury.numbering import numbered_diff
 from cyberjury.review.prompts import (
-    CHANGE_ANCHOR_SCHEMA,
     fenced_source,
     finder_system,
     finding_fields,
     finding_schema,
 )
-from cyberjury.review.schemas import finder_response_schema
+from cyberjury.review.schemas import closed_object, finder_response_schema
 
-DIFF_FINDING_SCHEMA = finding_schema(change_anchor=CHANGE_ANCHOR_SCHEMA)
+_CHANGE_ANCHOR_SCHEMA = closed_object(
+    {
+        "file": {"type": "string"},
+        "line": {"type": "integer"},
+        "side": {"type": "string", "enum": ["old", "new"]},
+    }
+)
+DIFF_FINDING_SCHEMA = finding_schema(change_anchor=_CHANGE_ANCHOR_SCHEMA)
 FINDER_RESPONSE_SCHEMA = finder_response_schema("diff_finder_reply", DIFF_FINDING_SCHEMA)
 
 _DIFF_SCOPE = """The user message contains one code change as a numbered unified diff, cited as `seed`, followed \

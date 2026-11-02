@@ -66,19 +66,19 @@ def _is_rate_limit(exc: BaseException) -> bool:
 
 
 def _retry_after(exc: BaseException) -> float | None:
-    resp = getattr(exc, "response", None)
-    headers = getattr(resp, "headers", None)
+    headers = getattr(getattr(exc, "response", None), "headers", None)
     if headers is not None and hasattr(headers, "get"):
-        raw = headers.get("retry-after") or headers.get("Retry-After")
-        if raw is not None:
-            try:
-                return float(raw)
-            except (TypeError, ValueError):
-                pass
+        delay = _seconds(headers.get("retry-after") or headers.get("Retry-After"))
+        if delay is not None:
+            return delay
     raw = getattr(exc, "retry_after", None)
     body = getattr(exc, "body", None)
     if raw is None and isinstance(body, dict):
         raw = body.get("retry_after")
+    return _seconds(raw)
+
+
+def _seconds(raw: object) -> float | None:
     if raw is None:
         return None
     try:
@@ -150,9 +150,9 @@ class RetryProvider(Provider):
                 continue
             usage = _add_usage(usage, result.usage)
             blank = not result.text.strip()
-            complete = not blank and parse_json_object(result.text) is not None
+            parsed = not blank and parse_json_object(result.text) is not None
             last = attempt == self._max_attempts
-            if complete or (last and not blank):
+            if parsed or (last and not blank):
                 return replace(result, usage=usage, attempts=attempt)
             if last:
                 raise EmptyResponseError("provider returned a blank response after all attempts", attempts=attempt)

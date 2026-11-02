@@ -94,7 +94,7 @@ class _RejectedBatch(Exception):
 
 
 class _MalformedEvidenceRequest(EvidenceRequestError):
-    def __init__(self, failure: str, findings: tuple[object, ...], requested: tuple[str, ...]) -> None:
+    def __init__(self, failure: str, findings: tuple[Finding, ...], requested: tuple[str, ...]) -> None:
         self.findings = findings
         self.requested = requested
         super().__init__(failure)
@@ -122,6 +122,18 @@ class _FindingPools:
         self.committed.add(self.awaiting_evidence.findings)
         self.committed.add(findings)
         return self.committed.findings
+
+
+@dataclass(kw_only=True)
+class _Turn:
+    findings: int = 0
+    deferred: int = 0
+    requested: list[str] = field(default_factory=list)
+    source_queries: list[dict[str, object]] = field(default_factory=list)
+    delivered: list[str] = field(default_factory=list)
+    delivered_chars: int = 0
+    held: list[str] = field(default_factory=list)
+    correction: str | None = None
 
 
 class _EvidenceExchange:
@@ -374,18 +386,6 @@ def run_evidence_judgment(
         if result is not None:
             return result
         call_index += 1
-
-
-@dataclass(kw_only=True)
-class _Turn:
-    findings: int = 0
-    deferred: int = 0
-    requested: list[str] = field(default_factory=list)
-    source_queries: list[dict[str, object]] = field(default_factory=list)
-    delivered: list[str] = field(default_factory=list)
-    delivered_chars: int = 0
-    held: list[str] = field(default_factory=list)
-    correction: str | None = None
 
 
 def _with_request_budget(prompt: EvidencePromptContext, remaining: int) -> EvidencePromptContext:

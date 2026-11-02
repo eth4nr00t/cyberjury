@@ -8,8 +8,8 @@
 
 AI-assisted security review for code diffs and repositories.
 
-- **Diff review** checks the changes in a Git range, with the repository as context, and anchors each finding to the changed line it concerns. It does not cover code outside the diff, so it is no substitute for a repository review.
-- **Repository review** checks a whole repository.
+- **Diff review** checks the changes in a Git range, with the repository as context, and anchors each finding to a changed line. It skips code outside the diff, so it cannot replace a repository review.
+- **Repository review** checks every source file in the repository and anchors each finding to the line that needs fixing.
 
 Structural code analysis covers C, C++, Go, Java, JavaScript, Python, Rust, Solidity, TypeScript, and TSX. Files in other languages are still reviewed from their raw source.
 

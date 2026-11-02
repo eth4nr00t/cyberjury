@@ -5,7 +5,7 @@ import pytest
 from cyberjury.review.context import SourceEvidence, SourceSpan
 from cyberjury.review.finding import Finding
 from cyberjury.review.repository.finder import locate
-from tests.review.repository.support import UnitReviewError, finder, finder_reply, finding, review, source_unit
+from tests.review.repository.support import UnitReviewError, finder, finder_reply, finding, review_unit, source_unit
 from tests.support import MockProvider
 
 
@@ -16,7 +16,7 @@ def test_repository_finding_location_must_be_covered_by_its_cited_source(tmp_pat
     reviewer = finder(MockProvider(default=reply))
 
     with pytest.raises(UnitReviewError, match="cited source receipt"):
-        review(reviewer, source_unit(tmp_path, "app.py", name="app"))
+        review_unit(reviewer, source_unit(tmp_path, "app.py", name="app"))
 
 
 def test_repository_location_uses_the_canonical_path_from_its_receipt():

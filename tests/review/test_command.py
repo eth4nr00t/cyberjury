@@ -132,16 +132,12 @@ def _git_change(repo: Path, base: dict[str, str], head: dict[str, str]) -> Simpl
         git(repo, "commit", "--quiet", "--allow-empty", "-m", message)
         if message == "base":
             base_revision = git(repo, "rev-parse", "HEAD")
-    return SimpleNamespace(
-        target=_diff(repo, f"{base_revision}..HEAD"),
-        repository=repo,
-        base=base_revision,
-    )
+    return SimpleNamespace(target=_diff(repo, f"{base_revision}..HEAD"), repository=repo)
 
 
 @pytest.fixture
 def diff_target(tmp_path):
-    """Commit one added file over an empty base and return its two-dot range target."""
+    """Commit one added file over an empty base and return its two-dot range target and repository."""
     return _git_change(tmp_path / "repo", {}, {"a.py": "x = 1\n"})
 
 

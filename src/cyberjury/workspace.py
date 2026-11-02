@@ -81,7 +81,7 @@ def read_json_object(path: Path) -> dict[str, object]:
     try:
         value = _loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise WorkspaceCorruptionError(f"cannot read {path.name}: {exc}") from exc
+        raise WorkspaceCorruptionError(f"could not read {path.name}: {exc}") from exc
     if not isinstance(value, dict):
         raise WorkspaceCorruptionError(f"{path.name} must contain a JSON object")
     return value
@@ -148,7 +148,7 @@ def _state_directory(root: str | Path, *parts: str) -> Path:
     current = raw_root.resolve()
     for part in parts:
         current /= part
-        _safe_directory(current)
+        _safe_directory(current, label="state namespace")
     return current
 
 

@@ -1,7 +1,5 @@
 """Resolved targets bind canonical Git comparisons to exact source roots."""
 
-from __future__ import annotations
-
 import pytest
 
 from cyberjury.review.target import (

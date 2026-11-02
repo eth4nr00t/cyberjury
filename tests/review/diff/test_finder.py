@@ -71,7 +71,7 @@ def test_diff_review_reports_a_malformed_change_anchor_as_failed_work():
 
 
 def test_diff_review_corrects_one_anchor_that_is_not_an_exact_changed_line():
-    """An anchor on unchanged line 2 gets a correction listing new lines 1 and the retry is accepted."""
+    """An anchor on new line 2, outside the one-line change, is corrected to new line 1 and the retry is accepted."""
     finding = {
         "file": "app.py",
         "line": 1,

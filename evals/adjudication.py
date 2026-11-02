@@ -33,34 +33,11 @@ class Adjudication:
 
 def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Path | None) -> Adjudication:
     """Validate one ledger against its attempt and case, and count reviewed credit and verdicts."""
-    validate_document(ledger, "eval-ledger-v1.schema.json", attempt.ledger_path)
-    if (
-        ledger["case"] != case.name
-        or ledger["attempt"] != attempt.number
-        or ledger["source_commit"] != case.target["commit"]
-        or ledger["attempt_sha256"] != attempt.sha256
-    ):
-        raise ValueError(f"{attempt.ledger_path} does not identify this attempt and pinned source")
-    if not attempt.complete:
-        raise ValueError(f"{attempt.path} is not a complete review")
-    if ledger["checks_sha256"] != checks_sha256(case):
-        raise ValueError(f"{attempt.ledger_path} was adjudicated against other case checks, adjudicate it again")
-    records = {record["candidate_id"]: record for record in ledger["records"]}
-    if len(records) != len(ledger["records"]) or set(records) != set(attempt.findings):
-        raise ValueError(f"{attempt.ledger_path} must assess every report of the attempt exactly once")
+    records = _validated_records(case, attempt, ledger, source)
     checks = {check.id for check in case.checks}
     credited = [check_id for record in ledger["records"] for check_id in record["check_ids"]]
     if not set(credited) <= checks:
         raise ValueError(f"{attempt.ledger_path} credits checks outside the case: {sorted(set(credited) - checks)}")
-    for identity, record in records.items():
-        canonical = record["canonical_id"]
-        if canonical is not None and (
-            canonical == identity or canonical not in records or records[canonical]["verdict"] == "duplicate"
-        ):
-            raise ValueError(f"{identity} needs a distinct canonical report that is not itself a duplicate")
-        if source is not None:
-            for location in record["evidence"]:
-                _require_source_line(source, location, identity)
     counts = Counter(record["verdict"] for record in ledger["records"])
     causes = [
         {
@@ -84,6 +61,34 @@ def adjudicate(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Pa
         round_id=ledger["round_id"],
         rubric_sha256=ledger["rubric_sha256"],
     )
+
+
+def _validated_records(case: BenchmarkCase, attempt: Attempt, ledger: object, source: Path | None) -> dict[str, dict]:
+    validate_document(ledger, "eval-ledger-v1.schema.json", attempt.ledger_path)
+    if (
+        ledger["case"] != case.name
+        or ledger["attempt"] != attempt.number
+        or ledger["source_commit"] != case.target["commit"]
+        or ledger["attempt_sha256"] != attempt.sha256
+    ):
+        raise ValueError(f"{attempt.ledger_path} does not identify this attempt and pinned source")
+    if not attempt.complete:
+        raise ValueError(f"{attempt.path} is not a complete review")
+    if ledger["checks_sha256"] != checks_sha256(case):
+        raise ValueError(f"{attempt.ledger_path} was adjudicated against other case checks, adjudicate it again")
+    records = {record["candidate_id"]: record for record in ledger["records"]}
+    if len(records) != len(ledger["records"]) or set(records) != set(attempt.findings):
+        raise ValueError(f"{attempt.ledger_path} must assess every report of the attempt exactly once")
+    for identity, record in records.items():
+        canonical = record["canonical_id"]
+        if canonical is not None and (
+            canonical == identity or canonical not in records or records[canonical]["verdict"] == "duplicate"
+        ):
+            raise ValueError(f"{identity} needs a distinct canonical report that is not itself a duplicate")
+        if source is not None:
+            for location in record["evidence"]:
+                _require_source_line(source, location, identity)
+    return records
 
 
 def _require_source_line(root: Path, location: dict, identity: str) -> None:

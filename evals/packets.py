@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from evals.adjudication import EVAL_LEDGER_SCHEMA, adjudicate
-from evals.attempts import Attempt, collect_attempts, load_attempt, read_json
+from evals.attempts import Attempt, collect_attempts, load_attempt, read_json, write_new_json
 from evals.benchmarks.cases import BenchmarkCase, checks_sha256, expected_checks
 from evals.benchmarks.targets import source_root, target_repository
 from evals.schemas import validate_document
@@ -61,34 +61,8 @@ def build_packets(
         by_case.setdefault(attempt.case, []).append(attempt)
     entries, labels = [], {}
     for name, case_attempts in sorted(by_case.items()):
-        case = cases[name]
-        ordered = sorted(case_attempts, key=lambda attempt: attempt.sha256)
-        if len(ordered) > len(string.ascii_uppercase):
-            raise ValueError(f"{name} has more attempts than run letters")
-        reports = []
-        for letter, attempt in zip(string.ascii_uppercase, ordered, strict=False):
-            for identity, finding in attempt.findings.items():
-                label = f"{name}#{len(reports) + 1}"
-                labels[label] = {"attempt": str(attempt.path.resolve()), "candidate_id": identity}
-                reports.append({"label": label, "run": letter} | _report(finding))
-        entry = {
-            "case": name,
-            "repository": str(target_repository(case.target)),
-            "commit": case.target["commit"],
-            "checks": expected_checks(case),
-        }
-        if "base" in case.target:
-            entry["base"] = case.target["base"]
-        size = max_reports or len(reports) or 1
-        located = sorted(reports, key=lambda report: (report["file"], report["line"]))
-        chunks = [located[start : start + size] for start in range(0, len(located), size)] or [[]]
-        for chunk in chunks:
-            part = entry | {"reports": chunk}
-            if len(chunks) > 1:
-                part["other_reports"] = [
-                    {key: report.get(key) for key in _INDEX} for report in reports if report not in chunk
-                ]
-            entries.append(part)
+        reports = _case_reports(name, case_attempts, labels)
+        entries.extend(_case_entries(cases[name], reports, max_reports))
     rubric = RUBRIC.read_bytes()
     mapping = {
         "round_id": f"round-{secrets.token_hex(8)}",
@@ -99,9 +73,7 @@ def build_packets(
         "labels": labels,
     }
     out.mkdir(parents=True, exist_ok=True)
-    mapping_path.parent.mkdir(parents=True, exist_ok=True)
-    with mapping_path.open("x", encoding="utf-8") as output:
-        output.write(json.dumps(mapping, indent=1))
+    write_new_json(mapping_path, mapping)
     (out / "INSTRUCTIONS.md").write_bytes(rubric)
     for group in range(groups):
         (out / f"packet-{group + 1}.json").write_text(
@@ -115,6 +87,43 @@ def build_packets(
         round_id=mapping["round_id"],
         mapping=mapping_path,
     )
+
+
+def _case_reports(name: str, attempts: list[Attempt], labels: dict[str, dict]) -> list[dict]:
+    ordered = sorted(attempts, key=lambda attempt: attempt.sha256)
+    if len(ordered) > len(string.ascii_uppercase):
+        raise ValueError(f"{name} has more attempts than run letters")
+    reports = []
+    for letter, attempt in zip(string.ascii_uppercase, ordered, strict=False):
+        for identity, finding in attempt.findings.items():
+            label = f"{name}#{len(reports) + 1}"
+            labels[label] = {"attempt": str(attempt.path.resolve()), "candidate_id": identity}
+            reports.append({"label": label, "run": letter} | _report(finding))
+    return reports
+
+
+def _case_entries(case: BenchmarkCase, reports: list[dict], max_reports: int | None) -> list[dict]:
+    entry = {
+        "case": case.name,
+        "repository": str(target_repository(case.target)),
+        "commit": case.target["commit"],
+        "checks": expected_checks(case),
+    }
+    if "base" in case.target:
+        entry["base"] = case.target["base"]
+    size = max_reports or len(reports) or 1
+    located = sorted(reports, key=lambda report: (report["file"], report["line"]))
+    chunks = [located[start : start + size] for start in range(0, len(located), size)] or [[]]
+    if len(chunks) == 1:
+        return [entry | {"reports": chunks[0]}]
+    return [
+        entry
+        | {
+            "reports": chunk,
+            "other_reports": [{key: report.get(key) for key in _INDEX} for report in reports if report not in chunk],
+        }
+        for chunk in chunks
+    ]
 
 
 def write_ledgers(

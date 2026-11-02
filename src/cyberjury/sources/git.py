@@ -57,7 +57,7 @@ def _git_environment() -> dict[str, str]:
 
 
 def _git(repository: str | Path, *arguments: str) -> str:
-    output = _git_limited_bytes(repository, arguments, limit=_MAX_GIT_LIST_BYTES, label="Git output")
+    output = _git_limited_bytes(repository, arguments)
     try:
         return output.decode("utf-8")
     except UnicodeError as exc:
@@ -68,8 +68,8 @@ def _git_limited_bytes(
     repository: str | Path,
     arguments: tuple[str, ...],
     *,
-    limit: int,
-    label: str,
+    limit: int = _MAX_GIT_LIST_BYTES,
+    label: str = "Git output",
 ) -> bytes:
     try:
         completed = subprocess.run(
@@ -119,8 +119,6 @@ def worktree_files(repository: str | Path) -> tuple[str, ...]:
     raw = _git_limited_bytes(
         repository,
         ("ls-files", "-z", "--cached", "--others", "--exclude-standard"),
-        limit=_MAX_GIT_LIST_BYTES,
-        label="Git output",
     )
     submodules = _submodule_paths(repository)
     files: list[str] = []
@@ -137,7 +135,7 @@ def worktree_files(repository: str | Path) -> tuple[str, ...]:
 
 
 def _submodule_paths(repository: str | Path) -> set[str]:
-    raw = _git_limited_bytes(repository, ("ls-files", "-z", "--stage"), limit=_MAX_GIT_LIST_BYTES, label="Git output")
+    raw = _git_limited_bytes(repository, ("ls-files", "-z", "--stage"))
     paths: set[str] = set()
     for record in raw.split(b"\0"):
         header, _, path = record.partition(b"\t")
@@ -204,8 +202,6 @@ def _git_blobs(repository: str, revision: str) -> tuple[_GitBlob, ...]:
     raw = _git_limited_bytes(
         repository,
         ("ls-tree", "-rz", "--full-tree", revision),
-        limit=_MAX_GIT_LIST_BYTES,
-        label="Git output",
     )
     blobs: list[_GitBlob] = []
     for record in raw.split(b"\0"):
@@ -256,7 +252,7 @@ def _write_git_blobs(repository: str, blobs: tuple[_GitBlob, ...], source_root: 
                 else:
                     _write_file(process.stdout, blob, size, path)
                 if process.stdout.read(1) != b"\n":
-                    raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
+                    raise GitSourceError(f"Git blob is truncated: {blob.path}")
             process.stdin.close()
             if process.wait() != 0:
                 raise GitSourceError("Git blob reader failed")
@@ -270,22 +266,22 @@ def _request_blob(process: subprocess.Popen[bytes], blob: _GitBlob) -> int:
     process.stdin.flush()
     header = process.stdout.readline().decode("ascii").strip().split(" ")
     if len(header) != 3 or header[0] != blob.object_id or header[1] != "blob":
-        raise GitSourceError(f"Git object is not the expected blob for {blob.path!r}")
+        raise GitSourceError(f"Git object is not the expected blob: {blob.path}")
     try:
         size = int(header[2])
     except ValueError as exc:
-        raise GitSourceError(f"Git blob size is invalid for {blob.path!r}") from exc
+        raise GitSourceError(f"Git blob size is invalid: {blob.path}") from exc
     if size > MAX_SOURCE_FILE_BYTES:
-        raise GitSourceError(f"Git blob exceeds the byte limit: {blob.path!r}")
+        raise GitSourceError(f"Git blob exceeds the byte limit: {blob.path}")
     return size
 
 
 def _write_symlink(stream: IO[bytes], blob: _GitBlob, size: int, path: Path) -> None:
     if size > _MAX_GIT_SYMLINK_BYTES:
-        raise GitSourceError(f"Git symlink target exceeds the byte limit: {blob.path!r}")
+        raise GitSourceError(f"Git symlink target exceeds the byte limit: {blob.path}")
     content = stream.read(size)
     if len(content) != size:
-        raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
+        raise GitSourceError(f"Git blob is truncated: {blob.path}")
     try:
         link_target = content.decode("utf-8")
     except UnicodeError:
@@ -300,7 +296,7 @@ def _write_file(stream: IO[bytes], blob: _GitBlob, size: int, path: Path) -> Non
         while remaining:
             chunk = stream.read(min(READ_CHUNK_BYTES, remaining))
             if not chunk:
-                raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
+                raise GitSourceError(f"Git blob is truncated: {blob.path}")
             output.write(chunk)
             remaining -= len(chunk)
     path.chmod(0o755 if blob.mode == "100755" else 0o644)

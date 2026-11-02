@@ -8,6 +8,7 @@ import pytest
 
 from cyberjury.review.context import GroundingContext, SourceSpan
 from cyberjury.review.repository.finder import REPOSITORY_TARGET
+from cyberjury.review.run import NoReviewableSourceError
 from cyberjury.review.seats import ReviewSeats
 from cyberjury.workspace import WorkspaceCorruptionError, read_record
 from tests.review.diff import support as diff
@@ -16,7 +17,7 @@ from tests.review.repository.support import (
     finder_reply,
     finding,
     ground,
-    prompt_unit,
+    prompt_file,
     run_repository_review,
     source_unit,
     unit_provider,
@@ -47,6 +48,19 @@ def test_empty_diff_is_complete_without_model_work():
     result = diff.review("  \n", provider=provider)
 
     assert result.outcome.complete is True
+    assert provider.calls == []
+
+
+def test_a_repository_with_only_test_files_has_no_reviewable_source(tmp_path):
+    """A repository holding only tests/test_app.py raises NoReviewableSourceError before any model call."""
+    target = tmp_path / "svc"
+    (target / "tests").mkdir(parents=True)
+    (target / "tests" / "test_app.py").write_text("def test_app():\n    assert True\n", encoding="utf-8")
+    provider = MockProvider(default=EMPTY_REPLY)
+
+    with pytest.raises(NoReviewableSourceError, match="no readable production source files found in svc"):
+        run_repository_review(target, tmp_path / "ws", provider=provider)
+
     assert provider.calls == []
 
 
@@ -88,8 +102,8 @@ def test_concurrency_yields_same_union_as_serial(tmp_path):
     assert parallel.complete is True
 
 
-def test_a_failed_batch_keeps_the_findings_of_the_other_batches():
-    """A large diff keeps completed batch results while surfacing failed batches."""
+def test_a_failed_unit_keeps_the_findings_of_the_other_units():
+    """A large diff keeps the findings of completed review units while surfacing the failed ones."""
     finding_b = {
         "file": "b.py",
         "line": 1,
@@ -147,7 +161,7 @@ def _wallet_provider() -> MockProvider:
 
 
 def _reviewed_units(provider: MockProvider) -> list[str]:
-    return [prompt_unit(call["prompt"]) for call in provider.calls]
+    return [prompt_file(call["prompt"]) for call in provider.calls]
 
 
 def _unit_records(review: Path) -> list[dict]:
@@ -371,7 +385,7 @@ def test_repository_review_groups_one_line_and_links_judged_issues(tmp_path, sam
 
 
 def test_a_failed_issue_link_judgment_leaves_the_link_stage_incomplete(tmp_path):
-    """A judge raising down keeps two separate issues and a complete review, and the link stage is incomplete."""
+    """A judge that raises keeps two separate issues and a complete review, and the link stage is incomplete."""
     target = _records_target(tmp_path)
     provider = unit_provider(
         lambda file: [finding(file, 5, title="save drops the owner"), finding(file, 9, title="load skips the check")]

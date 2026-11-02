@@ -24,6 +24,7 @@ from cyberjury.record import STAGES, Record, RecordError, error_message, render,
 from cyberjury.review.contract import ContractReceipt
 from cyberjury.review.diff.finder import DIFF_TARGET
 from cyberjury.review.diff.prepare import prepare_diff_review
+from cyberjury.review.failures import exception_reason
 from cyberjury.review.recorder import Recorder, Terminated, internal_error, interruption_reason, usage_metrics
 from cyberjury.review.repository.finder import REPOSITORY_TARGET
 from cyberjury.review.repository.prepare import prepare_repository_review
@@ -84,7 +85,7 @@ def classify_error(exc: BaseException) -> RecordError:
     if isinstance(exc, (TargetResolutionError, GitSourceError, SourceSnapshotError, NoReviewableSourceError)):
         return RecordError(code="input", message=error_message(str(exc)))
     if isinstance(exc, (PermissionError, FileExistsError, NotADirectoryError, IsADirectoryError)):
-        return RecordError(code="config", message=error_message(f"{type(exc).__name__}: {exc}"))
+        return RecordError(code="config", message=error_message(exception_reason(exc)))
     if isinstance(
         exc,
         (

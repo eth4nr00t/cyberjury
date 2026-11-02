@@ -75,14 +75,6 @@ under the same id. An id whose source was delivered is already read. Request an 
 until the source is delivered.
 - Use only exact ids published in this review. Search results alone are not finding evidence."""
 
-CHANGE_ANCHOR_SCHEMA = closed_object(
-    {
-        "file": {"type": "string"},
-        "line": {"type": "integer"},
-        "side": {"type": "string", "enum": ["old", "new"]},
-    }
-)
-
 
 def finding_schema(**extension: dict[str, object]) -> dict[str, object]:
     """Build the one finding schema every target shares, with a target extension after its location."""
@@ -104,14 +96,14 @@ def finding_schema(**extension: dict[str, object]) -> dict[str, object]:
 
 def finding_fields(extension: str = "") -> str:
     """Render the one finding field contract, with a target extension after the location fields."""
-    location = (
+    header = (
         "- `findings`: one entry per reported vulnerability, empty when there is none.\n"
         "- `title`: a short name for the vulnerability.\n"
         "- `category`: the broad security property violated or the direct attacker-visible effect.\n"
         "- `severity`: the grade on the severity rubric.\n"
-        "- `entrypoint`: the attacker-reachable operation where the exploit path starts.\n"
-        "- `file`, `line`: where the fix must be applied, inside source covered by a cited evidence id."
+        "- `entrypoint`: the attacker-reachable operation where the exploit path starts."
     )
+    location = "- `file`, `line`: where the fix must be applied, inside source covered by a cited evidence id."
     claim = (
         "- `evidence`: the delivered source facts, cited by evidence id, that establish the missing or broken "
         "control and the implementation flaw.\n"
@@ -119,7 +111,7 @@ def finding_fields(extension: str = "") -> str:
         "- `evidence_refs`: the evidence ids that establish the exploit path, including one whose source covers "
         "`file` and `line`."
     )
-    return "\n".join(part for part in (location, extension, claim) if part)
+    return "\n".join(part for part in (header, location, extension, claim) if part)
 
 
 _REQUEST_FIELDS = (

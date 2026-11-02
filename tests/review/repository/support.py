@@ -63,7 +63,7 @@ def finder_reply(
     )
 
 
-def prompt_unit(prompt: str) -> str:
+def prompt_file(prompt: str) -> str:
     """Return the source file of the code under review in one finder prompt."""
     match = _SEED_FILE.search(prompt)
     if match is None:
@@ -75,7 +75,7 @@ def unit_provider(reply_for: Callable[[str], UnitReply]) -> MockProvider:
     """Answer each finder call from its reviewed file, raising a returned exception."""
 
     def respond(_system, prompt):
-        reply = reply_for(prompt_unit(prompt))
+        reply = reply_for(prompt_file(prompt))
         if isinstance(reply, BaseException):
             raise reply
         return finder_reply(reply)
@@ -98,7 +98,7 @@ class UnitReviewError(RuntimeError):
     """A reviewed unit did not complete cleanly."""
 
 
-def review(reviewer, unit):
+def review_unit(reviewer, unit):
     """Ground an ungrounded unit, then return clean unit findings or raise the unit failure."""
     if unit.grounding is None:
         [unit] = ground([unit])

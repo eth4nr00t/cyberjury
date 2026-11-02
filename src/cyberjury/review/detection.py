@@ -68,11 +68,11 @@ class Detection:
 
     def is_test_path(self, path: str) -> bool:
         """Return whether a path matches a test directory or file naming convention."""
-        parts = path.split("/")
-        if any(p in self.test_dirs for p in parts[:-1]):
+        pure = PurePosixPath(path)
+        if any(part in self.test_dirs for part in pure.parts[:-1]):
             return True
-        name = parts[-1].lower()
-        return any(fnmatch.fnmatch(name, pat) for pat in self.test_name_patterns)
+        name = pure.name.lower()
+        return any(fnmatch.fnmatch(name, pattern) for pattern in self.test_name_patterns)
 
     def is_translation(self, path: str) -> bool:
         """Return whether a path is a translation catalog, a data file under a translation directory."""

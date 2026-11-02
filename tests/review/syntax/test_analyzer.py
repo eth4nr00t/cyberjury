@@ -427,6 +427,17 @@ def test_every_tree_sitter_language_uses_one_parse_limitation_contract(tmp_path,
     assert (limitation.source, limitation.analyzer, limitation.reason) == (name, analyzer, "partially parsed")
 
 
+def _analyzer_inputs(root, sources: dict[str, str]) -> list:
+    specs = load_specs()
+    inputs = []
+    for name, source in sources.items():
+        (root / name).write_text(source, encoding="utf-8")
+        spec = spec_for(specs, name)
+        assert spec is not None
+        inputs.append((root / name, name, spec))
+    return inputs
+
+
 def test_native_analyzer_recovers_the_cross_language_structure(tmp_path):
     """Python, JS, TS, and Go sources yield the expected definitions and callsites."""
     sources = {
@@ -446,14 +457,7 @@ def test_native_analyzer_recovers_the_cross_language_structure(tmp_path):
             "func helper(value int) int { return value }\n"
         ),
     }
-    specs = load_specs()
-    analyzer_inputs = []
-    for name, source in sources.items():
-        path = tmp_path / name
-        path.write_text(source)
-        spec = spec_for(specs, name)
-        assert spec is not None
-        analyzer_inputs.append((path, name, spec))
+    analyzer_inputs = _analyzer_inputs(tmp_path, sources)
 
     analyzed = analyze_repository(list(reversed(analyzer_inputs)), progress=ignore_progress)
     definitions = {(item.file, item.name): item for item in analyzed.definitions}
@@ -484,17 +488,9 @@ def test_native_analyzer_recovers_the_cross_language_structure(tmp_path):
 
 def test_native_analyzer_output_does_not_depend_on_input_enumeration(tmp_path):
     """Analyzing a.py and b.py in either order returns equal results."""
-    specs = load_specs()
-    inputs = []
-    for name, source in (
-        ("b.py", "def second():\n    return first()\n"),
-        ("a.py", "def first():\n    return 1\n"),
-    ):
-        path = tmp_path / name
-        path.write_text(source)
-        spec = spec_for(specs, name)
-        assert spec is not None
-        inputs.append((path, name, spec))
+    inputs = _analyzer_inputs(
+        tmp_path, {"b.py": "def second():\n    return first()\n", "a.py": "def first():\n    return 1\n"}
+    )
 
     assert analyze_repository(inputs, progress=ignore_progress) == analyze_repository(
         list(reversed(inputs)), progress=ignore_progress
@@ -503,11 +499,7 @@ def test_native_analyzer_output_does_not_depend_on_input_enumeration(tmp_path):
 
 def test_analysis_reports_each_analyzed_file_against_the_total(tmp_path):
     """Two Python sources report one and then two finished of two items."""
-    specs = load_specs()
-    sources = []
-    for name in ("a.py", "b.py"):
-        (tmp_path / name).write_text("def f():\n    return 1\n")
-        sources.append((tmp_path / name, name, specs["python"]))
+    sources = _analyzer_inputs(tmp_path, dict.fromkeys(("a.py", "b.py"), "def f():\n    return 1\n"))
     reports = []
 
     analyze_repository(sources, progress=lambda finished, items: reports.append((finished, items)))

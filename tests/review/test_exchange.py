@@ -781,6 +781,8 @@ def test_one_exchange_over_the_shared_budget_delivers_what_fits_and_names_the_re
         prompts[0].controls
     )
     assert "Return a smaller batch" not in prompts[0].controls
+    assert "guard = True" in prompts[0].followup
+    assert evidence.id in result.grounding.references
     assert result.failure_reason == ""
     assert result.grounding.complete is True
 

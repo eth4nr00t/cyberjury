@@ -10,8 +10,6 @@ import yaml
 
 from evals.schemas import validate_document
 
-BENCHMARK_SCHEMA = "benchmark-v1.schema.json"
-
 
 def _validate_project_id(benchmark: dict, directory: str) -> None:
     project = benchmark["id"]
@@ -74,7 +72,7 @@ def validate_benchmark(path: str | Path, *, source_root: str | Path | None = Non
     """Validate one benchmark definition and return it."""
     benchmark_file = benchmark_path(path)
     benchmark = yaml.safe_load(benchmark_file.read_text(encoding="utf-8"))
-    validate_document(benchmark, BENCHMARK_SCHEMA, benchmark_file)
+    validate_document(benchmark, "benchmark-v1.schema.json", benchmark_file)
     try:
         _validate_project_id(benchmark, benchmark_file.parent.name)
         _validate_semantics(benchmark, source_root=Path(source_root) if source_root else None)

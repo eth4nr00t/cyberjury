@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
-from evals.attempts import attempt_path, recorded_attempt
+from evals.attempts import attempt_path, recorded_attempt, write_new_json
 from evals.benchmarks.cases import find_case, load_cases
 from evals.benchmarks.validate import validate_benchmark
 from evals.diff import case_state_dir, run
@@ -15,12 +14,6 @@ from evals.packets import build_packets, write_ledgers
 from evals.report import failures, format_summary, summarize, write_json
 
 _EPILOG = "Run from the repository root after `pip install -e '.[dev]'`."
-
-
-def _write_new(path: Path, document: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as output:
-        output.write(json.dumps(document, indent=1, ensure_ascii=False))
 
 
 def _positive_int(value: str) -> int:
@@ -56,7 +49,7 @@ def _cmd_diff(args) -> int:
         raise ValueError(f"diff output already exists: {existing}")
 
     def save_attempt(record: dict[str, object]) -> None:
-        _write_new(attempt_path(runs_dir, str(record["case"]), int(record["attempt"])), record)
+        write_new_json(attempt_path(runs_dir, str(record["case"]), int(record["attempt"])), record)
 
     records = run(
         cases,
@@ -85,7 +78,7 @@ def _cmd_record(args) -> int:
     while attempt_path(runs_dir, case.name, number).exists():
         number += 1
     record = recorded_attempt(case, Path(args.review_attempt), number)
-    _write_new(attempt_path(runs_dir, case.name, number), record)
+    write_new_json(attempt_path(runs_dir, case.name, number), record)
     state = "complete" if record["complete"] else "incomplete"
     print(f"recorded {case.name} attempt {number}: {state}, reports {len(record['findings'])}")
     return 0 if record["complete"] else 1
@@ -103,7 +96,7 @@ def _cmd_packets(args) -> int:
         f"packets {args.out}: cases {packets.cases}, complete attempts {packets.attempts}, "
         f"reports {packets.reports}, skipped incomplete attempts {packets.skipped}"
     )
-    print(f"round {packets.round_id}, private mapping {packets.mapping} (do not give it to adjudicators)")
+    print(f"round {packets.round_id}, private mapping {packets.mapping}, not for adjudicators")
     return 0
 
 
@@ -125,7 +118,7 @@ def _cmd_report(args) -> int:
     print(format_summary(summary))
     print("report PASS" if not fails else f"report FAIL, {len(fails)} blocking")
     for fail in fails:
-        print(f"  - {fail}")
+        print(f"  blocking: {fail}")
     if args.json:
         write_json(args.json, summary, fails)
     return 1 if fails else 0

@@ -14,12 +14,12 @@ from cyberjury.review.context import (
     SourceSpan,
     cited_source_spans,
 )
+from cyberjury.review.contract import SECURITY_KERNEL_FILE, SEVERITY_RUBRIC_FILE
 from cyberjury.review.engine import ReviewCycle, ReviewUnit
 from cyberjury.review.exchange import EvidenceJudgment, run_evidence_judgment
 from cyberjury.review.failures import exception_reason
 from cyberjury.review.finding import ChangeAnchor, Finding
 from cyberjury.review.identity import canonical_category
-from cyberjury.review.knowledge import load_security_kernel, load_severity_rubric
 from cyberjury.review.navigation import SourceNavigationSession, navigation_instructions
 from cyberjury.review.paths import is_unsafe_rel
 from cyberjury.review.replies import CorrectableRoleResponseError, RoleReply, parse_role_response
@@ -130,8 +130,8 @@ class UnitFinder[U: ReviewUnit]:
         self._target = target
         self._provider = provider
         self._model = model
-        security_kernel = load_security_kernel()
-        rubric = load_severity_rubric()
+        security_kernel = SECURITY_KERNEL_FILE.read_text(encoding="utf-8")
+        rubric = SEVERITY_RUBRIC_FILE.read_text(encoding="utf-8")
         self._systems = {
             navigation: target.system(
                 security_kernel=security_kernel,

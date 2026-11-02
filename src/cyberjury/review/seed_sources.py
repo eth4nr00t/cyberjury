@@ -105,14 +105,17 @@ class _CallListing:
             text += f", candidate callee calls: {', '.join(_inline_code(call) for call in callee_calls)}"
         return text
 
+    def entry(self, call: _Call, receipt: str, active_caller: str) -> tuple[str, ...]:
+        callsite, caller, callee = call
+        line = self.call_line(callsite, callee, receipt)
+        return (self.caller_line(caller), line) if caller.id != active_caller else (line,)
+
     def render(self, calls: Iterable[_Call], receipt: Callable[[DefinitionEvidence], str]) -> list[str]:
         lines = [_CALL_CANDIDATE_HEADER]
         active_caller = ""
-        for callsite, caller, callee in calls:
-            if caller.id != active_caller:
-                lines.append(self.caller_line(caller))
-                active_caller = caller.id
-            lines.append(self.call_line(callsite, callee, receipt(callee)))
+        for call in calls:
+            lines.extend(self.entry(call, receipt(call[2]), active_caller))
+            active_caller = call[1].id
         return lines
 
 
@@ -148,21 +151,20 @@ def _single_candidate_calls(
     return calls
 
 
-def _budgeted_calls(listing: _CallListing, calls: list[_Call], max_chars: int) -> tuple[list[_Call], int]:
+def _budgeted_calls(listing: _CallListing, calls: list[_Call], max_chars: int) -> tuple[list[_Call], int, int]:
     lines = [_CALL_CANDIDATE_HEADER]
     included: list[_Call] = []
     omitted = 0
     active_caller = ""
-    for callsite, caller, callee in calls:
-        call = listing.call_line(callsite, callee, _RECEIPT_PLACEHOLDER)
-        additions = (listing.caller_line(caller), call) if caller.id != active_caller else (call,)
+    for call in calls:
+        additions = listing.entry(call, _RECEIPT_PLACEHOLDER, active_caller)
         if len("\n".join((*lines, *additions))) > max_chars:
             omitted += 1
             continue
         lines.extend(additions)
-        included.append((callsite, caller, callee))
-        active_caller = caller.id
-    return included, omitted
+        included.append(call)
+        active_caller = call[1].id
+    return included, omitted, len("\n".join(lines))
 
 
 def _callee_sources(
@@ -235,8 +237,7 @@ def candidate_call_context(
     if not calls:
         return CandidateCallContext()
     listing = _CallListing(_SourceTexts(root), _calls_by_definition(relationships))
-    included, omitted = _budgeted_calls(listing, calls, max_chars)
-    listed_chars = len("\n".join(listing.render(included, lambda _callee: _RECEIPT_PLACEHOLDER)))
+    included, omitted, listed_chars = _budgeted_calls(listing, calls, max_chars)
     callee_sources, source_omitted = _callee_sources(listing.sources, included, seed_ids, max_chars - listed_chars)
     delivered, published, receipts = _deliver_or_publish(
         callee_sources, catalog, min(deliver_chars, max(0, max_chars - listed_chars))

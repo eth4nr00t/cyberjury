@@ -94,7 +94,7 @@ def test_packets_ledger_and_report_measure_one_adjudicated_run(tmp_path, capsys,
     assert "ledgers written 1, rejected 0" in output
     assert "reviewed recall 1/1" in output
     assert "report precision 100.0% = supported 1 / (supported 1 + not_actionable 0), reports 1" in output
-    assert "do not give it to adjudicators" in output
+    assert "not for adjudicators" in output
     assert "report PASS" in output
     assert json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))["run"]["recall"] == {
         "found": 1,

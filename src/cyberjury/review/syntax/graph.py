@@ -28,14 +28,10 @@ def facts_from_repository(repository: AnalyzedRepository) -> Facts:
 def relationship_evidence(repository: AnalyzedRepository) -> RelationshipEvidenceBundle:
     """Publish exact syntax as clues without assigning relationship targets."""
     definitions = _definition_evidences(repository.definitions, repository.sources)
-    analyzed_by_id = {
-        evidence.id: analyzed for analyzed, evidence in zip(repository.definitions, definitions, strict=True)
-    }
     calls: list[CallsiteEvidence] = []
     observations: list[AnalysisObservation] = []
     extra_sources: dict[str, SourceReference] = {}
-    for definition in definitions:
-        analyzed = analyzed_by_id[definition.id]
+    for analyzed, definition in zip(repository.definitions, definitions, strict=True):
         source = repository.sources[analyzed.file]
         for analyzed_call in analyzed.callsites:
             call_source = _source_reference(analyzed.file, source, analyzed_call.start, analyzed_call.end)

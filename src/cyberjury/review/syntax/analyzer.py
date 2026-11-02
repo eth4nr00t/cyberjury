@@ -83,11 +83,15 @@ class AnalyzedDefinition:
     start: int
     end: int
     is_type: bool
-    calls: tuple[str, ...] = ()
     owner: AnalyzedOwner | None = None
     is_file_scope: bool = False
     callsites: tuple[AnalyzedCallsite, ...] = ()
     signature: str = ""
+
+    @property
+    def calls(self) -> tuple[str, ...]:
+        """Return the distinct callee names of the callsites in source order."""
+        return tuple(dict.fromkeys(callsite.callee for callsite in self.callsites))
 
 
 @dataclass(frozen=True, order=True, kw_only=True)
@@ -389,7 +393,7 @@ def _definition_calls(
     offsets: dict[int, int] | None,
     *,
     file_scope: bool = False,
-) -> tuple[tuple[str, ...], tuple[AnalyzedCallsite, ...]]:
+) -> tuple[AnalyzedCallsite, ...]:
     callsites: dict[tuple[int, int], AnalyzedCallsite] = {}
     for captures in _matches(call_query, node):
         call = _first_capture(captures, "call")
@@ -410,13 +414,12 @@ def _definition_calls(
             receiver_text = _text(source, receiver) if receiver is not None else ""
             callsite = _analyzed_callsite(source, call, called, receiver=receiver_text, offsets=offsets)
             callsites.setdefault((callsite.start, callsite.end), callsite)
-    ordered = tuple(
+    return tuple(
         sorted(
             callsites.values(),
             key=lambda item: (item.start, item.end, item.callee, item.receiver, item.expression),
         )
     )
-    return tuple(dict.fromkeys(item.callee for item in ordered)), ordered
 
 
 def _analyzed_callsite(
@@ -465,7 +468,7 @@ def _definitions(tree: _ParsedTree, file: str) -> tuple[AnalyzedDefinition, ...]
     for node, identifier in definition_nodes:
         name = _text(source, identifier)
         is_type = (node.start_byte, node.end_byte) in type_ranges
-        calls, callsites = _definition_calls(source, node, definition_index, call_query, offsets)
+        callsites = _definition_calls(source, node, definition_index, call_query, offsets)
         start, end = _node_range(node, offsets)
         definitions.append(
             AnalyzedDefinition(
@@ -473,14 +476,13 @@ def _definitions(tree: _ParsedTree, file: str) -> tuple[AnalyzedDefinition, ...]
                 file=file,
                 start=start,
                 end=end,
-                calls=calls,
                 is_type=is_type,
                 owner=_lexical_owner(source, node, definition_index, offsets),
                 callsites=callsites,
                 signature=_definition_signature(source, node, identifier),
             )
         )
-    file_calls, file_callsites = _definition_calls(source, root, definition_index, call_query, offsets, file_scope=True)
+    file_callsites = _definition_calls(source, root, definition_index, call_query, offsets, file_scope=True)
     if file_callsites:
         start, end = _node_range(root, offsets)
         definitions.append(
@@ -491,7 +493,6 @@ def _definitions(tree: _ParsedTree, file: str) -> tuple[AnalyzedDefinition, ...]
                 end=end,
                 is_type=False,
                 is_file_scope=True,
-                calls=file_calls,
                 callsites=file_callsites,
             )
         )

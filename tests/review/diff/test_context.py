@@ -19,7 +19,7 @@ from tests.review.support import definition, recorder, shared_grounding
 from tests.review.syntax.support import syntax_facts
 
 
-def _prepare(shared: SharedGrounding, diff: str) -> list[DiffUnit]:
+def _ground_units(shared: SharedGrounding, diff: str) -> list[DiffUnit]:
     return [replace(unit, grounding=ground_diff_unit(unit, shared)) for unit in plan_diff_units(diff, shared, ()).units]
 
 
@@ -28,12 +28,12 @@ def _ground_with_plan(shared: SharedGrounding, diff: str, plan: DefinitionUnitPl
 
 
 def _ground(root: Path, diff: str, facts: Facts | None = None) -> GroundingContext:
-    units = _prepare(shared_grounding(root, facts=facts), diff)
+    units = _ground_units(shared_grounding(root, facts=facts), diff)
     assert len(units) == 1
     return units[0].grounding
 
 
-def _extracted(root: Path, diff: str):
+def _prepared_review(root: Path, diff: str):
     return prepare_diff_review(diff, capture_source_snapshot(root), recorder=recorder())
 
 
@@ -167,7 +167,7 @@ def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_p
         "-    return value\n"
         "+    return load(value)\n"
     )
-    prepared = _extracted(tmp_path, diff)
+    prepared = _prepared_review(tmp_path, diff)
 
     unit = prepared.units[0]
 
@@ -202,7 +202,7 @@ def test_diff_grounding_respects_the_context_budget(tmp_path):
         diff_parts.append(f"diff --git a/app_{i}.py b/app_{i}.py\n+++ b/app_{i}.py\n@@ -1,0 +1,1 @@\n+value = {i}\n")
 
     diff = "".join(diff_parts)
-    units = _prepare(shared_grounding(tmp_path), diff)
+    units = _ground_units(shared_grounding(tmp_path), diff)
 
     assert units
     assert all(
@@ -220,12 +220,12 @@ def test_diff_planning_and_grounding_are_distinct_deterministic_steps(tmp_path):
     shared = shared_grounding(tmp_path)
 
     planned = plan_diff_units(diff, shared, ()).units
-    grounded = _prepare(shared, diff)
+    grounded = _ground_units(shared, diff)
 
     assert all(unit.grounding is None for unit in planned)
     assert all(unit.grounding is not None for unit in grounded)
     assert [unit.diff for unit in planned] == [unit.diff for unit in grounded]
-    assert _prepare(shared, diff) == grounded
+    assert _ground_units(shared, diff) == grounded
 
 
 def test_diff_grounding_reports_only_delivered_files(tmp_path):
@@ -248,7 +248,7 @@ def test_deleted_diff_source_is_bound_by_the_patch_not_the_post_change_snapshot(
         "-dangerous_default = True\n"
     )
     (tmp_path / "kept.py").write_text("value = 1\n", encoding="utf-8")
-    unit = _prepare(shared_grounding(tmp_path), diff)[0]
+    unit = _ground_units(shared_grounding(tmp_path), diff)[0]
 
     assert unit.grounding is not None
     assert unit.grounding.snapshot_files == ()
@@ -272,8 +272,8 @@ def test_units_from_one_shared_grounding_deliver_only_their_own_file(tmp_path):
     diff_b = "diff --git a/b.py b/b.py\n+++ b/b.py\n@@ -1,0 +1,1 @@\n+print(b())\n"
     shared = shared_grounding(tmp_path)
 
-    [unit_a] = _prepare(shared, diff_a)
-    [unit_b] = _prepare(shared, diff_b)
+    [unit_a] = _ground_units(shared, diff_a)
+    [unit_b] = _ground_units(shared, diff_b)
     ctx_a, ctx_b = unit_a.grounding, unit_b.grounding
 
     assert [item.source_span.file for item in ctx_a.source_evidence] == ["a.py"]
@@ -293,7 +293,7 @@ def test_prepared_fallback_units_keep_current_repository_context(tmp_path, path,
     shared = shared_grounding(tmp_path)
     diff = f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n"
 
-    unit = _prepare(shared, diff)[0]
+    unit = _ground_units(shared, diff)[0]
 
     assert unit.grounding is not None
     [window] = unit.grounding.source_evidence
@@ -343,7 +343,7 @@ def test_a_changed_file_without_a_seed_definition_gets_windows_and_hints_beside_
         "diff --git a/settings.py b/settings.py\n--- a/settings.py\n+++ b/settings.py\n@@ -4 +4 @@\n"
         "-DEBUG = False\n+DEBUG = True\n"
     )
-    prepared = _extracted(tmp_path, diff)
+    prepared = _prepared_review(tmp_path, diff)
 
     [unit] = prepared.units
     grounding = unit.grounding

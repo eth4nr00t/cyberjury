@@ -108,7 +108,7 @@ def test_finder_fails_the_unit_on_an_unparseable_reply():
     """A reply of plain prose fails the unit with "reply had no complete JSON"."""
     reviewer = repository.finder(MockProvider(default="sorry, no JSON here"))
     with pytest.raises(repository.UnitReviewError, match="reply had no complete JSON"):
-        repository.review(reviewer, _unit("u", GroundingContext(text="")))
+        repository.review_unit(reviewer, _unit("u", GroundingContext(text="")))
 
 
 def test_an_unparseable_reply_is_corrected_once_instead_of_failing_the_unit():
@@ -154,7 +154,7 @@ def test_finder_binds_each_finding_to_its_source_operation(tmp_path):
         [repository.source_unit(tmp_path, "matching.py", name="matching")], navigator=OperationNavigator()
     )
 
-    findings = repository.review(repository.finder(provider), unit)
+    findings = repository.review_unit(repository.finder(provider), unit)
 
     assert [(item.line, item.source_operation_id) for item in findings] == [(63, "call-shared"), (64, "call-shared")]
 
@@ -190,8 +190,8 @@ def test_reviewing_one_unit_again_reuses_its_cache_prefix(tmp_path):
     reviewer = repository.finder(provider)
     [unit] = repository.ground([repository.source_unit(tmp_path, "app.py", name="wallets")])
 
-    repository.review(reviewer, unit)
-    repository.review(reviewer, unit)
+    repository.review_unit(reviewer, unit)
+    repository.review_unit(reviewer, unit)
 
     first, second = provider.calls
     assert second["cache_prefix"] == first["cache_prefix"]
@@ -243,7 +243,7 @@ def test_finder_can_request_one_published_source_fragment():
         source_spans=(SourceSpan(file="views.py", start_line=1, end_line=2),),
     )
 
-    findings = repository.review(repository.finder(provider), _unit("views", grounding))
+    findings = repository.review_unit(repository.finder(provider), _unit("views", grounding))
 
     assert [finding.title for finding in findings] == ["missing ownership check"]
     assert len(provider.calls) == 2

@@ -173,6 +173,27 @@ def test_a_duplicate_of_a_duplicate_resolves_to_the_first_canonical(tmp_path, ca
     assert {record["candidate_id"]: record["canonical_id"] for record in ledger["records"]} == {A: None, B: A, C: A}
 
 
+def test_duplicates_that_name_each_other_are_rejected_as_a_cycle(tmp_path, cases, write_attempt):
+    """B a duplicate of C and C a duplicate of B raise a cycle error and write no ledger."""
+    runs = tmp_path / "runs"
+    write_attempt(runs, 1, (A, B, C))
+    out = tmp_path / "adjudication"
+    build_packets(cases, [runs], out, groups=1)
+    result = _result(out, {f"Claim {A}": "supported"})
+    by_candidate = _labels_by_candidate(out)
+    for record in result[0]["records"]:
+        if record["label"] == by_candidate[B]:
+            record.update(verdict="duplicate", canonical=by_candidate[C])
+        if record["label"] == by_candidate[C]:
+            record.update(verdict="duplicate", canonical=by_candidate[B])
+    (out / "result-1.json").write_text(json.dumps(result), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="cycle of duplicate canonicals"):
+        write_ledgers(cases, out)
+
+    assert not list(runs.rglob("ledger-*.json"))
+
+
 def test_results_become_ledgers_beside_each_attempt(tmp_path, cases, runs_dirs, benchmark_project):
     """Each case directory gets ledger-01.json with round, rubric, and checks hashes plus verdicts."""
     out = tmp_path / "adjudication"

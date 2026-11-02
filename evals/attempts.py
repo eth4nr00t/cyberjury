@@ -48,6 +48,13 @@ def read_json(path: str | Path) -> object:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
+def write_new_json(path: Path, document: object) -> None:
+    """Write a JSON document to a new file, creating its directory and refusing to replace an existing file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as output:
+        output.write(json.dumps(document, indent=1, ensure_ascii=False))
+
+
 def load_attempt(path: str | Path) -> Attempt:
     """Read one attempt record and check the identities a ledger binds to."""
     path = Path(path)

@@ -63,6 +63,32 @@ def test_candidate_call_clues_use_line_numbers_and_name_only_usable_receipts(tmp
     assert not any(prefix in context.text for prefix in ("def-", "call-"))
 
 
+def test_a_call_over_the_character_limit_is_counted_as_omitted(tmp_path):
+    """A limit with room for the header and one notice omits the only call and says so."""
+    plan, relationships = _candidate_call_fixture(tmp_path)
+    full = candidate_call_context(tmp_path, plan, relationships, max_chars=10_000, deliver_chars=0)
+
+    context = candidate_call_context(
+        tmp_path, plan, relationships, max_chars=len(full.text.splitlines()[0]) + 80, deliver_chars=0
+    )
+
+    assert context.published == ()
+    assert context.text.splitlines()[1:] == [
+        "- 1 additional call candidates omitted by the relationship character limit"
+    ]
+
+
+def test_a_listed_call_without_room_for_its_callee_source_points_to_navigation(tmp_path):
+    """A limit that fits only the listing keeps the call but publishes no callee source."""
+    plan, relationships = _candidate_call_fixture(tmp_path)
+    full = candidate_call_context(tmp_path, plan, relationships, max_chars=10_000, deliver_chars=0)
+
+    context = candidate_call_context(tmp_path, plan, relationships, max_chars=len(full.text), deliver_chars=0)
+
+    assert context.published == ()
+    assert "candidate callee service.py:load lines 1-2, source reachable through source navigation" in context.text
+
+
 def test_candidate_callee_source_delivered_initially_names_its_source_receipt(tmp_path):
     """With a delivery budget, the callee source is delivered below, not published, and lists service.py."""
     plan, relationships = _candidate_call_fixture(tmp_path)

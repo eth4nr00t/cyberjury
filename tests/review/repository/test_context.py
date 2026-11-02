@@ -6,11 +6,7 @@ from pathlib import Path
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.facts import FactLimitation, Facts
 from cyberjury.review.navigation import SourceNavigator
-from cyberjury.review.relationships import (
-    DefinitionEvidence,
-    RelationshipEvidenceBundle,
-    SourceReference,
-)
+from cyberjury.review.relationships import RelationshipEvidenceBundle
 from cyberjury.review.repository.context import (
     gather_context,
     ground_repository_unit,
@@ -18,8 +14,8 @@ from cyberjury.review.repository.context import (
 from cyberjury.review.repository.model import RepositoryUnit
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.sources.snapshot import SourceSnapshot, capture_source_snapshot
-from tests.review.repository.support import EMPTY_REPLY, finder, review, source_unit
-from tests.review.support import route_call, shared_grounding
+from tests.review.repository.support import EMPTY_REPLY, finder, review_unit, source_unit
+from tests.review.support import definition, route_call, shared_grounding
 from tests.support import MockProvider
 
 
@@ -129,7 +125,7 @@ def test_repository_reviewer_keeps_embedded_markdown_fence_in_source(tmp_path):
     (tmp_path / "app.py").write_text('marker = "```"\n', encoding="utf-8")
     provider = MockProvider(default=EMPTY_REPLY)
 
-    review(finder(provider), source_unit(tmp_path, "app.py", name="app.py"))
+    review_unit(finder(provider), source_unit(tmp_path, "app.py", name="app.py"))
 
     prompt = provider.calls[0]["prompt"]
     assert "Code under review, cited as `seed`:\n~~~\n# file: app.py" in prompt
@@ -141,7 +137,7 @@ def test_repository_prompt_never_carries_the_unit_name(tmp_path):
     (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
     provider = MockProvider(default=EMPTY_REPLY)
 
-    review(finder(provider), source_unit(tmp_path, "app.py", name="app`unit\nnext heading"))
+    review_unit(finder(provider), source_unit(tmp_path, "app.py", name="app`unit\nnext heading"))
 
     prompt = provider.calls[0]["prompt"]
     assert "app`unit" not in prompt
@@ -166,7 +162,7 @@ def test_reviewer_grounds_a_unit_with_only_its_own_files_facts(tmp_path):
         "views.py": "def list_items()  calls[load_owner]",
         "admin.py": "def delete_all()  calls[purge]",
     }
-    review(finder(provider), _grounded(tmp_path, "views.py", by_file))
+    review_unit(finder(provider), _grounded(tmp_path, "views.py", by_file))
     prompt = provider.calls[0]["prompt"]
     assert "views.py: syntax hints (unverified, cite only delivered source):\n```\n" in prompt
     assert "calls[load_owner]" in prompt
@@ -180,7 +176,7 @@ def test_repository_syntax_hints_are_bounded_per_file_with_a_visible_marker(tmp_
     facts = "fact\n" * (limit // 5 + 1)
     provider = MockProvider(default=EMPTY_REPLY)
 
-    review(
+    review_unit(
         finder(provider),
         _grounded(tmp_path, "large.py", {"large.py": facts}),
     )
@@ -195,15 +191,7 @@ def test_repository_units_with_seed_definitions_get_no_syntax_hints(tmp_path):
     """A views.py unit seeded with its show definition drops the facts marker and has empty syntax hints."""
     source = "def show():\n    return 1\n"
     (tmp_path / "views.py").write_text(source)
-    plan = DefinitionUnitPlan(
-        seeds=(
-            DefinitionEvidence.create(
-                source=SourceReference.create(path="views.py", start=0, end=len(source), content=source),
-                kind="function",
-                name="show",
-            ),
-        )
-    )
+    plan = DefinitionUnitPlan(seeds=(definition("views.py", "show", 0, len(source), source=source),))
 
     grounded = _ground(
         source_unit(tmp_path, "views.py", definition_plan=plan),
@@ -220,7 +208,7 @@ def test_reviewer_adds_no_facts_block_without_a_map(tmp_path):
     """An empty facts map leaves the finder prompt without any 'syntax hints' block."""
     (tmp_path / "v.py").write_text("x = 1")
     provider = MockProvider(default=EMPTY_REPLY)
-    review(finder(provider), _grounded(tmp_path, "v.py", {}))
+    review_unit(finder(provider), _grounded(tmp_path, "v.py", {}))
     assert "syntax hints" not in provider.calls[0]["prompt"]
 
 

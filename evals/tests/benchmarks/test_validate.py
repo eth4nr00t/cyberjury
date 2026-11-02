@@ -104,7 +104,9 @@ def test_validate_benchmark_rejects_a_case_without_checks(tmp_path):
     """A diff case whose checks list is empty fails the benchmark-v1 schema."""
     path = _write_benchmark(tmp_path / "example-project")
     text = path.read_text(encoding="utf-8")
-    path.write_text(text[: text.index("    checks:\n", text.index("diff-a1b2c3d"))] + "    checks: []\n")
+    path.write_text(
+        text[: text.index("    checks:\n", text.index("diff-a1b2c3d"))] + "    checks: []\n", encoding="utf-8"
+    )
 
     with pytest.raises(ValueError, match=r"benchmark-v1\.schema"):
         validate_benchmark(path)

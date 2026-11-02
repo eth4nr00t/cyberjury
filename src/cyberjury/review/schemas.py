@@ -28,61 +28,64 @@ def validate_response_object(value: object, response_schema: ResponseSchema) -> 
     return value
 
 
+_SCALARS = {
+    "string": lambda value: isinstance(value, str),
+    "integer": lambda value: isinstance(value, int) and not isinstance(value, bool),
+    "boolean": lambda value: isinstance(value, bool),
+}
+
+
 def _validate_schema_value(value: object, schema: object, *, path: str) -> None:
     if not isinstance(schema, dict):
         raise ValueError(f"{path} has an invalid schema")
-    alternatives = schema.get("anyOf")
-    if alternatives is not None:
-        if not isinstance(alternatives, list) or not alternatives:
-            raise ValueError(f"{path} has an invalid anyOf schema")
-        for alternative in alternatives:
-            try:
-                _validate_schema_value(value, alternative, path=path)
-            except ValueError:
-                continue
-            return
-        raise ValueError(f"{path} does not match any allowed shape")
+    if "anyOf" in schema:
+        _validate_any_of(value, schema["anyOf"], path=path)
+        return
     allowed = schema.get("enum")
     if isinstance(allowed, list) and value not in allowed:
         raise ValueError(f"{path} has a value outside the allowed set")
     value_type = schema.get("type")
     if value_type == "object":
-        if not isinstance(value, dict):
-            raise ValueError(f"{path} must be an object")
-        properties = schema.get("properties")
-        required = schema.get("required")
-        if not isinstance(properties, dict) or not isinstance(required, list):
-            raise ValueError(f"{path} has an invalid object schema")
-        missing = [key for key in required if key not in value]
-        if missing:
-            raise ValueError(f"{path} is missing fields: {', '.join(missing)}")
-        if schema.get("additionalProperties") is False:
-            extra = set(value).difference(properties)
-            if extra:
-                raise ValueError(f"{path} has unknown fields: {', '.join(sorted(extra))}")
-        for key, item in value.items():
-            child_schema = properties.get(key)
-            if child_schema is not None:
-                _validate_schema_value(item, child_schema, path=f"{path}.{key}")
-        return
-    if value_type == "array":
+        _validate_object(value, schema, path=path)
+    elif value_type == "array":
         if not isinstance(value, list):
             raise ValueError(f"{path} must be an array")
-        item_schema = schema.get("items")
         for index, item in enumerate(value):
-            _validate_schema_value(item, item_schema, path=f"{path}[{index}]")
-        return
-    valid = {
-        "string": isinstance(value, str),
-        "integer": isinstance(value, int) and not isinstance(value, bool),
-        "number": isinstance(value, (int, float)) and not isinstance(value, bool),
-        "boolean": isinstance(value, bool),
-        "null": value is None,
-    }
-    if value_type not in valid:
+            _validate_schema_value(item, schema.get("items"), path=f"{path}[{index}]")
+    elif value_type not in _SCALARS:
         raise ValueError(f"{path} has an unsupported schema type")
-    if not valid[value_type]:
+    elif not _SCALARS[value_type](value):
         raise ValueError(f"{path} must be {value_type}")
+
+
+def _validate_any_of(value: object, alternatives: object, *, path: str) -> None:
+    if not isinstance(alternatives, list) or not alternatives:
+        raise ValueError(f"{path} has an invalid anyOf schema")
+    for alternative in alternatives:
+        try:
+            _validate_schema_value(value, alternative, path=path)
+        except ValueError:
+            continue
+        return
+    raise ValueError(f"{path} does not match any allowed shape")
+
+
+def _validate_object(value: object, schema: dict, *, path: str) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must be an object")
+    properties = schema.get("properties")
+    required = schema.get("required")
+    if not isinstance(properties, dict) or not isinstance(required, list):
+        raise ValueError(f"{path} has an invalid object schema")
+    missing = [key for key in required if key not in value]
+    if missing:
+        raise ValueError(f"{path} is missing fields: {', '.join(missing)}")
+    extra = set(value).difference(properties)
+    if extra and schema.get("additionalProperties") is False:
+        raise ValueError(f"{path} has unknown fields: {', '.join(sorted(extra))}")
+    for key, item in value.items():
+        if key in properties:
+            _validate_schema_value(item, properties[key], path=f"{path}.{key}")
 
 
 SOURCE_QUERY_SCHEMA: dict[str, object] = {

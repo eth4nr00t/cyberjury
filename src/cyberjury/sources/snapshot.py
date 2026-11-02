@@ -50,39 +50,36 @@ def source_snapshot_files(root: str | Path) -> tuple[str, ...]:
     base = Path(root).resolve()
     if not base.is_dir():
         raise SourceSnapshotError(f"snapshot root is not a directory: {base}")
-    if (base / ".git").exists():
-        try:
-            return portable_paths(
-                path
-                for path in worktree_files(base)
-                if not (base / path).is_symlink() or _contained_file(base, base / path)
-            )
-        except GitSourceError as exc:
-            raise SourceSnapshotError(str(exc)) from exc
+    return portable_paths(_worktree_files(base) if (base / ".git").exists() else _directory_files(base))
+
+
+def _worktree_files(base: Path) -> list[str]:
+    try:
+        files = worktree_files(base)
+    except GitSourceError as exc:
+        raise SourceSnapshotError(str(exc)) from exc
+    return [path for path in files if not (base / path).is_symlink() or _contained_file(base, base / path)]
+
+
+def _directory_files(base: Path) -> list[str]:
     files: list[str] = []
     for current, directories, names in os.walk(base, followlinks=False):
         current_path = Path(current)
-        kept_directories: list[str] = []
-        for name in sorted(directories):
-            path = current_path / name
-            if name == ".git":
-                continue
-            if path.is_symlink():
-                continue
-            kept_directories.append(name)
-        directories[:] = kept_directories
+        directories[:] = [
+            name for name in sorted(directories) if name != ".git" and not (current_path / name).is_symlink()
+        ]
         for name in sorted(names):
             path = current_path / name
-            relative = path.relative_to(base)
+            relative = path.relative_to(base).as_posix()
             if path.is_symlink():
                 if not _contained_file(base, path):
                     continue
             elif not path.is_file():
-                raise SourceSnapshotError(f"source path is not a regular file: {relative.as_posix()}")
-            files.append(relative.as_posix())
+                raise SourceSnapshotError(f"source path is not a regular file: {relative}")
+            files.append(relative)
             if len(files) > MAX_SOURCE_FILES:
                 raise SourceSnapshotError("source snapshot exceeds the file count limit")
-    return portable_paths(files)
+    return files
 
 
 def _contained_file(base: Path, path: Path) -> bool:
@@ -127,45 +124,42 @@ def _source_file(root: Path, relative: str, sink: BinaryIO | None = None) -> Sou
             link_target = os.readlink(path)
         elif not stat.S_ISREG(metadata.st_mode):
             raise SourceSnapshotError(f"source path is not a regular file: {relative}")
-        digest = hashlib.sha256()
-        size = 0
-        with path.open("rb") as stream:
-            before = os.fstat(stream.fileno())
-            if before.st_size > MAX_SOURCE_FILE_BYTES:
-                raise SourceSnapshotError(f"source file exceeds the byte limit: {relative}")
-            while chunk := stream.read(READ_CHUNK_BYTES):
-                size += len(chunk)
-                if size > MAX_SOURCE_FILE_BYTES:
-                    raise SourceSnapshotError(f"source file exceeds the byte limit: {relative}")
-                digest.update(chunk)
-                if sink is not None:
-                    sink.write(chunk)
-            after = os.fstat(stream.fileno())
+        content_sha256, size, before, after = _read_content(path, relative, sink)
         changed = _stable_stat(before) != _stable_stat(after) or _stable_stat(path.lstat()) != _stable_stat(metadata)
-        if is_symlink:
-            if changed or os.readlink(path) != link_target:
-                raise SourceSnapshotError(f"source symlink changed while being read: {relative}")
-            return SourceFileSnapshot(
-                path=relative,
-                kind="symlink",
-                executable=None,
-                size_bytes=size,
-                content_sha256=digest.hexdigest(),
-                link_target=link_target,
-            )
+        if is_symlink and (changed or os.readlink(path) != link_target):
+            raise SourceSnapshotError(f"source symlink changed while being read: {relative}")
         if changed:
             raise SourceSnapshotError(f"source file changed while being read: {relative}")
-        return SourceFileSnapshot(
-            path=relative,
-            kind="regular",
-            executable=bool(stat.S_IMODE(metadata.st_mode) & 0o111),
-            size_bytes=size,
-            content_sha256=digest.hexdigest(),
-        )
     except SourceSnapshotError:
         raise
     except (OSError, ValueError) as exc:
-        raise SourceSnapshotError(f"cannot snapshot source file {relative}: {exc}") from exc
+        raise SourceSnapshotError(f"could not snapshot source file {relative}: {exc}") from exc
+    return SourceFileSnapshot(
+        path=relative,
+        kind="symlink" if is_symlink else "regular",
+        executable=None if is_symlink else bool(stat.S_IMODE(metadata.st_mode) & 0o111),
+        size_bytes=size,
+        content_sha256=content_sha256,
+        link_target=link_target,
+    )
+
+
+def _read_content(path: Path, relative: str, sink: BinaryIO | None) -> tuple[str, int, os.stat_result, os.stat_result]:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as stream:
+        before = os.fstat(stream.fileno())
+        if before.st_size > MAX_SOURCE_FILE_BYTES:
+            raise SourceSnapshotError(f"source file exceeds the byte limit: {relative}")
+        while chunk := stream.read(READ_CHUNK_BYTES):
+            size += len(chunk)
+            if size > MAX_SOURCE_FILE_BYTES:
+                raise SourceSnapshotError(f"source file exceeds the byte limit: {relative}")
+            digest.update(chunk)
+            if sink is not None:
+                sink.write(chunk)
+        after = os.fstat(stream.fileno())
+    return digest.hexdigest(), size, before, after
 
 
 def _stable_stat(value: os.stat_result) -> tuple[int, int, int, int, int, int]:

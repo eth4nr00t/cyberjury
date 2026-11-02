@@ -783,10 +783,10 @@ def _definition_label(definition: DefinitionEvidence) -> str:
     return f"{label} | {inline_source(signature)}" if signature else label
 
 
-def _page[T](targets: tuple[T, ...], page: int) -> tuple[tuple[T, ...], bool]:
+def _page[T](items: tuple[T, ...], page: int) -> tuple[tuple[T, ...], bool]:
     start = page * _EXECUTION.source_query_results_per_page
-    selected = targets[start : start + _EXECUTION.source_query_results_per_page]
-    return selected, start + len(selected) < len(targets)
+    selected = items[start : start + _EXECUTION.source_query_results_per_page]
+    return selected, start + len(selected) < len(items)
 
 
 def _query_key(query: Mapping[str, object]) -> str:

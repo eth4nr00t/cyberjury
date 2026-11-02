@@ -20,7 +20,7 @@ from cyberjury.review.relationships import (
     SourceReference,
     StructuralRelationshipEvidence,
 )
-from tests.review.support import navigator_from_definitions, single_definition_navigator
+from tests.review.support import definition, navigator_from_definitions, single_definition_navigator
 from tests.review.syntax.support import syntax_facts
 
 
@@ -95,14 +95,10 @@ def test_documentation_navigation_preserves_its_source_kind(tmp_path):
 def _navigator_with_calls(tmp_path, source: str, spans: tuple[tuple[int, int], ...]) -> SourceNavigator:
     path = tmp_path / "app.py"
     path.write_text(source, encoding="utf-8")
-    definition = DefinitionEvidence.create(
-        source=SourceReference.create(path="app.py", start=0, end=len(source), content=source),
-        kind="function",
-        name="reviewed",
-    )
+    reviewed = definition("app.py", "reviewed", 0, len(source), source=source)
     callsites = tuple(
         CallsiteEvidence.create(
-            caller_definition_id=definition.id,
+            caller_definition_id=reviewed.id,
             source=SourceReference.create(
                 path="app.py",
                 start=start,
@@ -117,7 +113,7 @@ def _navigator_with_calls(tmp_path, source: str, spans: tuple[tuple[int, int], .
     navigator = SourceNavigator.from_facts(
         tmp_path,
         relationship_evidence=RelationshipEvidenceBundle(
-            definitions=(definition,),
+            definitions=(reviewed,),
             callsites=callsites,
         ),
     )
@@ -482,11 +478,11 @@ def test_reading_requires_a_target_published_by_the_same_session(tmp_path):
 def test_definition_navigation_uses_normalized_character_ranges(tmp_path):
     """Character ranges after a non-ASCII prefix line map target() to lines 2-3 without the prefix."""
     prefix = "owner = 'é'\n"
-    definition = "def target():\n    return 'ok'\n"
-    source = prefix + definition
+    target_source = "def target():\n    return 'ok'\n"
+    source = prefix + target_source
     (tmp_path / "app.py").write_text(source, encoding="utf-8")
     start = len(prefix)
-    end = start + len(definition)
+    end = start + len(target_source)
     graph = {"app.py": {"target": [(start, end)]}}
     navigator = navigator_from_definitions(tmp_path, graph)
 
@@ -515,9 +511,9 @@ def test_definition_navigation_uses_normalized_newlines(tmp_path):
     """Ranges over CRLF source resolve against LF-normalized text, mapping target() to lines 2-3."""
     raw = b"header = 1\r\ndef target():\r\n    return 'ok'\r\n"
     normalized = raw.decode().replace("\r\n", "\n")
-    definition = "def target():\n    return 'ok'\n"
-    start = normalized.index(definition)
-    end = start + len(definition)
+    target_source = "def target():\n    return 'ok'\n"
+    start = normalized.index(target_source)
+    end = start + len(target_source)
     (tmp_path / "app.py").write_bytes(raw)
     graph = {"app.py": {"target": [(start, end)]}}
     navigator = navigator_from_definitions(tmp_path, graph)
@@ -787,10 +783,10 @@ def test_navigation_transaction_rolls_back_an_oversized_query(tmp_path):
 
 def _target_navigator(tmp_path, body: str = ""):
     prefix = "header = 1\n"
-    definition = f"def target():\n{body}    return 'ok'\n"
-    (tmp_path / "app.py").write_text(prefix + definition, encoding="utf-8")
+    target_source = f"def target():\n{body}    return 'ok'\n"
+    (tmp_path / "app.py").write_text(prefix + target_source, encoding="utf-8")
     start = len(prefix)
-    graph = {"app.py": {"target": [(start, start + len(definition))]}}
+    graph = {"app.py": {"target": [(start, start + len(target_source))]}}
     navigator = navigator_from_definitions(tmp_path, graph)
     assert navigator is not None
     return navigator
