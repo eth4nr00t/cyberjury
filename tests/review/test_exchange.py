@@ -218,7 +218,7 @@ def test_evidence_follow_up_preserves_the_initial_finding():
 
 
 def test_evidence_followups_show_only_the_current_request_budget():
-    """Each prompt states one remaining-batch count (2, 1, none), and the last carries both read sources."""
+    """Each prompt states one remaining-batch count, 2 then 1 then none, and the last carries both read sources."""
     first = EvidenceItem.create(identity="a.py:first:0:10", label="a.py:first", text="first source")
     second = EvidenceItem.create(identity="a.py:second:11:20", label="a.py:second", text="second source")
     ask, prompts = _scripted(
@@ -243,7 +243,7 @@ def test_evidence_followups_show_only_the_current_request_budget():
     assert "first source" in prompts[1]
     assert f"Read evidence `{first.id}` a.py:first:\n```\nfirst source\n```" in prompts[2]
     assert f"Read evidence `{second.id}` a.py:second:\n```\nsecond source\n```" in prompts[2]
-    assert "Evidence catalog (source is delivered only on request):" in prompts[2]
+    assert "Evidence catalog, whose source is delivered only on request:" in prompts[2]
 
 
 def test_judgment_without_source_tools_advertises_no_followups():

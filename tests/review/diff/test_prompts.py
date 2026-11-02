@@ -34,7 +34,7 @@ def test_diff_seed_keeps_embedded_markdown_fences_inside_the_numbered_diff():
     """A diff adding a triple-backtick string is wrapped in a ~~~diff fence that closes after that line."""
     seed = diff_seed("+++ b/app.py\n@@ -0,0 +1 @@\n+marker = '```'\n")
 
-    assert seed.startswith("Code under review, cited as `seed` (numbered unified diff):\n~~~diff\n")
+    assert seed.startswith("Code under review as a numbered unified diff, cited as `seed`:\n~~~diff\n")
     assert seed.endswith("marker = '```'\n~~~")
 
 

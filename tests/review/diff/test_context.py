@@ -139,7 +139,7 @@ def test_fallback_diff_context_renders_facts_and_current_source(tmp_path):
     grounding = _ground(tmp_path, diff, facts)
 
     assert grounding.files == ("app.py",)
-    assert grounding.syntax_hints.startswith("app.py: syntax hints (unverified, cite only delivered source):\n```\n")
+    assert grounding.syntax_hints.startswith("app.py: syntax hints, unverified, cite only delivered source:\n```\n")
     assert "tool()  calls get_client" in grounding.syntax_hints
     [window] = grounding.source_evidence
     assert window.text.startswith("# file: app.py lines 1-5\n1 | def get_client():")

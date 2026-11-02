@@ -45,7 +45,7 @@ def test_prepare_grounds_units_with_the_extracted_facts(tmp_path, monkeypatch):
 
     assert len(calls) == 1
     assert [unit.grounding.syntax_hints for unit in prepared.units] == [
-        "app.py: syntax hints (unverified, cite only delivered source):\n```\ndef f():\n    return 1\n```"
+        "app.py: syntax hints, unverified, cite only delivered source:\n```\ndef f():\n    return 1\n```"
     ]
     grounding, unit_plan = artifacts[GroundingReceipt], artifacts[UnitPlanReceipt]
     assert [record["unit_id"] for record in grounding.contexts] == [unit.id for unit in prepared.units]

@@ -183,7 +183,7 @@ def evidence_index(items: tuple[EvidenceItem, ...]) -> str:
     """Render the exact evidence ids a reviewer may request."""
     if not items:
         return ""
-    lines = ["Evidence catalog (source is delivered only on request):"]
+    lines = ["Evidence catalog, whose source is delivered only on request:"]
     lines.extend(
         f"- `{item.id}` [{len(item.text)} chars] {one_line_source(item.label)}"
         + (f" | declaration: {inline_source(item.preview)}" if item.preview else "")
@@ -273,7 +273,7 @@ def syntax_hints(
             continue
         truncated = f", first {max_chars_per_file} characters" if len(hints) > max_chars_per_file else ""
         blocks.append(
-            f"{one_line_source(file)}: syntax hints (unverified, cite only delivered source){truncated}:\n"
+            f"{one_line_source(file)}: syntax hints, unverified, cite only delivered source{truncated}:\n"
             f"{fenced_source(hints[:max_chars_per_file])}"
         )
     return "\n\n".join(blocks)

@@ -55,7 +55,7 @@ def test_adjacent_definition_end_does_not_claim_the_next_line(tmp_path):
 
 
 def test_definition_unit_planner_groups_seeds_by_file_in_seed_order():
-    """Seeds View, post, get yield a views.py plan (View, get) then an other.py plan (post)."""
+    """Seeds View, post, get yield a views.py plan of View and get, then an other.py plan of post."""
     view = definition("views.py", "View", 0, 100)
     method = definition("views.py", "get", 20, 60)
     other = definition("other.py", "post", 0, 80)

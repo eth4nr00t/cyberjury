@@ -51,4 +51,6 @@ def diff_finder_system(*, security_kernel: str, severity_rubric: str, navigation
 
 def diff_seed(diff: str) -> str:
     """Render one diff unit as the numbered code under review."""
-    return f"Code under review, cited as `seed` (numbered unified diff):\n{fenced_source(numbered_diff(diff), 'diff')}"
+    return (
+        f"Code under review as a numbered unified diff, cited as `seed`:\n{fenced_source(numbered_diff(diff), 'diff')}"
+    )

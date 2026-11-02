@@ -164,7 +164,7 @@ def test_reviewer_grounds_a_unit_with_only_its_own_files_facts(tmp_path):
     }
     review_unit(finder(provider), _grounded(tmp_path, "views.py", by_file))
     prompt = provider.calls[0]["prompt"]
-    assert "views.py: syntax hints (unverified, cite only delivered source):\n```\n" in prompt
+    assert "views.py: syntax hints, unverified, cite only delivered source:\n```\n" in prompt
     assert "calls[load_owner]" in prompt
     assert "delete_all" not in prompt
 
@@ -182,7 +182,7 @@ def test_repository_syntax_hints_are_bounded_per_file_with_a_visible_marker(tmp_
     )
 
     prompt = provider.calls[0]["prompt"]
-    assert f"large.py: syntax hints (unverified, cite only delivered source), first {limit} characters:" in prompt
+    assert f"large.py: syntax hints, unverified, cite only delivered source, first {limit} characters:" in prompt
     assert facts[:limit] in prompt
     assert facts not in prompt
 

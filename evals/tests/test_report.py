@@ -76,7 +76,10 @@ def test_report_sums_cost_from_model_call_receipts(tmp_path, cases, write_attemp
     assert summary.cost["total"]["requests"] == 1
     assert summary.cost["stages"]["initial_judgment finder"]["cache_read_tokens"] == 5
     text = format_summary(summary)
-    assert "  model calls, receipts 1: requests 1, failed 0, input tokens 12 (cache read 5, cache write 0)" in text
+    assert (
+        "  model calls, receipts 1: requests 1, failed 0, input tokens 12, of which cache read 5 and cache write 0"
+        in text
+    )
     assert "    initial_judgment finder: requests 1, failed 0, input tokens 12" in text
 
 

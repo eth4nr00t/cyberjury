@@ -183,8 +183,8 @@ def format_summary(summary: RunSummary) -> str:
 def _format_cost(stage: dict[str, int]) -> str:
     total_input = stage["input_tokens"] + stage["cache_read_tokens"] + stage["cache_write_tokens"]
     return (
-        f"requests {stage['requests']}, failed {stage['failed']}, input tokens {total_input} "
-        f"(cache read {stage['cache_read_tokens']}, cache write {stage['cache_write_tokens']}), "
+        f"requests {stage['requests']}, failed {stage['failed']}, input tokens {total_input}, "
+        f"of which cache read {stage['cache_read_tokens']} and cache write {stage['cache_write_tokens']}, "
         f"output tokens {stage['output_tokens']}"
     )
 
