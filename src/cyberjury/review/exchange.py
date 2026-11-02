@@ -20,7 +20,7 @@ from cyberjury.review.context import (
     GroundingContext,
     GroundingCoverage,
     SourceEvidence,
-    UnknownEvidenceRequest,
+    UnknownEvidenceRequestError,
     evidence_request_ids,
     is_evidence_id,
     merge_grounding_coverage,
@@ -77,7 +77,7 @@ class _ParsedEvidenceReply:
     repeated_evidence_requests: tuple[str, ...] = ()
 
 
-class _RejectedBatch(Exception):
+class _RejectedBatchError(Exception):
     def __init__(
         self,
         kind: str,
@@ -93,7 +93,7 @@ class _RejectedBatch(Exception):
         super().__init__(failure_reason)
 
 
-class _MalformedEvidenceRequest(EvidenceRequestError):
+class _MalformedEvidenceRequestError(EvidenceRequestError):
     def __init__(self, failure: str, findings: tuple[Finding, ...], requested: tuple[str, ...]) -> None:
         self.findings = findings
         self.requested = requested
@@ -213,18 +213,18 @@ class _EvidenceExchange:
             record_model_parse(exception_reason(exc))
             self.findings.committed.add(exc.response_findings)
             self.findings.uncorrected.add(exc.fallback_findings)
-            raise _RejectedBatch(
+            raise _RejectedBatchError(
                 "response",
                 f"Response correction required. {exc.instruction} {_CORRECTED_RESPONSE} "
                 "Do not repeat the invalid value.",
                 failure_reason=exception_reason(exc),
                 unresolved=("model response violates a deterministic response constraint",),
             ) from exc
-        except _MalformedEvidenceRequest as exc:
+        except _MalformedEvidenceRequestError as exc:
             record_model_parse(exception_reason(exc))
             self.findings.uncorrected.add(exc.findings)
             unread = self._published_ids() - self.available_refs
-            raise _RejectedBatch(
+            raise _RejectedBatchError(
                 "unknown_evidence",
                 _malformed_request_correction(str(exc), tuple(item for item in exc.requested if item in unread)),
                 failure_reason=exception_reason(exc),
@@ -233,7 +233,7 @@ class _EvidenceExchange:
         except SourceQueryLimitError as exc:
             record_model_parse(exception_reason(exc))
             self.findings.committed.add(exc.response_findings)
-            raise _RejectedBatch(
+            raise _RejectedBatchError(
                 "query_limit",
                 f"The previous response returned {exc.count} source queries, but one batch permits "
                 f"at most {exc.limit}. No query in that batch was executed. Return at most {exc.limit} "
@@ -269,7 +269,7 @@ class _EvidenceExchange:
         source_queries = [query for query in reply.source_queries if query not in repeated_queries]
         if repeated_queries and not source_queries and not requested and not reply.findings:
             failure_reason = "source query repeats an earlier query in this session"
-            raise _RejectedBatch(
+            raise _RejectedBatchError(
                 "repeated_query",
                 _REPEATED_QUERY_CORRECTION,
                 failure_reason=failure_reason,
@@ -278,7 +278,7 @@ class _EvidenceExchange:
         if not requested and not source_queries:
             repeated_requests = reply.repeated_evidence_requests
             if repeated_requests and not reply.findings:
-                raise _RejectedBatch(
+                raise _RejectedBatchError(
                     "delivered_request",
                     f"These requested items are already delivered: {', '.join(repeated_requests)}. "
                     "Cite their evidence ids directly. Do not request these items again. "
@@ -338,7 +338,7 @@ class _EvidenceExchange:
         )
         return None
 
-    def reject(self, rejected: _RejectedBatch) -> EvidenceJudgment | None:
+    def reject(self, rejected: _RejectedBatchError) -> EvidenceJudgment | None:
         self.turn.correction = rejected.kind
         if self.corrections[rejected.kind] < 1:
             return self.finish(rejected.unresolved, rejected.failure_reason)
@@ -380,7 +380,7 @@ def run_evidence_judgment(
             try:
                 reply = exchange.read_reply(ask, call_index)
                 result = reply if isinstance(reply, EvidenceJudgment) else exchange.accept(reply)
-            except _RejectedBatch as rejected:
+            except _RejectedBatchError as rejected:
                 result = exchange.reject(rejected)
             record_model_exchange(_exchange_record(exchange.turn, result))
         if result is not None:
@@ -442,7 +442,7 @@ def _parse_evidence_reply(
         requested_evidence_ids = evidence_request_ids(raw_requests)
     except EvidenceRequestError as exc:
         well_formed = tuple(item for item in raw_requests if is_evidence_id(item))
-        raise _MalformedEvidenceRequest(str(exc), tuple(findings), tuple(dict.fromkeys(well_formed))) from exc
+        raise _MalformedEvidenceRequestError(str(exc), tuple(findings), tuple(dict.fromkeys(well_formed))) from exc
     repeated_evidence_requests = tuple(item for item in requested_evidence_ids if item in available_refs)
     unread_evidence_ids = tuple(item for item in requested_evidence_ids if item not in available_refs)
     try:
@@ -622,7 +622,7 @@ def _deliver_exact_evidence(
     known = {*published_ids, *source_ids}
     unknown = tuple(item for item in ids if item not in known)
     if unknown:
-        raise UnknownEvidenceRequest(unknown)
+        raise UnknownEvidenceRequestError(unknown)
 
     selected = select_evidence(context.evidence, published_ids)
     navigated = (
@@ -655,10 +655,10 @@ def _delivery_rejection(
     unresolved: tuple[str, ...],
     requested: list[str],
     available_ids: set[str],
-) -> _RejectedBatch | None:
+) -> _RejectedBatchError | None:
     failure = str(exc)
     if isinstance(exc, EvidenceBudgetError):
-        return _RejectedBatch(
+        return _RejectedBatchError(
             "evidence_budget",
             f"The previous evidence exchange was not delivered because {failure}. "
             "No source query or evidence read from that exchange was committed. Return a smaller batch containing "
@@ -668,7 +668,7 @@ def _delivery_rejection(
             unresolved=unresolved,
         )
     if isinstance(exc, UnknownDefinitionQueryError):
-        return _RejectedBatch(
+        return _RejectedBatchError(
             "unknown_definition",
             "The previous response requested call candidates for an unpublished definition. "
             "Only use a `def-*` id returned by an earlier search in this session. Use the delivered evidence "
@@ -676,7 +676,7 @@ def _delivery_rejection(
             failure_reason=failure,
             unresolved=unresolved,
         )
-    if isinstance(exc, UnknownEvidenceRequest):
+    if isinstance(exc, UnknownEvidenceRequestError):
         valid_requested_ids = tuple(item for item in requested if item in available_ids)
         valid_text = (
             "The other ids in the rejected batch were valid but were not delivered. Resubmit only these exact ids: "
@@ -686,7 +686,7 @@ def _delivery_rejection(
             else ""
         )
         count = len(exc.ids)
-        return _RejectedBatch(
+        return _RejectedBatchError(
             "unknown_evidence",
             f"The previous response requested {count} unpublished evidence {'id' if count == 1 else 'ids'}. "
             f"{valid_text}Use only an exact id published earlier in this judgment. Do not invent or "
@@ -695,7 +695,7 @@ def _delivery_rejection(
             unresolved=unresolved,
         )
     if isinstance(exc, RepeatedSourceQueryError):
-        return _RejectedBatch(
+        return _RejectedBatchError(
             "repeated_query",
             _REPEATED_QUERY_CORRECTION,
             failure_reason=failure,

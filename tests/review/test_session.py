@@ -1,4 +1,4 @@
-"""Review session tests cover logical identity, attempts, and where each stage writes its artifacts."""
+"""A review session keeps one identity across attempts and writes each stage artifact under its stage directory."""
 
 import json
 import shutil
@@ -97,7 +97,7 @@ def test_review_attempt_request_is_the_persisted_request(tmp_path):
     request = replace(_request(), fresh=None)
     attempt = _start(ReviewSession.create(tmp_path, intent), request)
 
-    assert json.loads((attempt.workspace.path / "request.json").read_text()) == request.to_dict()
+    assert json.loads((attempt.workspace.path / "request.json").read_text(encoding="utf-8")) == request.to_dict()
     _finish(attempt)
 
 
@@ -156,7 +156,7 @@ def test_each_stage_writes_its_artifacts_under_its_own_directory(tmp_path):
     state = tmp_path.parent / f"{tmp_path.name}-state"
     attempt = _start(ReviewSession.select_active(state, intent, reuse=True), _request())
     _bind_source(attempt, tmp_path)
-    attempt.bind(SkippedFiles(()))
+    attempt.bind(SkippedFiles(files=()))
 
     for name in (
         "target/target.json",

@@ -25,7 +25,7 @@ def test_selects_provider_by_name_behind_a_retry_wrapper():
         assert isinstance(provider._inner, backend)
 
 
-class _RateLimited(Exception):
+class _RateLimitError(Exception):
     retry_after = 0
 
 
@@ -39,7 +39,7 @@ class _ScriptedOpenAI:
     def _reply(self, **request):
         type(self).calls.append(request["model"])
         if len(type(self).calls) <= type(self).failures:
-            raise _RateLimited("rate limited")
+            raise _RateLimitError("rate limited")
         return SimpleNamespace(output_text="{}", status="completed")
 
 

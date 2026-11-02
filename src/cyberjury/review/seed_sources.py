@@ -15,7 +15,7 @@ from cyberjury.review.context import (
     source_id,
 )
 from cyberjury.review.definitions import DefinitionUnitPlan
-from cyberjury.review.failures import BackendUnavailable
+from cyberjury.review.failures import BackendUnavailableError
 from cyberjury.review.prompts import MAX_PREVIEW_CHARS, inline_source, one_line_source
 from cyberjury.review.relationships import (
     CallsiteEvidence,
@@ -73,14 +73,14 @@ class _SourceTexts:
             try:
                 self._texts[path] = (self._base / path).read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
-                raise BackendUnavailable(f"could not materialize {subject}: {exc}") from exc
+                raise BackendUnavailableError(f"could not materialize {subject}: {exc}") from exc
         return self._texts[path]
 
     def lines(self, reference: SourceReference, subject: str) -> tuple[int, int]:
         return line_span(self.text(reference.path, subject), reference.start, reference.end)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _CallListing:
     sources: _SourceTexts
     calls_by_definition: Mapping[str, list[str]]
@@ -114,8 +114,9 @@ class _CallListing:
         lines = [_CALL_CANDIDATE_HEADER]
         active_caller = ""
         for call in calls:
-            lines.extend(self.entry(call, receipt(call[2]), active_caller))
-            active_caller = call[1].id
+            _callsite, caller, callee = call
+            lines.extend(self.entry(call, receipt(callee), active_caller))
+            active_caller = caller.id
         return lines
 
 
@@ -157,13 +158,14 @@ def _budgeted_calls(listing: _CallListing, calls: list[_Call], max_chars: int) -
     omitted = 0
     active_caller = ""
     for call in calls:
+        _callsite, caller, _callee = call
         additions = listing.entry(call, _RECEIPT_PLACEHOLDER, active_caller)
         if len("\n".join((*lines, *additions))) > max_chars:
             omitted += 1
             continue
         lines.extend(additions)
         included.append(call)
-        active_caller = call[1].id
+        active_caller = caller.id
     return included, omitted, len("\n".join(lines))
 
 
@@ -236,7 +238,7 @@ def candidate_call_context(
     calls = _single_candidate_calls(relationships, seed_ids, callsite_ids)
     if not calls:
         return CandidateCallContext()
-    listing = _CallListing(_SourceTexts(root), _calls_by_definition(relationships))
+    listing = _CallListing(sources=_SourceTexts(root), calls_by_definition=_calls_by_definition(relationships))
     included, omitted, listed_chars = _budgeted_calls(listing, calls, max_chars)
     callee_sources, source_omitted = _callee_sources(listing.sources, included, seed_ids, max_chars - listed_chars)
     delivered, published, receipts = _deliver_or_publish(
@@ -294,7 +296,7 @@ def _definition_preview(source: str) -> str:
             line = line.partition("{")[0].rstrip() + " {"
         parts.append(line)
         preview = " ".join(parts)
-        if len(preview) >= MAX_PREVIEW_CHARS or line.endswith(":") or "{" in line or line.endswith(";"):
+        if len(preview) >= MAX_PREVIEW_CHARS or line.endswith((":", ";")) or "{" in line:
             break
         if len(parts) == _EXECUTION.max_definition_preview_lines:
             break

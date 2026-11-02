@@ -1,7 +1,5 @@
 """Source assessment ledgers must bind to their attempt, pinned commit, and current case checks."""
 
-from __future__ import annotations
-
 import json
 
 import pytest

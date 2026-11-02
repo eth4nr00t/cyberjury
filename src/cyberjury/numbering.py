@@ -40,12 +40,12 @@ def _span(count: str | None) -> int:
 def _width(lines: list[str]) -> int:
     highest = 0
     for line in lines:
-        m = HUNK_HEADER.match(line)
-        if m:
+        header = HUNK_HEADER.match(line)
+        if header:
             highest = max(
                 highest,
-                int(m.group(1)) + _span(m.group(2)),
-                int(m.group(3)) + _span(m.group(4)),
+                int(header.group(1)) + _span(header.group(2)),
+                int(header.group(3)) + _span(header.group(4)),
             )
     return len(str(highest)) if highest else 1
 
@@ -64,11 +64,11 @@ def numbered_diff(diff: str) -> str:
     old_line = new_line = 0
     new_remaining = old_remaining = 0
     for line in lines:
-        m = HUNK_HEADER.match(line)
-        if m:
-            old_line = int(m.group(1))
-            new_line = int(m.group(3))
-            new_remaining, old_remaining = _span(m.group(4)), _span(m.group(2))
+        header = HUNK_HEADER.match(line)
+        if header:
+            old_line = int(header.group(1))
+            new_line = int(header.group(3))
+            new_remaining, old_remaining = _span(header.group(4)), _span(header.group(2))
             out.append(_diff_gutter(None, None, width) + line)
             continue
         old_number = new_number = None

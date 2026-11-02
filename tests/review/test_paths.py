@@ -31,7 +31,7 @@ def test_resolve_source_path_never_falls_back_to_a_basename(tmp_path):
     """A bare activity_controller.go gives None, and only internal/controller/activity_controller.go resolves."""
     (tmp_path / "internal" / "controller").mkdir(parents=True)
     real = tmp_path / "internal" / "controller" / "activity_controller.go"
-    real.write_text("package controller\n")
+    real.write_text("package controller\n", encoding="utf-8")
     assert resolve_source_path(tmp_path, "activity_controller.go") is None
     assert resolve_source_path(tmp_path, "internal/controller/activity_controller.go") == real.resolve()
 
@@ -39,6 +39,6 @@ def test_resolve_source_path_never_falls_back_to_a_basename(tmp_path):
 def test_resolve_source_path_refuses_a_traversal_path(tmp_path):
     """The path ../outside.py from an app root gives None even though the file exists one level up."""
     (tmp_path / "app").mkdir()
-    (tmp_path / "app" / "x.py").write_text("x = 1\n")
-    (tmp_path / "outside.py").write_text("x = 1\n")
+    (tmp_path / "app" / "x.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "outside.py").write_text("x = 1\n", encoding="utf-8")
     assert resolve_source_path(tmp_path / "app", "../outside.py") is None

@@ -26,6 +26,16 @@ def test_error_messages_redact_credentials_and_stay_bounded():
     assert len(message) == 2000
 
 
+def test_error_messages_remove_control_characters_before_redaction():
+    """Control characters cannot split a credential or alter one printed error line."""
+    assert error_message("\x1bAuthorization:\nBearer example\x1b-secret\x7f") == "Authorization: [redacted]"
+
+
+def test_error_messages_remove_bidirectional_and_zero_width_characters():
+    """A right-to-left override and a zero-width space are removed and a line separator becomes a space."""
+    assert error_message("path\u202egnp.exe\u2028next\u200bline") == "pathgnp.exe nextline"
+
+
 def test_a_record_round_trips_through_its_rendered_text_in_field_order():
     """An incomplete record renders its fields in schema order and its rendered text parses back to an equal record."""
     record = Record(
@@ -71,6 +81,41 @@ def test_a_record_line_lists_its_fields_and_quotes_values_with_spaces():
         'review/unit-1 incomplete 1.5s items=1 findings=2 paths="app.py, lib.py" source_changed=null '
         "error: model one finding has no location"
     )
+
+
+@pytest.mark.parametrize(
+    ("rationale", "escaped"),
+    [
+        ("\x1b[2J", "\\u001b[2J"),
+        ("\x7f\x85", "\\u007f\\u0085"),
+        ("a\u202eb", "a\\u202eb"),
+        ("a\u2028b", "a\\u2028b"),
+    ],
+)
+def test_a_record_line_escapes_control_characters_in_attributes(rationale, escaped):
+    """A model supplied attribute cannot inject a control, bidirectional, or line separator character into the line."""
+    record = Record(
+        id="link/pair-1",
+        status="ok",
+        started_at="2026-01-01T00:00:00Z",
+        duration_seconds=1.0,
+        attributes={"rationale": rationale},
+    )
+
+    assert record.line() == f'link/pair-1 ok 1.0s rationale="{escaped}"'
+
+
+def test_a_record_line_sanitizes_an_error_loaded_from_a_record():
+    """A record line never prints control characters or credentials from an existing error."""
+    record = Record(
+        id="review/unit-1",
+        status="failed",
+        started_at="2026-01-01T00:00:00Z",
+        duration_seconds=1.0,
+        error=RecordError(code="model", message="\x1bAuthorization: Bearer example-secret"),
+    )
+
+    assert record.line() == "review/unit-1 failed 1.0s error: model Authorization: [redacted]"
 
 
 @pytest.mark.parametrize(

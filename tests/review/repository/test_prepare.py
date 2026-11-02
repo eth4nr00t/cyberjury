@@ -25,25 +25,25 @@ def prepare_target(target):
 
 
 def _target(tmp_path):
-    d = tmp_path / "myservice"
-    d.mkdir(exist_ok=True)
-    (d / "app.py").write_text(APP)
-    return d
+    root = tmp_path / "myservice"
+    root.mkdir(exist_ok=True)
+    (root / "app.py").write_text(APP, encoding="utf-8")
+    return root
 
 
 def test_prepare_plans_source_files_and_leaves_out_test_directories(tmp_path):
     """The file app/managers/auth_manager.py gets its own unit while files under app/tests get none."""
-    d = tmp_path / "dj"
-    (d / "app" / "managers").mkdir(parents=True)
-    (d / "app" / "tests").mkdir()
-    (d / "manage.py").write_text("import django\n")
-    (d / "app" / "urls.py").write_text("from django.urls import path\nurlpatterns = []\n")
-    (d / "app" / "managers" / "auth_manager.py").write_text("class AuthManager:\n    pass\n")
-    (d / "app" / "tests" / "test_managers.py").write_text("def test_x():\n    pass\n")
-    (d / "requirements.txt").write_text("Django==4.2\n")
-    res = prepare_target(d)
-    assert "app/managers/auth_manager.py" in [unit.file for unit in res.units]
-    assert not any("test" in unit.file for unit in res.units)
+    root = tmp_path / "dj"
+    (root / "app" / "managers").mkdir(parents=True)
+    (root / "app" / "tests").mkdir()
+    (root / "manage.py").write_text("import django\n", encoding="utf-8")
+    (root / "app" / "urls.py").write_text("from django.urls import path\nurlpatterns = []\n", encoding="utf-8")
+    (root / "app" / "managers" / "auth_manager.py").write_text("class AuthManager:\n    pass\n", encoding="utf-8")
+    (root / "app" / "tests" / "test_managers.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+    (root / "requirements.txt").write_text("Django==4.2\n", encoding="utf-8")
+    prepared = prepare_target(root)
+    assert "app/managers/auth_manager.py" in [unit.file for unit in prepared.units]
+    assert not any("test" in unit.file for unit in prepared.units)
 
 
 def test_prepare_records_binary_undecodable_and_empty_files_as_skipped(tmp_path):
@@ -52,14 +52,14 @@ def test_prepare_records_binary_undecodable_and_empty_files_as_skipped(tmp_path)
     (target / "cache.db").write_bytes(b"SQLite format 3\0binary")
 
     (target / "legacy.py").write_bytes("name = 'caf\xe9'\n".encode("latin-1"))
-    (target / "empty.py").write_text("")
+    (target / "empty.py").write_text("", encoding="utf-8")
 
     stages = recorder()
     artifacts = bound_artifacts(stages)
 
-    res = prepare_repository_review(capture_source_snapshot(target), recorder=stages)
+    prepared = prepare_repository_review(capture_source_snapshot(target), recorder=stages)
 
-    assert [unit.file for unit in res.units] == ["app.py"]
+    assert [unit.file for unit in prepared.units] == ["app.py"]
     assert artifacts[SkippedFiles].files == (
         SkippedFile(path="cache.db", reason="binary"),
         SkippedFile(path="empty.py", reason="empty_file"),
@@ -69,8 +69,8 @@ def test_prepare_records_binary_undecodable_and_empty_files_as_skipped(tmp_path)
 
 def test_a_repository_without_source_prepares_no_units(tmp_path):
     """A directory holding only notes.md prepares no units."""
-    d = tmp_path / "plain"
-    d.mkdir()
-    (d / "notes.md").write_text("hi")
-    res = prepare_target(d)
-    assert res.units == ()
+    root = tmp_path / "plain"
+    root.mkdir()
+    (root / "notes.md").write_text("hi", encoding="utf-8")
+    prepared = prepare_target(root)
+    assert prepared.units == ()

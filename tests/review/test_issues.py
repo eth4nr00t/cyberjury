@@ -5,10 +5,10 @@ from dataclasses import replace
 
 import pytest
 
-from cyberjury.review import issues as issues_module
 from cyberjury.review.context import SourceSpan
 from cyberjury.review.finding import Finding
 from cyberjury.review.issues import (
+    _SYSTEM,
     LinkDecision,
     ModelIssueJudge,
     group_issues,
@@ -41,7 +41,7 @@ def _finding(title: str, *, file: str = "views.py", line: int = 2, cites=()) -> 
 
 
 def _source(root, file="views.py", lines=40):
-    (root / file).write_text("".join(f"line_{number} = {number}\n" for number in range(1, lines + 1)))
+    (root / file).write_text("".join(f"line_{number} = {number}\n" for number in range(1, lines + 1)), encoding="utf-8")
 
 
 def test_findings_at_one_line_with_one_category_form_one_issue_and_keep_every_member():
@@ -203,14 +203,14 @@ def test_decisions_under_an_earlier_judge_contract_are_asked_again(tmp_path, mon
     judge = ModelIssueJudge(provider=provider, model="mock", seat_id="seat-test")
 
     with monkeypatch.context() as patch:
-        patch.setattr(issues_module, "_SYSTEM", "an earlier same-fix contract")
+        patch.setattr("cyberjury.review.issues._SYSTEM", "an earlier same-fix contract")
         _link(findings, judge, tmp_path, store=store)
     _link(findings, judge, tmp_path, store=store)
     _link(findings, judge, tmp_path, store=store)
 
     assert len(provider.calls) == 2
     assert provider.calls[0]["system"] == "an earlier same-fix contract"
-    assert provider.calls[1]["system"] == issues_module._SYSTEM
+    assert provider.calls[1]["system"] == _SYSTEM
 
 
 def test_link_decisions_are_reused_from_their_item_records(tmp_path):

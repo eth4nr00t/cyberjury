@@ -4,12 +4,12 @@ import re
 
 import pytest
 
-from cyberjury.review import navigation as navigation_module
 from cyberjury.review.context import SourceEvidence, SourceSpan
 from cyberjury.review.navigation import (
     SourceNavigationError,
     SourceNavigator,
     SourceQueryLimitError,
+    SourceTarget,
     navigation_instructions,
     parse_source_queries,
 )
@@ -843,10 +843,10 @@ def test_an_auto_read_source_is_not_delivered_again_by_a_later_search(tmp_path):
 def test_caller_search_returns_the_go_function_calling_a_definition(tmp_path):
     """Searching callers of Go CheckPolicy returns ApplyPolicy and its CheckPolicy(value) call on page 0."""
     (tmp_path / "policy.go").write_text(
-        'package app\n\nfunc CheckPolicy(value string) bool {\n    return value != ""\n}\n'
+        'package app\n\nfunc CheckPolicy(value string) bool {\n    return value != ""\n}\n', encoding="utf-8"
     )
     (tmp_path / "service.go").write_text(
-        "package app\n\nfunc ApplyPolicy(value string) bool {\n    return CheckPolicy(value)\n}\n"
+        "package app\n\nfunc ApplyPolicy(value string) bool {\n    return CheckPolicy(value)\n}\n", encoding="utf-8"
     )
     facts = syntax_facts(tmp_path)
     target = next(item for item in facts.relationships.definitions if item.name == "CheckPolicy")
@@ -873,13 +873,13 @@ def test_text_search_builds_only_the_requested_page_and_one_look_ahead(tmp_path,
     )
     assert navigator is not None
     created = []
-    create = navigation_module.SourceTarget.create
+    create = SourceTarget.create
 
     def counted(**fields):
         created.append(fields["name"])
         return create(**fields)
 
-    monkeypatch.setattr(navigation_module.SourceTarget, "create", counted)
+    monkeypatch.setattr("cyberjury.review.navigation.SourceTarget.create", counted)
 
     result = navigator.session().execute([{"kind": "search_text", "query": "self", "page": 0}], target_chars=50_000)
 

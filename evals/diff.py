@@ -43,7 +43,7 @@ def run(
             if record["complete"]:
                 progress(f"{prefix} finished in {seconds}s, reports {len(record['findings'])}")
             else:
-                progress(f"{prefix} failed after {seconds}s: {record['error']}")
+                progress(f"{prefix} incomplete after {seconds}s: {record['error']}")
             records.append(record)
             on_attempt(record)
     return records

@@ -1,5 +1,7 @@
 """The working directory environment file that CLI commands load, and the settings read from the environment."""
 
+from __future__ import annotations
+
 import os
 from pathlib import Path
 

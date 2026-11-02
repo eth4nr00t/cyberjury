@@ -9,6 +9,10 @@ from cyberjury.canonical import canonical_sha256
 from cyberjury.review.relationships import RelationshipEvidenceBundle
 
 FACTS_SCHEMA = "cyberjury.facts/v1"
+_LIMITATIONS_HEADER = (
+    "Structured facts are unavailable or partial for these sources. Review their raw source, and do not "
+    "treat missing graph edges as evidence that no relationship exists:"
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -87,9 +91,4 @@ class FactsReceipt:
 
 def render_fact_limitations(limitations: tuple[FactLimitation, ...]) -> str:
     """Render incomplete structured coverage without hiding raw source review."""
-    lines = [
-        "Structured facts are unavailable or partial for these sources. Review their raw source, and do not "
-        "treat missing graph edges as evidence that no relationship exists:",
-    ]
-    lines.extend(f"- {limitation.message}" for limitation in limitations)
-    return "\n".join(lines)
+    return "\n".join((_LIMITATIONS_HEADER, *(f"- {limitation.message}" for limitation in limitations)))

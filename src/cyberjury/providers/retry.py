@@ -38,20 +38,20 @@ def _add_usage(left: Usage, right: Usage) -> Usage:
 
 
 def _call_with_deadline(fn: Callable[[], CompletionResult], timeout: float) -> CompletionResult:
-    out: queue.Queue = queue.Queue(maxsize=1)
+    results: queue.Queue = queue.Queue(maxsize=1)
 
     def run() -> None:
         try:
-            out.put((True, fn()))
+            results.put((True, fn()))
         except BaseException as exc:
-            out.put((False, exc))
+            results.put((False, exc))
 
     threading.Thread(target=run, daemon=True).start()
     try:
-        ok, value = out.get(timeout=timeout)
+        succeeded, value = results.get(timeout=timeout)
     except queue.Empty:
         raise TimeoutError(f"call exceeded the {timeout}s hard deadline") from None
-    if ok:
+    if succeeded:
         return value
     raise value
 
@@ -61,8 +61,8 @@ def _is_rate_limit(exc: BaseException) -> bool:
         return True
     if "ratelimit" in type(exc).__name__.lower():
         return True
-    msg = str(exc).lower()
-    return "rate limit" in msg or "429" in msg or "too many requests" in msg
+    message = str(exc).lower()
+    return "rate limit" in message or "429" in message or "too many requests" in message
 
 
 def _retry_after(exc: BaseException) -> float | None:

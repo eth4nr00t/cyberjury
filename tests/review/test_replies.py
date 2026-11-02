@@ -1,4 +1,4 @@
-"""Role reply tests cover parsing a model response against its declared schema."""
+"""A role reply is parsed against its declared response schema."""
 
 import pytest
 

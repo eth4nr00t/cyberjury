@@ -10,7 +10,7 @@ def exception_reason(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-class BackendUnavailable(RuntimeError):
+class BackendUnavailableError(RuntimeError):
     """A required facts or source backend cannot run."""
 
 

@@ -159,7 +159,7 @@ class EvidenceBudgetError(EvidenceRequestError):
     """One evidence exchange exceeds its published character target."""
 
 
-class UnknownEvidenceRequest(EvidenceRequestError):
+class UnknownEvidenceRequestError(EvidenceRequestError):
     """A model requested evidence identifiers absent from the current catalog."""
 
     def __init__(self, ids: tuple[str, ...]) -> None:

@@ -94,17 +94,18 @@ def write_json_atomic(path: Path, value: dict[str, object]) -> None:
 
 def _atomic_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
+        temporary.chmod(0o600)
+        temporary.replace(path)
         _fsync_directory(path.parent)
     except BaseException:
-        Path(temporary).unlink(missing_ok=True)
+        temporary.unlink(missing_ok=True)
         raise
 
 
@@ -137,7 +138,7 @@ def _safe_directory(path: Path, *, label: str = "session path", private: bool = 
     if not path.is_dir() or path.is_symlink():
         raise WorkspacePathError(f"{label} is not a plain directory: {path}")
     if created:
-        os.chmod(path, 0o700)
+        path.chmod(0o700)
     elif private and path.stat().st_mode & 0o077:
         raise WorkspacePathError(f"{label} permissions are too broad: {path}")
 
@@ -282,7 +283,7 @@ class SessionWorkspace(_JsonDirectory):
             session_lock.close()
             raise
         try:
-            os.chmod(temporary_path, 0o700)
+            temporary_path.chmod(0o700)
             write_json_atomic(temporary_path / "request.json", request)
             attempt = AttemptWorkspace(path=temporary_path, attempt_id=attempt_id, _session_lock=session_lock)
             attempt._write(
@@ -295,7 +296,7 @@ class SessionWorkspace(_JsonDirectory):
                 )
             )
             path = attempts / attempt_id
-            os.replace(temporary_path, path)
+            temporary_path.replace(path)
             _fsync_directory(attempts)
             attempt.path = path
             return attempt

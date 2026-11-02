@@ -1,4 +1,4 @@
-"""Review schema tests keep role outputs closed and target neutral."""
+"""Role output schemas are closed and target neutral."""
 
 import pytest
 

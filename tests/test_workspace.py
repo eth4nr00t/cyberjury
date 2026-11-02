@@ -1,8 +1,7 @@
-"""Session storage tests cover attempt records, recovery, and safe paths."""
+"""Session storage keeps private attempt records, recovers stale attempts, and rejects unsafe paths."""
 
 import fcntl
 import json
-import os
 import stat
 
 import pytest
@@ -93,9 +92,9 @@ def test_attempt_state_identity_must_match_its_directory(tmp_path):
     attempt = _start(session)
     attempt.finish(_terminal(attempt))
     path = attempt.path / "record.json"
-    value = json.loads(path.read_text())
+    value = json.loads(path.read_text(encoding="utf-8"))
     value["id"] = "attempt-20260101-000000-00000000"
-    path.write_text(json.dumps(value))
+    path.write_text(json.dumps(value), encoding="utf-8")
 
     with pytest.raises(WorkspaceCorruptionError, match="identity"):
         _start(session)
@@ -123,9 +122,9 @@ def test_locator_session_id_must_name_a_review_session(tmp_path):
     key = "c" * 64
     locator.select_or_create(key, reuse=True)
     path = locator.path / f"{key}.json"
-    value = json.loads(path.read_text())
+    value = json.loads(path.read_text(encoding="utf-8"))
     value["session_id"] = "fetch-20260101-000000-" + "d" * 8
-    path.write_text(json.dumps(value))
+    path.write_text(json.dumps(value), encoding="utf-8")
 
     with pytest.raises(WorkspaceCorruptionError, match="identity"):
         locator.select_or_create(key, reuse=True)
@@ -135,7 +134,7 @@ def test_existing_state_root_permissions_are_not_changed(tmp_path):
     """A pre-existing 0755 state directory keeps its mode while the created reviews namespace is 0700."""
     root = tmp_path / "shared"
     root.mkdir()
-    os.chmod(root, 0o755)
+    root.chmod(0o755)
 
     SessionWorkspace.open_or_create(root, session_id="review-20260101-000000-" + "4" * 8)
 
@@ -147,7 +146,7 @@ def test_an_existing_reviews_namespace_open_to_other_users_is_rejected(tmp_path)
     """A pre-existing 0755 reviews namespace raises a permissions error instead of holding review data."""
     root = tmp_path / "state"
     (root / "reviews").mkdir(parents=True)
-    os.chmod(root / "reviews", 0o755)
+    (root / "reviews").chmod(0o755)
 
     with pytest.raises(WorkspacePathError, match="permissions are too broad"):
         SessionWorkspace.open_or_create(root, session_id="review-20260101-000000-" + "6" * 8)
@@ -180,7 +179,7 @@ def test_symlinked_state_directories_are_rejected(tmp_path, layout):
 def test_json_reader_rejects_artifact_symlinks(tmp_path):
     """Reading through an outcome.json symlink raises WorkspaceCorruptionError."""
     target = tmp_path / "target.json"
-    target.write_text("{}")
+    target.write_text("{}", encoding="utf-8")
     link = tmp_path / "outcome.json"
     link.symlink_to(target)
 
@@ -191,7 +190,7 @@ def test_json_reader_rejects_artifact_symlinks(tmp_path):
 def test_json_reader_rejects_duplicate_keys(tmp_path):
     """A file repeating the complete key raises WorkspaceCorruptionError for duplicate JSON key."""
     path = tmp_path / "outcome.json"
-    path.write_text('{"complete":true,"complete":false}')
+    path.write_text('{"complete":true,"complete":false}', encoding="utf-8")
 
     with pytest.raises(WorkspaceCorruptionError, match="duplicate JSON key"):
         read_json_object(path)

@@ -40,10 +40,10 @@ def test_finder_parses_findings_and_canonicalizes_the_category():
             },
         ]
     )
-    out = _diff_findings(MockProvider(responses=[response]))
-    assert len(out) == 1
-    assert out[0].severity == "CRITICAL"
-    assert out[0].category == "sql-injection"
+    findings = _diff_findings(MockProvider(responses=[response]))
+    assert len(findings) == 1
+    assert findings[0].severity == "CRITICAL"
+    assert findings[0].category == "sql-injection"
 
 
 @pytest.mark.parametrize(
@@ -124,7 +124,7 @@ def test_an_unparseable_reply_is_corrected_once_instead_of_failing_the_unit():
 
     result = diff.review(diff.FILE_A_DIFF, provider=provider)
 
-    assert [f.evidence for f in result.outcome.findings] == ["unguarded sink"]
+    assert [finding.evidence for finding in result.outcome.findings] == ["unguarded sink"]
     assert result.outcome.complete
     assert "Return exactly one JSON object" in provider.calls[1]["prompt"]
 
@@ -185,7 +185,7 @@ def test_finder_system_is_identical_across_units():
 
 def test_reviewing_one_unit_again_reuses_its_cache_prefix(tmp_path):
     """Reviewing the same app.py unit twice sends two cached calls with one system prompt and cache prefix."""
-    (tmp_path / "app.py").write_text("def handler():\n    return 'ok'\n")
+    (tmp_path / "app.py").write_text("def handler():\n    return 'ok'\n", encoding="utf-8")
     provider = MockProvider(default=repository.finder_reply())
     reviewer = repository.finder(provider)
     [unit] = repository.ground([repository.source_unit(tmp_path, "app.py", name="wallets")])

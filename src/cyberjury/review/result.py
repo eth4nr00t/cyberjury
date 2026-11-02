@@ -14,7 +14,7 @@ FINDINGS_SCHEMA = "cyberjury.findings/v1"
 SKIPPED_FILES_SCHEMA = "cyberjury.skipped-files/v1"
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class SkippedFile:
     """One target file a review did not send to model review, and why."""
 
@@ -26,7 +26,7 @@ class SkippedFile:
         return {"path": self.path, "reason": self.reason}
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, kw_only=True)
 class SkippedFiles:
     """The target files one review kept out of model review."""
 
@@ -37,7 +37,7 @@ class SkippedFiles:
         return {"schema": SKIPPED_FILES_SCHEMA, "files": [item.to_dict() for item in self.files]}
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class FindingsArtifact:
     """The findings of one review in severity order, their issues, and the count per severity."""
 

@@ -5,12 +5,12 @@ from dataclasses import replace
 import pytest
 from tree_sitter import Language, Query
 
-from cyberjury.review.syntax import analyzer as analyzer_module
 from cyberjury.review.syntax.analyzer import (
     AnalyzerConfigurationError,
     analyze_repository,
     grammar_for,
     load_specs,
+    parse_file,
     spec_for,
 )
 from tests.review.syntax.support import callgraph, ignore_progress, syntax_facts, write_call_chain
@@ -55,8 +55,10 @@ def test_specs_ship_a_grammar_and_every_query_per_language():
 
 def test_a_syntax_error_keeps_the_partial_graph_and_records_a_limitation(tmp_path):
     """A dangling operator in render.ts keeps it in the graph with a partially parsed limitation."""
-    (tmp_path / "render.ts").write_text("export function render(value: string) {\n  return value +;\n}\n")
-    (tmp_path / "ok.ts").write_text("export function ok() { return true; }\n")
+    (tmp_path / "render.ts").write_text(
+        "export function render(value: string) {\n  return value +;\n}\n", encoding="utf-8"
+    )
+    (tmp_path / "ok.ts").write_text("export function ok() { return true; }\n", encoding="utf-8")
 
     facts = syntax_facts(tmp_path)
 
@@ -68,16 +70,15 @@ def test_a_syntax_error_keeps_the_partial_graph_and_records_a_limitation(tmp_pat
 
 def test_an_unexpected_error_in_one_file_becomes_its_limitation(tmp_path, monkeypatch):
     """A KeyError while analyzing bad.py becomes its limitation, and ok.py keeps its graph."""
-    (tmp_path / "bad.py").write_text("def bad():\n    return 1\n")
-    (tmp_path / "ok.py").write_text("def ok():\n    return True\n")
-    parse_file = analyzer_module.parse_file
+    (tmp_path / "bad.py").write_text("def bad():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "ok.py").write_text("def ok():\n    return True\n", encoding="utf-8")
 
     def failing_parse(path, rel, spec):
         if rel == "bad.py":
             raise KeyError("unexpected")
         return parse_file(path, rel, spec)
 
-    monkeypatch.setattr(analyzer_module, "parse_file", failing_parse)
+    monkeypatch.setattr("cyberjury.review.syntax.analyzer.parse_file", failing_parse)
 
     facts = syntax_facts(tmp_path)
 
@@ -87,7 +88,7 @@ def test_an_unexpected_error_in_one_file_becomes_its_limitation(tmp_path, monkey
 
 def test_a_syntax_error_placeholder_never_becomes_an_empty_name(tmp_path):
     """A Python call typo `x.(1)` yields a partially parsed limitation, one run definition, and no empty callee."""
-    (tmp_path / "app.py").write_text("def run(x):\n    y = x.(1)\n    return y\n")
+    (tmp_path / "app.py").write_text("def run(x):\n    y = x.(1)\n    return y\n", encoding="utf-8")
 
     facts = syntax_facts(tmp_path)
 
@@ -112,7 +113,7 @@ def test_a_structural_query_missing_a_capture_is_a_configuration_error(tmp_path)
         specs["python"],
         structural_relationships=(replace(configured, query=configured.query.replace(" @owner_name", "")),),
     )
-    (tmp_path / "app.py").write_text("class Child(Base):\n    pass\n")
+    (tmp_path / "app.py").write_text("class Child(Base):\n    pass\n", encoding="utf-8")
 
     with pytest.raises(AnalyzerConfigurationError, match="lacks required captures"):
         analyze_repository([(tmp_path / "app.py", "app.py", specs["python"])], progress=ignore_progress)
@@ -123,7 +124,7 @@ def _functions_only_python(tmp_path, files):
     python = replace(specs["python"], definitions="(function_definition name: (identifier) @name) @def\n")
     inputs = []
     for name, source in files.items():
-        (tmp_path / name).write_text(source)
+        (tmp_path / name).write_text(source, encoding="utf-8")
         inputs.append((tmp_path / name, name, python))
     return analyze_repository(inputs, progress=ignore_progress)
 
@@ -162,7 +163,7 @@ def test_a_structural_match_missing_a_capture_becomes_a_file_limitation(tmp_path
         "(class_definition name: (identifier) @owner_name superclasses: (argument_list"
         " [(identifier) @reference @target_name (attribute) @reference])) @owner"
     )
-    (tmp_path / "models.py").write_text("class Child(base.Base):\n    pass\n")
+    (tmp_path / "models.py").write_text("class Child(base.Base):\n    pass\n", encoding="utf-8")
 
     analyzed = analyze_repository([(tmp_path / "models.py", "models.py", spec)], progress=ignore_progress)
 
@@ -177,7 +178,7 @@ def test_a_structural_reference_outside_its_owner_becomes_a_file_limitation(tmp_
         "(module (class_definition name: (identifier) @owner_name) @owner"
         " (expression_statement (identifier) @reference @target_name))"
     )
-    (tmp_path / "models.py").write_text("class Child:\n    pass\nBase\n")
+    (tmp_path / "models.py").write_text("class Child:\n    pass\nBase\n", encoding="utf-8")
 
     analyzed = analyze_repository([(tmp_path / "models.py", "models.py", spec)], progress=ignore_progress)
 
@@ -193,7 +194,7 @@ def test_definition_target_query_rejects_an_unknown_grammar_node(tmp_path):
         specs["python"],
         definitions="(function_declration name: (identifier) @name) @def",
     )
-    (tmp_path / "app.py").write_text("def check():\n    return True\n")
+    (tmp_path / "app.py").write_text("def check():\n    return True\n", encoding="utf-8")
 
     with pytest.raises(AnalyzerConfigurationError, match="invalid query"):
         analyze_repository([(tmp_path / "app.py", "app.py", specs["python"])], progress=ignore_progress)
@@ -204,8 +205,10 @@ def test_definition_target_query_rejects_an_unknown_grammar_node(tmp_path):
     [
         (
             "lib.rs",
-            "struct User { id: u32 }\nimpl User {\n    fn load(&self) -> u32 { helper(self.id) }\n}\n"
-            "fn helper(x: u32) -> u32 { x }\n",
+            (
+                "struct User { id: u32 }\nimpl User {\n    fn load(&self) -> u32 { helper(self.id) }\n}\n"
+                "fn helper(x: u32) -> u32 { x }\n"
+            ),
             {"User", "load", "helper"},
             {"helper"},
         ),
@@ -223,8 +226,10 @@ def test_definition_target_query_rejects_an_unknown_grammar_node(tmp_path):
         ),
         (
             "app.cpp",
-            "namespace app {\nclass User : public Base {\n public:\n  int load() { return helper(1); }\n};\n}\n"
-            "int helper(int x) { return x; }\n",
+            (
+                "namespace app {\nclass User : public Base {\n public:\n  int load() { return helper(1); }\n};\n}\n"
+                "int helper(int x) { return x; }\n"
+            ),
             {"app", "User", "load", "helper"},
             {"helper"},
         ),
@@ -310,17 +315,18 @@ def test_one_extension_maps_to_one_language():
 def test_a_definition_range_cuts_the_whole_definition_from_its_own_source(tmp_path):
     """The range of target() slices exactly its two lines out of a file with neighbouring functions."""
     (tmp_path / "m.py").write_text(
-        "def before():\n    return 0\n\n\ndef target():\n    return run_query()\n\n\ndef after():\n    return 2\n"
+        "def before():\n    return 0\n\n\ndef target():\n    return run_query()\n\n\ndef after():\n    return 2\n",
+        encoding="utf-8",
     )
     start, end = callgraph(tmp_path)["m.py"]["target"][0]["range"]
-    cut = (tmp_path / "m.py").read_text()[start:end]
+    cut = (tmp_path / "m.py").read_text(encoding="utf-8")[start:end]
     assert cut == "def target():\n    return run_query()"
 
 
 def test_a_range_is_char_offsets_even_when_an_earlier_line_is_not_ascii(tmp_path):
     """With "café" on an earlier line, the drink() range starts at its str index, not byte offset."""
-    (tmp_path / "a.py").write_text('HEADER = "café"\n\n\ndef drink(x):\n    return 2\n')
-    text = (tmp_path / "a.py").read_text()
+    (tmp_path / "a.py").write_text('HEADER = "café"\n\n\ndef drink(x):\n    return 2\n', encoding="utf-8")
+    text = (tmp_path / "a.py").read_text(encoding="utf-8")
     start, end = callgraph(tmp_path)["a.py"]["drink"][0]["range"]
     assert start == text.index("def drink")
     assert text[start:end].startswith("def drink")
@@ -328,8 +334,10 @@ def test_a_range_is_char_offsets_even_when_an_earlier_line_is_not_ascii(tmp_path
 
 def test_a_range_survives_crlf_line_endings(tmp_path):
     """In a CRLF file the sink() range starts at the str index of "def sink"."""
-    (tmp_path / "a.py").write_text("A = 1\r\nB = 2\r\nC = 3\r\n\r\ndef sink(x):\r\n    return x\r\n", newline="")
-    text = (tmp_path / "a.py").read_text()
+    (tmp_path / "a.py").write_text(
+        "A = 1\r\nB = 2\r\nC = 3\r\n\r\ndef sink(x):\r\n    return x\r\n", newline="", encoding="utf-8"
+    )
+    text = (tmp_path / "a.py").read_text(encoding="utf-8")
     start, end = callgraph(tmp_path)["a.py"]["sink"][0]["range"]
     assert start == text.index("def sink")
     assert text[start:end].startswith("def sink")
@@ -337,14 +345,15 @@ def test_a_range_survives_crlf_line_endings(tmp_path):
 
 def test_a_method_call_resolves_to_the_bare_callee_name(tmp_path):
     """A TS call service.readOne(key) is recorded as the callee "readOne"."""
-    (tmp_path / "a.ts").write_text("function outer() {\n  return service.readOne(key);\n}\n")
+    (tmp_path / "a.ts").write_text("function outer() {\n  return service.readOne(key);\n}\n", encoding="utf-8")
     assert callgraph(tmp_path)["a.ts"]["outer"][0]["calls"] == ["readOne"]
 
 
 def test_same_name_attribute_call_is_not_filtered_as_recursion(tmp_path):
     """A memories.update_memory_by_id() call inside update_memory_by_id() stays in that function's calls."""
     (tmp_path / "route.py").write_text(
-        "def update_memory_by_id(memories, memory_id):\n    return memories.update_memory_by_id(memory_id)\n"
+        "def update_memory_by_id(memories, memory_id):\n    return memories.update_memory_by_id(memory_id)\n",
+        encoding="utf-8",
     )
     assert callgraph(tmp_path)["route.py"]["update_memory_by_id"][0]["calls"] == ["update_memory_by_id"]
 
@@ -353,32 +362,34 @@ def test_two_definitions_sharing_a_name_in_one_file_both_survive(tmp_path):
     """Two __init__ methods in classes A and B yield two entries, each ranging over its own body."""
     (tmp_path / "m.py").write_text(
         "class A:\n    def __init__(self):\n        self.a = 1\n\n\n"
-        "class B:\n    def __init__(self):\n        self.b = 2\n"
+        "class B:\n    def __init__(self):\n        self.b = 2\n",
+        encoding="utf-8",
     )
     entries = callgraph(tmp_path)["m.py"]["__init__"]
     assert len(entries) == 2
-    text = (tmp_path / "m.py").read_text()
-    assert [text[e["range"][0] : e["range"][1]].count("self.a") for e in entries] == [1, 0]
+    text = (tmp_path / "m.py").read_text(encoding="utf-8")
+    assert [text[entry["range"][0] : entry["range"][1]].count("self.a") for entry in entries] == [1, 0]
 
 
 def test_a_callee_comes_from_the_parsed_node_not_a_re_parse_of_its_source(tmp_path):
     """An async TS class method post() records its call to save rather than a misparsed name."""
-    (tmp_path / "a.ts").write_text("class Svc {\n  async post(k) { return save(k); }\n}\n")
+    (tmp_path / "a.ts").write_text("class Svc {\n  async post(k) { return save(k); }\n}\n", encoding="utf-8")
     assert callgraph(tmp_path)["a.ts"]["post"][0]["calls"] == ["save"]
 
 
 def test_a_class_counts_as_a_definition_so_its_methods_ride_along(tmp_path):
     """The range of class Resp includes the text of its set_status method."""
-    (tmp_path / "m.py").write_text("class Resp:\n    def set_status(self, s):\n        self.s = s\n")
+    (tmp_path / "m.py").write_text("class Resp:\n    def set_status(self, s):\n        self.s = s\n", encoding="utf-8")
     start, end = callgraph(tmp_path)["m.py"]["Resp"][0]["range"]
-    assert "set_status" in (tmp_path / "m.py").read_text()[start:end]
+    assert "set_status" in (tmp_path / "m.py").read_text(encoding="utf-8")[start:end]
 
 
 def test_references_inside_a_decorated_definition_keep_their_owner(tmp_path):
     """An os.path.join reference under an @route-decorated handler is owned by handler, as it is in plain."""
     (tmp_path / "app.py").write_text(
         'import os\n\n@route("/x")\ndef handler(name):\n    return os.path.join("a", name)\n\n'
-        'def plain(name):\n    return os.path.join("b", name)\n'
+        'def plain(name):\n    return os.path.join("b", name)\n',
+        encoding="utf-8",
     )
     evidence = syntax_facts(tmp_path).relationships
     names = {definition.id: definition.name for definition in evidence.definitions}
@@ -395,7 +406,7 @@ def test_references_inside_a_decorated_definition_keep_their_owner(tmp_path):
 def test_parse_limitation_column_uses_characters_after_non_ascii_text(tmp_path):
     """After "é" on line 1, the error column is the character index of "function" plus one."""
     source = 'const x = "é"; function broken( {\n'
-    (tmp_path / "broken.js").write_text(source)
+    (tmp_path / "broken.js").write_text(source, encoding="utf-8")
 
     limitation = syntax_facts(tmp_path).limitations[0]
 
@@ -420,7 +431,7 @@ def test_parse_limitation_column_uses_characters_after_non_ascii_text(tmp_path):
 )
 def test_every_tree_sitter_language_uses_one_parse_limitation_contract(tmp_path, name, source, analyzer):
     """A broken file in each language yields the same (source, analyzer, "partially parsed") limitation."""
-    (tmp_path / name).write_text(source)
+    (tmp_path / name).write_text(source, encoding="utf-8")
 
     limitation = syntax_facts(tmp_path).limitations[0]
 
@@ -512,7 +523,7 @@ def test_decorator_calls_belong_to_the_decorated_definition(tmp_path):
     source = (
         "def require_admin(handler):\n    return handler\n\n@require_admin\ndef protected(value):\n    return value\n"
     )
-    (tmp_path / "app.py").write_text(source)
+    (tmp_path / "app.py").write_text(source, encoding="utf-8")
 
     [protected] = callgraph(tmp_path)["app.py"]["protected"]
 
@@ -526,7 +537,8 @@ def test_solidity_modifier_calls_belong_to_the_modified_function(tmp_path):
         "contract Vault {\n"
         "    modifier onlyOwner() { require(msg.sender == owner); _; }\n"
         "    function withdraw() external onlyOwner {}\n"
-        "}\n"
+        "}\n",
+        encoding="utf-8",
     )
 
     assert callgraph(tmp_path)["Vault.sol"]["withdraw"][0]["calls"] == ["onlyOwner"]

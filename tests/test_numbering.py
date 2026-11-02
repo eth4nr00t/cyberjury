@@ -32,10 +32,10 @@ def _gutters(diff: str) -> dict[str, tuple[str, str]]:
 
 def test_added_and_context_lines_carry_both_side_line_numbers():
     """In hunk -10,3 +10,4, context kept is 10:10, added is :11, and context tail is 12:12."""
-    g = _gutters(_TWO_FILES)
-    assert g[" kept"] == ("10", "10")
-    assert g["+added"] == ("", "11")
-    assert g[" tail"] == ("12", "12")
+    gutters = _gutters(_TWO_FILES)
+    assert gutters[" kept"] == ("10", "10")
+    assert gutters["+added"] == ("", "11")
+    assert gutters[" tail"] == ("12", "12")
 
 
 def test_a_removed_line_carries_only_its_old_side_number():
@@ -45,38 +45,38 @@ def test_a_removed_line_carries_only_its_old_side_number():
 
 def test_a_later_file_header_is_not_read_as_hunk_content():
     """The second file's diff --git and +++ b/b.py lines get blank gutters instead of hunk numbers."""
-    g = _gutters(_TWO_FILES)
-    assert g["+++ b/b.py"] == ("", "")
-    assert g["diff --git a/b.py b/b.py"] == ("", "")
+    gutters = _gutters(_TWO_FILES)
+    assert gutters["+++ b/b.py"] == ("", "")
+    assert gutters["diff --git a/b.py b/b.py"] == ("", "")
 
 
 def test_each_file_numbers_from_its_own_hunk_header():
     """The second file restarts at its own @@ -1,1 +1,2 @@ header, numbering +second as new line 2."""
-    g = _gutters(_TWO_FILES)
-    assert g["+second"] == ("", "2")
+    gutters = _gutters(_TWO_FILES)
+    assert gutters["+second"] == ("", "2")
 
 
 def test_a_hunk_header_omitting_its_length_covers_one_line():
     """An @@ -4 +4 @@ header numbers the removed line old 4 and the added line new 4."""
-    g = _gutters("@@ -4 +4 @@\n-old\n+new\n")
-    assert g["+new"] == ("", "4")
-    assert g["-old"] == ("4", "")
+    gutters = _gutters("@@ -4 +4 @@\n-old\n+new\n")
+    assert gutters["+new"] == ("", "4")
+    assert gutters["-old"] == ("4", "")
 
 
 def test_a_no_newline_marker_does_not_consume_a_line_number():
     """A backslash No newline marker gets a blank gutter, so the following +line2 stays new line 2."""
-    g = _gutters("@@ -1,2 +1,2 @@\n line1\n-line2\n\\ No newline at end of file\n+line2\n")
-    assert g["\\ No newline at end of file"] == ("", "")
-    assert g["+line2"] == ("", "2")
+    gutters = _gutters("@@ -1,2 +1,2 @@\n line1\n-line2\n\\ No newline at end of file\n+line2\n")
+    assert gutters["\\ No newline at end of file"] == ("", "")
+    assert gutters["+line2"] == ("", "2")
 
 
 def test_a_new_file_numbers_from_one():
     """A /dev/null to new.py hunk @@ -0,0 +1,3 @@ numbers added lines 1-3 with a blank header gutter."""
     body = "".join(f"+line{i}\n" for i in range(1, 4))
-    g = _gutters(f"--- /dev/null\n+++ b/new.py\n@@ -0,0 +1,3 @@\n{body}")
-    assert g["+line1"] == ("", "1")
-    assert g["+line3"] == ("", "3")
-    assert g["+++ b/new.py"] == ("", "")
+    gutters = _gutters(f"--- /dev/null\n+++ b/new.py\n@@ -0,0 +1,3 @@\n{body}")
+    assert gutters["+line1"] == ("", "1")
+    assert gutters["+line3"] == ("", "3")
+    assert gutters["+++ b/new.py"] == ("", "")
 
 
 def test_gutters_share_one_width_so_the_code_stays_aligned():

@@ -82,11 +82,8 @@ class MockProvider(Provider):
                 "response_schema": response_schema,
             }
         )
-        text = (
-            self._responses.pop(0)
-            if self._responses
-            else self._responder(system, prompt)
-            if self._responder is not None
-            else self._default
-        )
-        return CompletionResult(text=text)
+        if self._responses:
+            return CompletionResult(text=self._responses.pop(0))
+        if self._responder is not None:
+            return CompletionResult(text=self._responder(system, prompt))
+        return CompletionResult(text=self._default)

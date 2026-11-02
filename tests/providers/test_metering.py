@@ -1,4 +1,4 @@
-"""Metering tests cover per-call records, usage aggregation, and provider delegation."""
+"""The metering provider records each call, aggregates its usage, and delegates to the wrapped provider."""
 
 import json
 
@@ -11,6 +11,7 @@ from cyberjury.providers.metering import (
     UsageMeter,
     model_call_context,
     model_call_scope,
+    record_model_exchange,
     record_model_parse,
     usage_from_calls,
     validate_model_calls_document,
@@ -76,6 +77,23 @@ def test_a_failed_call_is_recorded_but_adds_no_usage():
     assert meter.call_snapshot()[0]["status"] == "failed"
 
 
+def test_provider_failure_reason_redacts_credentials_and_limits_length():
+    """A provider exception never leaves a credential or an unbounded reason in the call artifact."""
+
+    class _Down(Provider):
+        def complete(self, **_kwargs):
+            raise RuntimeError("Authorization: Bearer example-secret " + "x" * 3000)
+
+    meter = UsageMeter()
+    with pytest.raises(RuntimeError):
+        _call(MeteringProvider(_Down(), meter))
+
+    reason = meter.document()["calls"][0]["failure_reason"]
+    assert "example-secret" not in reason
+    assert "Authorization: [redacted]" in reason
+    assert len(reason) == 2000
+
+
 @pytest.mark.parametrize("error", [ProviderCallError, ProviderAccessError])
 def test_a_call_that_failed_after_retries_records_its_attempts(error):
     """A provider failure or access rejection on the third attempt is recorded as a failed call with attempt 3."""
@@ -135,6 +153,27 @@ def test_a_validation_failure_marks_the_same_call_failed():
 
     call = meter.document()["calls"][0]
     assert (call["status"], call["failure_reason"]) == ("failed", "invalid response")
+
+
+def test_validation_failure_reason_redacts_credentials():
+    """A parse error is redacted before the call artifact records it."""
+    meter = UsageMeter()
+    with model_call_context(role="finder", trigger="initial_judgment"):
+        _call(MeteringProvider(_Fake(Usage()), meter))
+        record_model_parse("Authorization: Bearer example-secret")
+
+    assert meter.document()["calls"][0]["failure_reason"] == "Authorization: [redacted]"
+
+
+def test_exchange_stop_reason_redacts_credentials():
+    """An exchange stop reason is redacted before the call artifact records it."""
+    meter = UsageMeter()
+    with model_call_context(role="finder", trigger="initial_judgment"):
+        _call(MeteringProvider(_Fake(Usage()), meter))
+        record_model_exchange({"outcome": "stopped", "stop_reason": "Authorization: Bearer example-secret"})
+        record_model_parse()
+
+    assert meter.document()["calls"][0]["exchange"]["stop_reason"] == "Authorization: [redacted]"
 
 
 def test_a_candidate_model_call_binds_the_candidate_instead_of_a_scheduler_unit():

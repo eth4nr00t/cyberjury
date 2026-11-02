@@ -29,7 +29,7 @@ def test_unresolved_import_remains_a_syntax_clue(tmp_path):
 
 def test_import_only_repository_keeps_module_relationship_facts(tmp_path):
     """A lone index.ts with export * from a missing module still records its import relationship."""
-    (tmp_path / "index.ts").write_text("export * from './missing';\n")
+    (tmp_path / "index.ts").write_text("export * from './missing';\n", encoding="utf-8")
 
     relationships = syntax_facts(tmp_path).relationships.structural_relationships
 
@@ -38,9 +38,9 @@ def test_import_only_repository_keeps_module_relationship_facts(tmp_path):
 
 def test_relationship_evidence_preserves_calls_but_does_not_assign_targets(tmp_path):
     """Both load() callsites are kept as candidates of service.load, not bound targets."""
-    (tmp_path / "service.py").write_text("def load(x):\n    return x\n")
+    (tmp_path / "service.py").write_text("def load(x):\n    return x\n", encoding="utf-8")
     (tmp_path / "route.py").write_text(
-        "from service import load\n\ndef route(x):\n    first = load(x)\n    return load(x + 1)\n"
+        "from service import load\n\ndef route(x):\n    first = load(x)\n    return load(x + 1)\n", encoding="utf-8"
     )
 
     relationships = syntax_facts(tmp_path).relationships
@@ -56,10 +56,11 @@ def test_relationship_evidence_preserves_calls_but_does_not_assign_targets(tmp_p
 
 def test_import_alias_remains_unresolved_with_its_declaration_clue(tmp_path):
     """A call via load as selected_load stays unresolved and carries the selected_load from one clue."""
-    (tmp_path / "one.py").write_text("def load(value):\n    return value\n")
-    (tmp_path / "two.py").write_text("def load(value):\n    return value + 1\n")
+    (tmp_path / "one.py").write_text("def load(value):\n    return value\n", encoding="utf-8")
+    (tmp_path / "two.py").write_text("def load(value):\n    return value + 1\n", encoding="utf-8")
     (tmp_path / "route.py").write_text(
-        "from one import load as selected_load\n\ndef route(value):\n    return selected_load(value)\n"
+        "from one import load as selected_load\n\ndef route(value):\n    return selected_load(value)\n",
+        encoding="utf-8",
     )
 
     relationships = syntax_facts(tmp_path).relationships
@@ -77,9 +78,9 @@ def test_import_alias_remains_unresolved_with_its_declaration_clue(tmp_path):
 
 def test_namespace_declaration_and_concrete_use_are_distinct_relationship_questions(tmp_path):
     """A namespace import and its service.load() use yield separate unresolved namespace and reference facts."""
-    (tmp_path / "service.ts").write_text("export function load() { return true; }\n")
+    (tmp_path / "service.ts").write_text("export function load() { return true; }\n", encoding="utf-8")
     (tmp_path / "route.ts").write_text(
-        'import * as service from "./service";\nexport function route() { return service.load(); }\n'
+        'import * as service from "./service";\nexport function route() { return service.load(); }\n', encoding="utf-8"
     )
 
     evidence = syntax_facts(tmp_path).relationships.to_dict()
@@ -111,7 +112,7 @@ def test_namespace_declaration_and_concrete_use_are_distinct_relationship_questi
 )
 def test_class_inheritance_uses_one_cross_language_structural_contract(tmp_path, name, source):
     """Child extending or implementing Base gives the same Base inheritance candidate in every language and form."""
-    (tmp_path / name).write_text(source)
+    (tmp_path / name).write_text(source, encoding="utf-8")
 
     evidence = syntax_facts(tmp_path).relationships.to_dict()
     child = next(item for item in evidence["definitions"] if item["name"] == "Child")
@@ -134,7 +135,7 @@ def test_inheritance_candidates_include_types_only_and_keep_a_decorated_owner(tm
         "def Base():\n    pass\n\n"
         "@decorate\nclass Child(Base):\n    pass\n"
     )
-    (tmp_path / "models.py").write_text(source)
+    (tmp_path / "models.py").write_text(source, encoding="utf-8")
 
     evidence = syntax_facts(tmp_path).relationships.to_dict()
     definitions = {item["id"]: item for item in evidence["definitions"]}
@@ -148,13 +149,14 @@ def test_inheritance_candidates_include_types_only_and_keep_a_decorated_owner(tm
 
 def test_an_outer_local_import_is_a_declaration_clue_for_a_nested_caller(tmp_path):
     """A load() call in nested() is linked to the from service import load inside outer()."""
-    (tmp_path / "service.py").write_text("def load(value):\n    return value\n")
+    (tmp_path / "service.py").write_text("def load(value):\n    return value\n", encoding="utf-8")
     (tmp_path / "route.py").write_text(
         "def outer():\n"
         "    from service import load\n"
         "    def nested(value):\n"
         "        return load(value)\n"
-        "    return nested\n"
+        "    return nested\n",
+        encoding="utf-8",
     )
 
     evidence = syntax_facts(tmp_path).relationships.to_dict()
@@ -167,9 +169,9 @@ def test_an_outer_local_import_is_a_declaration_clue_for_a_nested_caller(tmp_pat
 
 def test_an_imported_receiver_is_a_declaration_clue_for_its_member_call(tmp_path):
     """GlobalSearchView.as_view() is linked to the import of GlobalSearchView from views."""
-    (tmp_path / "views.py").write_text("class GlobalSearchView:\n    pass\n")
+    (tmp_path / "views.py").write_text("class GlobalSearchView:\n    pass\n", encoding="utf-8")
     (tmp_path / "urls.py").write_text(
-        "from views import GlobalSearchView\n\ndef route():\n    return GlobalSearchView.as_view()\n"
+        "from views import GlobalSearchView\n\ndef route():\n    return GlobalSearchView.as_view()\n", encoding="utf-8"
     )
 
     evidence = syntax_facts(tmp_path).relationships.to_dict()
@@ -182,8 +184,8 @@ def test_an_imported_receiver_is_a_declaration_clue_for_its_member_call(tmp_path
 def test_a_reexport_subject_range_is_the_exact_export_statement(tmp_path):
     """The re-export relationship range covers exactly the export { load } from './service' statement."""
     source = "export { load } from './service';\nexport function other() { return 1; }\n"
-    (tmp_path / "index.ts").write_text(source)
-    (tmp_path / "service.ts").write_text("export function load() { return 1; }\n")
+    (tmp_path / "index.ts").write_text(source, encoding="utf-8")
+    (tmp_path / "service.ts").write_text("export function load() { return 1; }\n", encoding="utf-8")
 
     subject = syntax_facts(tmp_path).relationships.to_dict()["structural_relationships"][0]
     start, end = subject["source"]["range"]
@@ -193,7 +195,7 @@ def test_a_reexport_subject_range_is_the_exact_export_statement(tmp_path):
 
 def test_a_top_level_registration_call_uses_an_explicit_file_scope_caller(tmp_path):
     """A module-level register(handler) call is attributed to a <file> definition of kind file."""
-    (tmp_path / "app.py").write_text("register(handler)\n\ndef handler(value):\n    return value\n")
+    (tmp_path / "app.py").write_text("register(handler)\n\ndef handler(value):\n    return value\n", encoding="utf-8")
 
     evidence = syntax_facts(tmp_path).relationships.to_dict()
     file_scope = next(item for item in evidence["definitions"] if item["name"] == "<file>")
@@ -209,7 +211,8 @@ def test_solidity_named_import_is_a_declaration_clue_for_its_alias(tmp_path):
         'import {Ownable as Auth} from "./Ownable.sol";\n'
         "contract Vault {\n"
         "    function check() external { Auth(owner).verify(); }\n"
-        "}\n"
+        "}\n",
+        encoding="utf-8",
     )
 
     evidence = syntax_facts(tmp_path).relationships.to_dict()
@@ -226,7 +229,7 @@ def test_solidity_named_import_is_a_declaration_clue_for_its_alias(tmp_path):
 def test_unaliased_go_import_is_a_raw_clue_for_a_receiver_call(tmp_path):
     """A Go client.Target() call cites the raw "example.com/app/client-go" import as its namespace clue."""
     source = 'package app\nimport "example.com/app/client-go"\nfunc Route() { client.Target() }\n'
-    (tmp_path / "route.go").write_text(source)
+    (tmp_path / "route.go").write_text(source, encoding="utf-8")
 
     evidence = syntax_facts(tmp_path).relationships.to_dict()
     callsite = next(item for item in evidence["callsites"] if item["expression"] == "client.Target()")
@@ -244,7 +247,7 @@ def test_unaliased_go_import_is_a_raw_clue_for_a_receiver_call(tmp_path):
 
 def test_relationship_definition_records_its_owner(tmp_path):
     """Service.load records the Service class as its owner_id."""
-    (tmp_path / "service.py").write_text("class Service:\n    def load(self, x):\n        return x\n")
+    (tmp_path / "service.py").write_text("class Service:\n    def load(self, x):\n        return x\n", encoding="utf-8")
 
     definitions = syntax_facts(tmp_path).relationships.to_dict()["definitions"]
     owner = next(item for item in definitions if item["name"] == "Service")
@@ -255,9 +258,12 @@ def test_relationship_definition_records_its_owner(tmp_path):
 
 def test_typescript_default_import_alias_call_and_import_edge_are_kept(tmp_path):
     """Facts keep the client(value) default-import call and the route.ts import edge."""
-    (tmp_path / "service.ts").write_text("export default function actual(value: number) { return value; }\n")
+    (tmp_path / "service.ts").write_text(
+        "export default function actual(value: number) { return value; }\n", encoding="utf-8"
+    )
     (tmp_path / "route.ts").write_text(
-        "import client from './service';\nexport function route(value: number) { return client(value); }\n"
+        "import client from './service';\nexport function route(value: number) { return client(value); }\n",
+        encoding="utf-8",
     )
 
     evidence = syntax_facts(tmp_path).relationships

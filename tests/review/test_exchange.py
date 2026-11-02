@@ -1,4 +1,4 @@
-"""Evidence exchange tests cover follow-up requests, source navigation, corrections, and budgets."""
+"""The evidence exchange delivers requested evidence and source navigation within budget and corrects bad requests."""
 
 import re
 from contextlib import nullcontext
@@ -743,6 +743,8 @@ def test_one_exchange_over_the_shared_budget_delivers_what_fits_and_names_the_re
         text="guard = True\n" * 20,
     )
     calls = 0
+    prompts = []
+    held = []
 
     def ask(prompt):
         nonlocal calls
@@ -767,8 +769,6 @@ def test_one_exchange_over_the_shared_budget_delivers_what_fits_and_names_the_re
             return {"findings": [], "evidence_requests": held, "source_queries": []}
         return {"findings": [], "evidence_requests": [], "source_queries": []}
 
-    prompts = []
-    held = []
     result = _judge(
         GroundingContext(text="seed", evidence=(evidence,), navigator=navigator),
         ask=ask,

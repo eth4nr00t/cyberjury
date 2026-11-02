@@ -7,7 +7,6 @@ import pytest
 
 from cyberjury.review.context import GroundingContext, delivered_source_block
 from cyberjury.review.definitions import DefinitionUnitPlan
-from cyberjury.review.diff import context as diff_context
 from cyberjury.review.diff.context import changed_file_sources, ground_diff_unit
 from cyberjury.review.diff.model import DiffUnit
 from cyberjury.review.diff.prepare import plan_diff_units, prepare_diff_review
@@ -86,7 +85,7 @@ def test_importing_source_stays_behind_navigation_instead_of_being_preselected(t
 def test_diff_grounding_delivers_a_changed_source_path_with_spaces(tmp_path):
     """A new file named 'app route.py' is grounded with its source window and complete coverage."""
     source = "def route():\n    return sink()\n"
-    (tmp_path / "app route.py").write_text(source)
+    (tmp_path / "app route.py").write_text(source, encoding="utf-8")
     diff = (
         "diff --git a/app route.py b/app route.py\n"
         "--- a/app route.py\n"
@@ -107,7 +106,7 @@ def test_diff_context_discloses_only_source_limitations_in_the_unit_scope(tmp_pa
     """A facts limitation on related.py is disclosed while the one on out-of-scope unrelated.py is not."""
     source = "def route():\n    return 1\n"
     for name in ("app.py", "related.py", "unrelated.py"):
-        (tmp_path / name).write_text(source)
+        (tmp_path / name).write_text(source, encoding="utf-8")
     route = definition("app.py", "route", 0, len(source))
     related = definition("related.py", "route", 0, len(source))
     shared = shared_grounding(
@@ -137,15 +136,15 @@ def test_fallback_diff_context_renders_facts_and_current_source(tmp_path):
     facts = Facts(by_file={"app.py": "app.py\n  tool()  calls get_client\n  get_client()"})
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -3,0 +4,2 @@\n+def tool():\n+    return get_client()\n"
 
-    ctx = _ground(tmp_path, diff, facts)
+    grounding = _ground(tmp_path, diff, facts)
 
-    assert ctx.files == ("app.py",)
-    assert ctx.syntax_hints.startswith("app.py: syntax hints (unverified, cite only delivered source):\n```\n")
-    assert "tool()  calls get_client" in ctx.syntax_hints
-    [window] = ctx.source_evidence
+    assert grounding.files == ("app.py",)
+    assert grounding.syntax_hints.startswith("app.py: syntax hints (unverified, cite only delivered source):\n```\n")
+    assert "tool()  calls get_client" in grounding.syntax_hints
+    [window] = grounding.source_evidence
     assert window.text.startswith("# file: app.py lines 1-5\n1 | def get_client():")
     assert (window.source_span.start_line, window.source_span.end_line) == (1, 5)
-    assert f"Initial source `{window.id}`, delivered by the review agent:" in ctx.prompt.source
+    assert f"Initial source `{window.id}`, delivered by the review agent:" in grounding.prompt.source
 
 
 def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_path, monkeypatch):
@@ -185,7 +184,8 @@ def test_diff_grounding_exposes_candidate_callee_clues_for_changed_callers(tmp_p
     assert "service.py" in unit.grounding.snapshot_files
 
     monkeypatch.setattr(
-        diff_context, "_EXECUTION", replace(diff_context._EXECUTION, max_initial_candidate_source_chars=1)
+        "cyberjury.review.diff.context._EXECUTION",
+        replace(DEFAULT_REVIEW_SETTINGS.execution, max_initial_candidate_source_chars=1),
     )
     requestable = ground_diff_unit(replace(unit, grounding=None), prepared.shared)
     assert requestable.source_evidence == ()
@@ -198,7 +198,7 @@ def test_diff_grounding_respects_the_context_budget(tmp_path):
     diff_parts: list[str] = []
     for i in range(40):
         path = tmp_path / f"app_{i}.py"
-        path.write_text("\n".join(f"value_{j} = {j}" for j in range(200)), encoding="utf-8")
+        path.write_text("\n".join(f"value_{line} = {line}" for line in range(200)), encoding="utf-8")
         diff_parts.append(f"diff --git a/app_{i}.py b/app_{i}.py\n+++ b/app_{i}.py\n@@ -1,0 +1,1 @@\n+value = {i}\n")
 
     diff = "".join(diff_parts)
@@ -215,7 +215,7 @@ def test_diff_grounding_respects_the_context_budget(tmp_path):
 def test_diff_planning_and_grounding_are_distinct_deterministic_steps(tmp_path):
     """Planned units have no grounding, grounded units keep the same diffs, and reruns match."""
     source = "def route():\n    return sink()\n"
-    (tmp_path / "route.py").write_text(source)
+    (tmp_path / "route.py").write_text(source, encoding="utf-8")
     diff = "diff --git a/route.py b/route.py\n+++ b/route.py\n@@ -1,2 +1,2 @@\n+def route():\n+    return sink()\n"
     shared = shared_grounding(tmp_path)
 
@@ -232,10 +232,10 @@ def test_diff_grounding_reports_only_delivered_files(tmp_path):
     """A diff for a missing.py absent from disk yields no files and empty context text."""
     diff = "diff --git a/missing.py b/missing.py\n+++ b/missing.py\n@@ -1,0 +1,1 @@\n+print(1)\n"
 
-    ctx = _ground(tmp_path, diff)
+    grounding = _ground(tmp_path, diff)
 
-    assert ctx.files == ()
-    assert ctx.text == ""
+    assert grounding.files == ()
+    assert grounding.text == ""
 
 
 def test_deleted_diff_source_is_bound_by_the_patch_not_the_post_change_snapshot(tmp_path):
@@ -259,9 +259,9 @@ def test_diff_grounding_reports_hunk_lines_beyond_current_source(tmp_path):
     (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -100,1 +100,1 @@\n-print(0)\n+print(1)\n"
 
-    ctx = _ground(tmp_path, diff)
+    grounding = _ground(tmp_path, diff)
 
-    assert "outside current source length 1" in ctx.text
+    assert "outside current source length 1" in grounding.text
 
 
 def test_units_from_one_shared_grounding_deliver_only_their_own_file(tmp_path):
@@ -274,10 +274,10 @@ def test_units_from_one_shared_grounding_deliver_only_their_own_file(tmp_path):
 
     [unit_a] = _ground_units(shared, diff_a)
     [unit_b] = _ground_units(shared, diff_b)
-    ctx_a, ctx_b = unit_a.grounding, unit_b.grounding
+    grounding_a, grounding_b = unit_a.grounding, unit_b.grounding
 
-    assert [item.source_span.file for item in ctx_a.source_evidence] == ["a.py"]
-    assert [item.source_span.file for item in ctx_b.source_evidence] == ["b.py"]
+    assert [item.source_span.file for item in grounding_a.source_evidence] == ["a.py"]
+    assert [item.source_span.file for item in grounding_b.source_evidence] == ["b.py"]
 
 
 @pytest.mark.parametrize(
@@ -289,7 +289,7 @@ def test_units_from_one_shared_grounding_deliver_only_their_own_file(tmp_path):
 )
 def test_prepared_fallback_units_keep_current_repository_context(tmp_path, path, source, expected):
     """Unseeded app.py or policy.yaml changes deliver one window starting at line 1 with current content."""
-    (tmp_path / path).write_text(source)
+    (tmp_path / path).write_text(source, encoding="utf-8")
     shared = shared_grounding(tmp_path)
     diff = f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n"
 
@@ -310,17 +310,19 @@ def test_a_changed_html_region_gets_a_centered_window_before_the_file_head(tmp_p
         "@@ -900 +900 @@\n-<p>old</p>\n+<p>line 900</p>\n"
     )
 
-    ctx = _ground(tmp_path, diff)
+    grounding = _ground(tmp_path, diff)
 
-    spans = [(item.source_span.start_line, item.source_span.end_line) for item in ctx.source_evidence]
+    spans = [(item.source_span.start_line, item.source_span.end_line) for item in grounding.source_evidence]
     assert spans[0] == (895, 905)
     assert spans[1][0] == 1
-    assert "<p>line 900</p>" in ctx.source_evidence[0].text
+    assert "<p>line 900</p>" in grounding.source_evidence[0].text
 
 
 def test_changed_file_windows_stay_inside_the_context_budget_as_exact_line_ranges(tmp_path):
     """A 4000-line app.py yields one window from line 1 that fits the cap and ends on a whole line."""
-    (tmp_path / "app.py").write_text("".join(f"value_{index} = {index}\n" for index in range(1, 4000)))
+    (tmp_path / "app.py").write_text(
+        "".join(f"value_{index} = {index}\n" for index in range(1, 4000)), encoding="utf-8"
+    )
 
     limit = DEFAULT_REVIEW_SETTINGS.diff.target_repository_context_chars_per_unit
     _text, delivered = changed_file_sources(tmp_path, ("app.py",), {}, budget=limit)

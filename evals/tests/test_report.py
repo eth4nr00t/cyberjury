@@ -1,7 +1,5 @@
 """The report recomputes reviewed recall, precision, and cost from attempts, ledgers, and receipts."""
 
-from __future__ import annotations
-
 import json
 
 from cyberjury.providers.base import CompletionResult, Provider, Usage
@@ -12,7 +10,7 @@ from cyberjury.providers.metering import (
     model_call_scope,
     record_model_parse,
 )
-from evals.report import failures, format_summary, summarize
+from evals.report import failures, format_summary, summarize, to_json
 from tests.support import EMPTY_SCHEMA
 
 A, B = "candidate-" + "a" * 20, "candidate-" + "b" * 20
@@ -42,7 +40,7 @@ def _receipt(path):
 def test_report_counts_recall_per_run_and_check_precision(
     tmp_path, cases, write_attempt, write_ledger, benchmark_project
 ):
-    """Three runs give recall 1/2, precision 0.5, and one failed attempt."""
+    """Three runs give recall 1/2, precision 0.5, and one incomplete attempt."""
     runs = tmp_path / "runs"
     write_ledger(write_attempt(runs, 1, (A, B)), {A: _CREDIT, B: ("duplicate", ())})
     write_ledger(write_attempt(runs, 2, (B,)), {B: ("not_actionable", ())})
@@ -56,8 +54,12 @@ def test_report_counts_recall_per_run_and_check_precision(
     assert summary.checks == {check: {"found": 1, "attempts": 2}}
     assert summary.verdicts == {"duplicate": 1, "needs_review": 0, "not_actionable": 1, "supported": 1}
     assert summary.precision == 0.5
-    assert summary.failed == [f"{benchmark_project.diff_case} attempt 3: finder failed"]
+    assert summary.incomplete == [f"{benchmark_project.diff_case} attempt 3: finder failed"]
     text = format_summary(summary)
+    assert "incomplete 1, without ledger 0" in text
+    assert f"incomplete: {benchmark_project.diff_case} attempt 3: finder failed" in text
+    document = to_json(summary)
+    assert "incomplete" in document
     assert f"{check} 1/2" in text
     assert "report precision 50.0% = supported 1 / (supported 1 + not_actionable 1), reports 3" in text
     assert "excluded from precision: duplicate 1, needs_review 0" in text
@@ -78,13 +80,13 @@ def test_report_sums_cost_from_model_call_receipts(tmp_path, cases, write_attemp
     assert "    initial_judgment finder: requests 1, failed 0, input tokens 12" in text
 
 
-def test_report_fails_a_run_with_a_failed_attempt(tmp_path, cases, write_attempt, write_ledger):
-    """One failed attempt beside an adjudicated one produces one failure."""
+def test_report_fails_a_run_with_an_incomplete_attempt(tmp_path, cases, write_attempt, write_ledger):
+    """One incomplete attempt beside an adjudicated one produces one failure."""
     runs = tmp_path / "runs"
     write_ledger(write_attempt(runs, 1, (A, B)), {A: _CREDIT, B: ("not_actionable", ())})
     write_attempt(runs, 2, (), complete=False)
 
-    assert failures(summarize(cases, runs)) == ["1 failed attempt"]
+    assert failures(summarize(cases, runs)) == ["1 incomplete attempt"]
 
 
 def test_report_withholds_precision_and_fails_while_work_is_open(tmp_path, cases, write_attempt, write_ledger):

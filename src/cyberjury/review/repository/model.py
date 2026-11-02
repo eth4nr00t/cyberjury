@@ -69,7 +69,7 @@ def char_spans(text: str) -> list[tuple[int, int]]:
         if target >= size:
             spans.append((start, size))
             return spans
-        within = [b for b in boundaries if start < b <= target]
+        within = [boundary for boundary in boundaries if start < boundary <= target]
         if within:
             end = within[-1]
             next_start = end

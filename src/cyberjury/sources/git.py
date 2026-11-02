@@ -129,7 +129,7 @@ def worktree_files(repository: str | Path) -> tuple[str, ...]:
             path = record.decode("utf-8")
         except UnicodeError as exc:
             raise GitSourceError("Git work tree contains a path that is not UTF-8") from exc
-        if path not in submodules and os.path.lexists(Path(repository) / path):
+        if path not in submodules and (Path(repository) / path).exists(follow_symlinks=False):
             files.append(path)
     return tuple(dict.fromkeys(files))
 

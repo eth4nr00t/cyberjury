@@ -1,4 +1,4 @@
-"""Recorder tests cover how each stage ends, which usage it counts, and when its record is written."""
+"""The recorder ends each stage with its status, counts its usage, and writes and prints each record."""
 
 import io
 
@@ -7,7 +7,6 @@ import pytest
 from cyberjury.providers.base import CompletionResult, Provider, Usage
 from cyberjury.providers.metering import MeteringProvider, UsageMeter, model_call_context, model_call_scope
 from cyberjury.record import RecordError
-from cyberjury.review import recorder as recorder_module
 from cyberjury.review.recorder import INTERRUPTED, Recorder
 from tests.support import EMPTY_SCHEMA
 
@@ -121,7 +120,7 @@ def test_each_record_prints_its_line_to_the_stream():
 
 def test_progress_prints_a_running_stage_line_without_writing_a_record(monkeypatch):
     """A report past the interval prints facts running items=5 finished=2, and only the final record is written."""
-    monkeypatch.setattr(recorder_module, "_PROGRESS_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr("cyberjury.review.recorder._PROGRESS_INTERVAL_SECONDS", 0.0)
     stream = io.StringIO()
     recorder = Recorder(meter=UsageMeter(), stream=stream)
     written = []

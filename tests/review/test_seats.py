@@ -1,6 +1,5 @@
 """Seat identities hide endpoints, and every review calls one finder seat for issue links too."""
 
-from cyberjury.providers import configuration as configuration_module
 from cyberjury.providers.configuration import ProviderConfiguration, ProviderSeat
 from cyberjury.providers.metering import UsageMeter
 from cyberjury.review.issues import ModelIssueJudge
@@ -23,7 +22,7 @@ def test_seat_identity_names_the_transport_without_its_endpoint_value():
 def test_review_seats_judge_issue_links_on_the_configured_finder(monkeypatch):
     """The issue judge reuses the finder provider, model, and seat id."""
     provider = MockProvider(default='{"same_fix": true, "rationale": "one change"}')
-    monkeypatch.setattr(configuration_module, "make_provider", lambda *args, **kwargs: provider)
+    monkeypatch.setattr("cyberjury.providers.configuration.make_provider", lambda *_args, **_kwargs: provider)
     finder = ProviderSeat(provider="openai", model="finder", base_url="https://api.openai.com/v1")
     configuration = ProviderConfiguration(seat=finder, api_key="k", retries=0, timeout=10)
 

@@ -11,6 +11,7 @@ from time import perf_counter
 
 from cyberjury.canonical import canonical_sha256
 from cyberjury.providers.base import CompletionResult, Provider, ProviderAccessError, ProviderCallError, ResponseSchema
+from cyberjury.record import error_message
 
 MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v1"
 
@@ -77,7 +78,7 @@ def record_model_exchange(exchange: dict[str, object]) -> None:
         context.record_exchange(exchange)
 
 
-@dataclass
+@dataclass(kw_only=True)
 class UsageMeter:
     """Per-call model records for one run, with token totals derived from them."""
 
@@ -104,11 +105,17 @@ class UsageMeter:
 
         def update(failure_reason: str) -> None:
             with self._lock:
-                self.calls[index].update(status="failed" if failure_reason else "ok", failure_reason=failure_reason)
+                self.calls[index].update(
+                    status="failed" if failure_reason else "ok",
+                    failure_reason=error_message(failure_reason) if failure_reason else "",
+                )
 
         def exchange(value: dict[str, object]) -> None:
             with self._lock:
-                self.calls[index]["exchange"] = dict(value)
+                exchange_record = dict(value)
+                if isinstance(reason := exchange_record.get("stop_reason"), str) and reason:
+                    exchange_record["stop_reason"] = error_message(reason)
+                self.calls[index]["exchange"] = exchange_record
 
         return update, exchange
 
@@ -158,7 +165,7 @@ class MeteringProvider(Provider):
             record.update(
                 attempt=exc.attempts if isinstance(exc, (ProviderAccessError, ProviderCallError)) else 1,
                 status="failed",
-                failure_reason=f"{type(exc).__name__}: {exc}",
+                failure_reason=error_message(f"{type(exc).__name__}: {exc}"),
             )
             self._record(record, started, context)
             raise

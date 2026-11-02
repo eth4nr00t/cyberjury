@@ -57,8 +57,10 @@ def test_candidate_call_clues_use_line_numbers_and_name_only_usable_receipts(tmp
     assert "def load(value)" in published.text
     assert context.text.splitlines()[1:] == [
         "- caller route.py: `def route( value, )`",
-        f"  - `load(value)` at route.py:4, candidate callee service.py:load lines 1-2, source `{published.id}` in "
-        "the evidence catalog, candidate callee calls: `execute`",
+        (
+            f"  - `load(value)` at route.py:4, candidate callee service.py:load lines 1-2, source `{published.id}` in "
+            "the evidence catalog, candidate callee calls: `execute`"
+        ),
     ]
     assert not any(prefix in context.text for prefix in ("def-", "call-"))
 
@@ -155,7 +157,7 @@ def test_ambiguous_calls_remain_in_navigation_instead_of_becoming_initial_bindin
 def test_definition_evidence_index_exposes_a_declaration_not_its_body(tmp_path):
     """A class definition previews only its class line while the evidence text includes the body."""
     source = "class Rule(ModelWithOwner):\n    secret = load_secret()\n"
-    (tmp_path / "models.py").write_text(source)
+    (tmp_path / "models.py").write_text(source, encoding="utf-8")
     rule = definition("models.py", "Rule", 0, len(source))
     plan = DefinitionUnitPlan(seeds=(rule,))
 

@@ -1,13 +1,10 @@
 """Source snapshots expose stable manifests and detect every supported drift type."""
 
-from __future__ import annotations
-
 import os
 from pathlib import Path
 
 import pytest
 
-from cyberjury.sources import snapshot as snapshot_module
 from cyberjury.sources.paths import SourceSnapshotError
 from cyberjury.sources.snapshot import SourceSnapshot, source_snapshot_files
 from tests.support import git
@@ -51,8 +48,8 @@ def test_snapshot_counts_a_repointed_internal_symlink_as_drift(tmp_path):
     """Re-pointing current.py from first.py to second.py with the same content makes matches() return False."""
     first = tmp_path / "first.py"
     second = tmp_path / "second.py"
-    first.write_text("same\n")
-    second.write_text("same\n")
+    first.write_text("same\n", encoding="utf-8")
+    second.write_text("same\n", encoding="utf-8")
     link = tmp_path / "current.py"
     link.symlink_to(first.name)
     snapshot = SourceSnapshot.capture(tmp_path, ("current.py",))
@@ -65,7 +62,7 @@ def test_snapshot_counts_a_repointed_internal_symlink_as_drift(tmp_path):
 def test_snapshot_capture_rejects_a_symlink_to_a_file_outside_the_root(tmp_path):
     """A current.py link to a file beside the root raises SourceSnapshotError at capture."""
     outside = tmp_path.parent / f"{tmp_path.name}-outside.py"
-    outside.write_text("same\n")
+    outside.write_text("same\n", encoding="utf-8")
     (tmp_path / "current.py").symlink_to(outside)
 
     with pytest.raises(SourceSnapshotError):
@@ -156,13 +153,13 @@ def test_snapshot_includes_dependency_and_vendored_source_inputs(tmp_path):
     (tmp_path / "lib").mkdir()
     (tmp_path / "dependencies").mkdir()
     (tmp_path / "node_modules").mkdir()
-    (tmp_path / "src" / "vault.py").write_text("class Vault: ...\n")
-    (tmp_path / "lib" / "dependency.py").write_text("class Dependency: ...\n")
-    (tmp_path / "dependencies" / "math.py").write_text("class Math: ...\n")
-    (tmp_path / "node_modules" / "noise.js").write_text("generated\n")
+    (tmp_path / "src" / "vault.py").write_text("class Vault: ...\n", encoding="utf-8")
+    (tmp_path / "lib" / "dependency.py").write_text("class Dependency: ...\n", encoding="utf-8")
+    (tmp_path / "dependencies" / "math.py").write_text("class Math: ...\n", encoding="utf-8")
+    (tmp_path / "node_modules" / "noise.js").write_text("generated\n", encoding="utf-8")
     files = source_snapshot_files(tmp_path)
     snapshot = SourceSnapshot.capture(tmp_path, files)
-    (tmp_path / "lib" / "dependency.py").write_text("class Dependency:\n    changed = 1\n")
+    (tmp_path / "lib" / "dependency.py").write_text("class Dependency:\n    changed = 1\n", encoding="utf-8")
     changed = SourceSnapshot.capture(tmp_path, source_snapshot_files(tmp_path))
 
     assert "lib/dependency.py" in files
@@ -193,7 +190,7 @@ def test_materialize_copies_exact_bytes_modes_and_relative_symlinks(tmp_path):
     root = tmp_path / "source"
     (root / "bin").mkdir(parents=True)
     (root / "app.py").write_bytes(b"value = 1\r\n" * 200_000)
-    (root / "bin" / "run.sh").write_text("#!/bin/sh\n")
+    (root / "bin" / "run.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     (root / "bin" / "run.sh").chmod(0o755)
     (root / "link.py").symlink_to("app.py")
     snapshot = SourceSnapshot.capture(root, ("app.py", "bin/run.sh", "link.py"))
@@ -215,7 +212,7 @@ def test_materialize_copies_exact_bytes_modes_and_relative_symlinks(tmp_path):
 def test_snapshot_fails_loud_above_the_source_byte_limits(monkeypatch, tmp_path, limit, message):
     """A 10-byte app.py over a 1-byte file or tree limit raises SourceSnapshotError naming that limit."""
     (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
-    monkeypatch.setattr(snapshot_module, limit, 1)
+    monkeypatch.setattr(f"cyberjury.sources.snapshot.{limit}", 1)
 
     with pytest.raises(SourceSnapshotError, match=message):
         SourceSnapshot.capture(tmp_path, ("app.py",))

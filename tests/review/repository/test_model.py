@@ -1,15 +1,15 @@
-"""Repository model tests cover file mapping and review unit construction."""
+"""Repository units cover every source file in bounded windows bound to the definitions they contain."""
 
 from dataclasses import replace
 
 from cyberjury.review.definitions import DefinitionUnitPlan
 from cyberjury.review.facts import Facts, FactsReceipt
-from cyberjury.review.repository import model as repository_model
 from cyberjury.review.repository.model import (
     build_units,
     char_spans,
     repository_unit_plan_record,
 )
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from cyberjury.review.unit_plans import UnitPlanReceipt
 from tests.review.support import definition
 
@@ -19,7 +19,7 @@ _FACTS = FactsReceipt.create(backend_id="test", facts=Facts())
 def test_build_units_binds_candidate_definitions_to_their_source_window(tmp_path):
     """A single route definition yields one route.py unit over the whole file seeded with that definition."""
     source = "def route(value):\n    return value\n"
-    (tmp_path / "route.py").write_text(source)
+    (tmp_path / "route.py").write_text(source, encoding="utf-8")
     route = definition("route.py", "route", 0, len(source), source=source)
 
     units = build_units(tmp_path, ["route.py"], (route,))
@@ -36,12 +36,11 @@ def test_build_units_binds_candidate_definitions_to_their_source_window(tmp_path
 def test_oversized_source_keeps_bounded_windows(tmp_path, monkeypatch):
     """A 40-character unit limit splits one large class into several units of at most 40 characters."""
     monkeypatch.setattr(
-        repository_model,
-        "_SETTINGS",
-        replace(repository_model._SETTINGS, max_source_chars_per_unit=40, hard_split_overlap_chars=10),
+        "cyberjury.review.repository.model._SETTINGS",
+        replace(DEFAULT_REVIEW_SETTINGS.repository, max_source_chars_per_unit=40, hard_split_overlap_chars=10),
     )
     source = "class PublicViewSet:\n" + "    value = 1\n" * 10
-    (tmp_path / "views.py").write_text(source)
+    (tmp_path / "views.py").write_text(source, encoding="utf-8")
     units = build_units(tmp_path, ["views.py"], (definition("views.py", "PublicViewSet", 0, len(source)),))
 
     assert len(units) > 1
@@ -51,11 +50,11 @@ def test_oversized_source_keeps_bounded_windows(tmp_path, monkeypatch):
 def test_build_units_gives_each_source_file_one_whole_file_unit(tmp_path):
     """An entry file plus 25 pkg services of 24 KB yield 26 units, each spanning its whole file."""
     (tmp_path / "pkg").mkdir()
-    (tmp_path / "pkg" / "entry.py").write_text("entry")
+    (tmp_path / "pkg" / "entry.py").write_text("entry", encoding="utf-8")
     targets = []
     for index in range(25):
         rel = f"pkg/service_{index:02d}.py"
-        (tmp_path / rel).write_text("x" * 24_000)
+        (tmp_path / rel).write_text("x" * 24_000, encoding="utf-8")
         targets.append(rel)
 
     units = build_units(tmp_path, ["pkg/entry.py", *targets], ())
@@ -68,10 +67,10 @@ def test_build_units_gives_each_source_file_one_whole_file_unit(tmp_path):
 
 def test_build_units_splits_a_large_file_into_overlapping_windows(tmp_path):
     """A 60,000-character views.py yields views.py#1 to #3, overlapping by 2,000 characters through the end."""
-    (tmp_path / "views.py").write_text("x" * 60_000)
+    (tmp_path / "views.py").write_text("x" * 60_000, encoding="utf-8")
     units = build_units(str(tmp_path), ["views.py"], ())
-    assert [u.name for u in units] == ["views.py#1", "views.py#2", "views.py#3"]
-    assert {u.file for u in units} == {"views.py"}
+    assert [unit.name for unit in units] == ["views.py#1", "views.py#2", "views.py#3"]
+    assert {unit.file for unit in units} == {"views.py"}
     assert units[0].span[0] == 0
     assert units[0].span[1] - units[1].span[0] == 2_000
     assert units[-1].span[1] == 60_000
@@ -79,8 +78,8 @@ def test_build_units_splits_a_large_file_into_overlapping_windows(tmp_path):
 
 def test_spans_snaps_a_window_to_a_top_level_construct_boundary():
     """A file with two long functions splits so the second window begins at 'def g'."""
-    a = "def f():\n" + "    x = 1\n" * 2000
-    text = a + "def g():\n" + "    y = 2\n" * 2000
+    first = "def f():\n" + "    x = 1\n" * 2000
+    text = first + "def g():\n" + "    y = 2\n" * 2000
     spans = char_spans(text)
     assert spans[0][0] == 0
     assert text[spans[0][1] :].startswith("def g")

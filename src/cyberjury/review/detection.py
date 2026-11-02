@@ -32,7 +32,7 @@ _FIELDS = frozenset(
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Detection:
     """Review contract file classification rules plus the target's .gitattributes rules and oversized files."""
 

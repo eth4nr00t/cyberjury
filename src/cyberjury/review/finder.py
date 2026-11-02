@@ -14,12 +14,12 @@ from cyberjury.review.context import (
     SourceSpan,
     cited_source_spans,
 )
-from cyberjury.review.contract import SECURITY_KERNEL_FILE, SEVERITY_RUBRIC_FILE
 from cyberjury.review.engine import ReviewCycle, ReviewUnit
 from cyberjury.review.exchange import EvidenceJudgment, run_evidence_judgment
 from cyberjury.review.failures import exception_reason
 from cyberjury.review.finding import ChangeAnchor, Finding
 from cyberjury.review.identity import canonical_category
+from cyberjury.review.knowledge import load_security_kernel, load_severity_rubric
 from cyberjury.review.navigation import SourceNavigationSession, navigation_instructions
 from cyberjury.review.paths import is_unsafe_rel
 from cyberjury.review.replies import CorrectableRoleResponseError, RoleReply, parse_role_response
@@ -97,7 +97,7 @@ def findings_from_reply(
 
 
 class SystemRenderer(Protocol):
-    """Render a target's finder system contract from the shared kernel, rubric, and navigation contract."""
+    """The renderer of a target's finder system contract from the shared kernel, rubric, and navigation contract."""
 
     def __call__(self, *, security_kernel: str, severity_rubric: str, navigation: str) -> str:
         """Return the system prompt every unit of one run shares."""
@@ -130,8 +130,8 @@ class UnitFinder[U: ReviewUnit]:
         self._target = target
         self._provider = provider
         self._model = model
-        security_kernel = SECURITY_KERNEL_FILE.read_text(encoding="utf-8")
-        rubric = SEVERITY_RUBRIC_FILE.read_text(encoding="utf-8")
+        security_kernel = load_security_kernel()
+        rubric = load_severity_rubric()
         self._systems = {
             navigation: target.system(
                 security_kernel=security_kernel,
@@ -155,6 +155,7 @@ class UnitFinder[U: ReviewUnit]:
             judgment = EvidenceJudgment(findings=[], failure_reason=exception_reason(exc))
         cycle = self._validate_locations(
             unit,
+            grounding,
             ReviewCycle(
                 findings=judgment.findings,
                 failure_reason=judgment.failure_reason,
@@ -162,7 +163,7 @@ class UnitFinder[U: ReviewUnit]:
                 source_evidence=judgment.source_evidence,
             ),
         )
-        evidence = _unit_evidence(unit, cycle)
+        evidence = _unit_evidence(grounding, cycle)
         return replace(
             cycle,
             findings=[
@@ -206,10 +207,10 @@ class UnitFinder[U: ReviewUnit]:
             navigation=navigation,
         )
 
-    def _validate_locations(self, unit: U, cycle: ReviewCycle) -> ReviewCycle:
-        evidence = _unit_evidence(unit, cycle)
+    def _validate_locations(self, unit: U, grounding: GroundingContext, cycle: ReviewCycle) -> ReviewCycle:
+        evidence = _unit_evidence(grounding, cycle)
         located = [
-            (finding, self._target.locate(unit, finding, evidence, unit.grounding.source_spans))
+            (finding, self._target.locate(unit, finding, evidence, grounding.source_spans))
             for finding in cycle.findings
         ]
         valid = [placed for _original, placed in located if placed is not None]
@@ -223,5 +224,5 @@ class UnitFinder[U: ReviewUnit]:
         )
 
 
-def _unit_evidence(unit: ReviewUnit, cycle: ReviewCycle) -> tuple[SourceEvidence, ...]:
-    return tuple(dict.fromkeys((*unit.grounding.source_evidence, *cycle.source_evidence)))
+def _unit_evidence(grounding: GroundingContext, cycle: ReviewCycle) -> tuple[SourceEvidence, ...]:
+    return tuple(dict.fromkeys((*grounding.source_evidence, *cycle.source_evidence)))

@@ -1,7 +1,5 @@
 """Canonical source path rules reject unsafe paths and symlinks that leave their root."""
 
-from __future__ import annotations
-
 import pytest
 
 from cyberjury.sources.paths import SourceSnapshotError, portable_paths, require_contained_symlinks

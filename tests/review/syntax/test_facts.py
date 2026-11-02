@@ -7,7 +7,7 @@ from tests.review.syntax.support import syntax_facts
 
 def test_a_tree_without_analyzable_source_yields_empty_facts(tmp_path):
     """A tree holding only notes.md produces facts equal to an empty Facts()."""
-    (tmp_path / "notes.md").write_text("no code here\n")
+    (tmp_path / "notes.md").write_text("no code here\n", encoding="utf-8")
     facts = syntax_facts(tmp_path)
     assert facts == Facts()
 

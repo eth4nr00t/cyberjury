@@ -15,10 +15,10 @@ def parse_json_object(text: str) -> dict | None:
             index += 1
             continue
         try:
-            obj, index = _DECODER.raw_decode(text, index)
+            parsed, index = _DECODER.raw_decode(text, index)
         except json.JSONDecodeError:
             return None
-        objects.append(obj)
-    if not objects or not isinstance(objects[0], dict) or any(obj != objects[0] for obj in objects[1:]):
+        objects.append(parsed)
+    if not objects or not isinstance(objects[0], dict) or any(parsed != objects[0] for parsed in objects[1:]):
         return None
     return objects[0]

@@ -38,10 +38,12 @@ def write_call_chain(root):
     """Write app/routes.py calling handle_request, which calls load_order, which calls run_query."""
     (root / "app").mkdir(parents=True)
     (root / "app" / "routes.py").write_text(
-        "from app.handler import handle_request\n\n\ndef get_order(oid):\n    return handle_request(oid)\n"
+        "from app.handler import handle_request\n\n\ndef get_order(oid):\n    return handle_request(oid)\n",
+        encoding="utf-8",
     )
     (root / "app" / "handler.py").write_text(
-        "from app.repository import load_order\n\n\ndef handle_request(oid):\n    return load_order(oid)\n"
+        "from app.repository import load_order\n\n\ndef handle_request(oid):\n    return load_order(oid)\n",
+        encoding="utf-8",
     )
-    (root / "app" / "repository.py").write_text("def load_order(oid):\n    return run_query(oid)\n")
+    (root / "app" / "repository.py").write_text("def load_order(oid):\n    return run_query(oid)\n", encoding="utf-8")
     return root

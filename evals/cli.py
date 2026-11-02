@@ -58,15 +58,15 @@ def _cmd_diff(args) -> int:
         progress=_progress,
         on_attempt=save_attempt,
     )
-    failed = [record for record in records if not record["complete"]]
+    incomplete = [record for record in records if not record["complete"]]
     print(f"=== diff: {runs_dir} ===")
     print(
-        f"  cases {len(cases)}, runs {args.repeat}, complete attempts {len(records) - len(failed)}/{len(records)}, "
+        f"  cases {len(cases)}, runs {args.repeat}, complete attempts {len(records) - len(incomplete)}/{len(records)}, "
         f"reports {sum(len(record['findings']) for record in records if record['complete'])}"
     )
-    for record in failed:
-        print(f"  failed: {record['case']} attempt {record['attempt']}: {record['error']}")
-    return 1 if failed else 0
+    for record in incomplete:
+        print(f"  incomplete: {record['case']} attempt {record['attempt']}: {record['error']}")
+    return 1 if incomplete else 0
 
 
 def _cmd_record(args) -> int:

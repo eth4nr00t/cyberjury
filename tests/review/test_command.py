@@ -1,6 +1,4 @@
-"""Review command tests cover the stage records each review writes and prints, and how its attempt ends."""
-
-from __future__ import annotations
+"""A review command writes and prints each stage record, and its attempt record states how the review ended."""
 
 import contextlib
 import io
@@ -15,14 +13,14 @@ from types import SimpleNamespace
 import pytest
 
 from cyberjury.envfile import load_env_file
-from cyberjury.providers import configuration as configuration_module
 from cyberjury.providers.base import ProviderAccessError
 from cyberjury.record import STAGES, Record
-from cyberjury.review import command as command_module
 from cyberjury.review.command import ReviewCommand, attempt_output, classify_error, run_review_command
 from cyberjury.review.recorder import TERMINATED
 from cyberjury.review.request import TargetInput
 from cyberjury.review.result import findings_artifact
+from cyberjury.review.run import run_review
+from cyberjury.review.target import materialize_diff_target
 from cyberjury.workspace import SessionBusyError, WorkspacePathError
 from tests.review.repository.support import EMPTY_REPLY
 from tests.support import MockProvider, git
@@ -30,7 +28,7 @@ from tests.support import MockProvider, git
 
 @pytest.fixture(autouse=True)
 def _no_env_file(monkeypatch):
-    monkeypatch.setattr(command_module, "load_env_file", lambda: None)
+    monkeypatch.setattr("cyberjury.review.command.load_env_file", lambda: None)
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +36,7 @@ def _scripted_seat(monkeypatch):
     _scripted_provider(monkeypatch)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _Run:
     record: Record
     out: str
@@ -90,7 +88,7 @@ def _attempt_dir(state: Path) -> Path:
 
 
 def _attempt_record(attempt: Path) -> dict:
-    return json.loads((attempt / "record.json").read_text())
+    return json.loads((attempt / "record.json").read_text(encoding="utf-8"))
 
 
 def _stub_review(*, incomplete: str = "", seen: dict | None = None):
@@ -111,12 +109,14 @@ def _stub_review(*, incomplete: str = "", seen: dict | None = None):
 
 def _scripted_provider(monkeypatch, default: str = EMPTY_REPLY) -> None:
     monkeypatch.setenv("CYBERJURY_API_KEY", "k")
-    monkeypatch.setattr(configuration_module, "make_provider", lambda *a, **k: MockProvider(default=default))
+    monkeypatch.setattr(
+        "cyberjury.providers.configuration.make_provider", lambda *_args, **_kwargs: MockProvider(default=default)
+    )
 
 
 def _seed_source(repository: Path) -> Path:
     repository.mkdir(parents=True, exist_ok=True)
-    (repository / "app.py").write_text("value = 1\n")
+    (repository / "app.py").write_text("value = 1\n", encoding="utf-8")
     return repository
 
 
@@ -145,16 +145,17 @@ def _flask_repository(root):
     root.mkdir()
     (root / "app.py").write_text(
         "from flask import Flask, request\napp = Flask(__name__)\n"
-        '@app.route("/x/<i>")\ndef h(i):\n    return request.args.get("y", "")\n'
+        '@app.route("/x/<i>")\ndef h(i):\n    return request.args.get("y", "")\n',
+        encoding="utf-8",
     )
-    (root / "requirements.txt").write_text("Flask==3.0\n")
+    (root / "requirements.txt").write_text("Flask==3.0\n", encoding="utf-8")
     return root
 
 
 def _graphable(root):
     root.mkdir()
-    (root / "app.py").write_text("def handle(req):\n    return lookup(req)\n")
-    (root / "store.py").write_text("def lookup(key):\n    return key\n")
+    (root / "app.py").write_text("def handle(req):\n    return lookup(req)\n", encoding="utf-8")
+    (root / "store.py").write_text("def lookup(key):\n    return key\n", encoding="utf-8")
     return root
 
 
@@ -179,7 +180,7 @@ def test_stderr_prints_the_line_of_every_record_it_writes(diff_target, tmp_path)
 
     lines = run.err.splitlines()
     paths = sorted(_review_dir(state).glob("review/items/*.json"))
-    items = [Record.from_dict(json.loads(path.read_text())) for path in paths]
+    items = [Record.from_dict(json.loads(path.read_text(encoding="utf-8"))) for path in paths]
     expected = [Record.from_dict(record).line() for record in _records(run.out)]
     assert [line for line in lines if not line.startswith("review/")] == expected
     assert sorted(line for line in lines if line.startswith("review/")) == sorted(item.line() for item in items)
@@ -217,7 +218,7 @@ def test_every_record_kind_carries_its_fixed_metrics_and_attributes(diff_target,
         "link": [],
         "result": [],
     }
-    item_record = json.loads(item.read_text())
+    item_record = json.loads(item.read_text(encoding="utf-8"))
     assert list(item_record["metrics"]) == ["findings", "unlocated", *usage]
     assert list(item_record["attributes"]) == ["paths"]
     assert list(records[-1]["metrics"]) == ["failed", *usage]
@@ -230,7 +231,7 @@ def test_the_attempt_record_counts_every_model_call_and_lists_the_call_record(di
 
     attempt = _records(_review(diff_target.target, state).out)[-1]
 
-    calls = json.loads((_attempt_dir(state) / "model-calls.json").read_text())["calls"]
+    calls = json.loads((_attempt_dir(state) / "model-calls.json").read_text(encoding="utf-8"))["calls"]
     assert attempt["metrics"]["failed"] == 0
     assert attempt["metrics"]["calls"] == len(calls) > 0
     assert attempt["artifacts"] == [f"attempts/{attempt['id']}/model-calls.json"]
@@ -288,7 +289,7 @@ def test_the_state_directory_comes_from_the_environment_or_the_user_data_directo
     monkeypatch, diff_target, tmp_path, variables, expected
 ):
     """The session goes under CYBERJURY_STATE_DIR, else $XDG_DATA_HOME/cyberjury, else ~/.local/share/cyberjury."""
-    monkeypatch.setattr(command_module, "run_review", _stub_review())
+    monkeypatch.setattr("cyberjury.review.command.run_review", _stub_review())
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     for name, value in variables.items():
@@ -315,7 +316,7 @@ def test_a_state_directory_inside_the_repository_is_rejected_before_it_is_create
 
 def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, diff_target, tmp_path):
     """A diff review checks out its revision exactly once and deletes that checkout afterwards."""
-    original = command_module.materialize_diff_target
+    original = materialize_diff_target
     roots = []
 
     @contextlib.contextmanager
@@ -324,7 +325,7 @@ def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, d
             roots.append(root)
             yield root
 
-    monkeypatch.setattr(command_module, "materialize_diff_target", counted)
+    monkeypatch.setattr("cyberjury.review.command.materialize_diff_target", counted)
 
     assert _review(diff_target.target, tmp_path / "state").record.status == "ok"
     assert len(roots) == 1
@@ -334,15 +335,15 @@ def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, d
 def test_a_dangling_symlink_outside_the_change_does_not_fail_a_diff_review(monkeypatch, tmp_path):
     """A committed test/tool link to an untracked build output leaves the review ok with app.py as its one unit."""
     seen = {}
-    monkeypatch.setattr(command_module, "run_review", _stub_review(seen=seen))
+    monkeypatch.setattr("cyberjury.review.command.run_review", _stub_review(seen=seen))
     repo = tmp_path / "repo"
     (repo / "test").mkdir(parents=True)
     git(repo, "init", "--quiet")
     (repo / "test" / "tool").symlink_to("../build/bin/tool")
-    (repo / "app.py").write_text("def f(x):\n    return x\n")
+    (repo / "app.py").write_text("def f(x):\n    return x\n", encoding="utf-8")
     git(repo, "add", ".")
     git(repo, "commit", "--quiet", "-m", "base")
-    (repo / "app.py").write_text("import os\n\ndef f(x):\n    return os.system(x)\n")
+    (repo / "app.py").write_text("import os\n\ndef f(x):\n    return os.system(x)\n", encoding="utf-8")
     git(repo, "commit", "--quiet", "-am", "change")
 
     run = _review(_diff(repo, "HEAD~1...HEAD"), tmp_path / "state")
@@ -356,22 +357,22 @@ def test_hunkless_diff_sections_are_listed_as_skipped_files(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "--quiet")
-    (repo / "app.py").write_text("def run():\n    return True\n")
-    (repo / "run.sh").write_text("echo run\n")
-    (repo / "old.py").write_text("def old():\n    return 1\n")
+    (repo / "app.py").write_text("def run():\n    return True\n", encoding="utf-8")
+    (repo / "run.sh").write_text("echo run\n", encoding="utf-8")
+    (repo / "old.py").write_text("def old():\n    return 1\n", encoding="utf-8")
     git(repo, "add", ".")
     git(repo, "commit", "--quiet", "-m", "base")
     base = git(repo, "rev-parse", "HEAD")
     (repo / "run.sh").chmod(0o755)
     git(repo, "mv", "old.py", "renamed.py")
-    (repo / "empty.py").write_text("")
+    (repo / "empty.py").write_text("", encoding="utf-8")
     git(repo, "add", ".")
     git(repo, "commit", "--quiet", "-m", "hunkless")
     state = tmp_path / "state"
 
     assert _review(_diff(repo, f"{base}..HEAD"), state).record.status == "ok"
 
-    skipped = json.loads((_review_dir(state) / "plan" / "skipped-files.json").read_text())["files"]
+    skipped = json.loads((_review_dir(state) / "plan" / "skipped-files.json").read_text(encoding="utf-8"))["files"]
     assert sorted(skipped, key=lambda item: item["path"]) == [
         {"path": "empty.py", "reason": "empty_new_file"},
         {"path": "renamed.py", "reason": "rename_only"},
@@ -382,7 +383,7 @@ def test_hunkless_diff_sections_are_listed_as_skipped_files(tmp_path):
 def test_review_diff_grounds_its_unit_and_runs_at_the_default_concurrency(monkeypatch, diff_target, tmp_path):
     """The single diff unit carries +x = 1 and a.py source, and the review runs at concurrency 8."""
     seen = {}
-    monkeypatch.setattr(command_module, "run_review", _stub_review(seen=seen))
+    monkeypatch.setattr("cyberjury.review.command.run_review", _stub_review(seen=seen))
 
     assert _review(diff_target.target, tmp_path / "state").record.status == "ok"
 
@@ -401,13 +402,13 @@ def test_review_diff_empty_git_range_is_ok(diff_target, tmp_path):
     run = _review(_diff(diff_target.repository, "HEAD..HEAD"), state)
 
     assert run.record.status == "ok"
-    assert json.loads((_attempt_dir(state) / "findings.json").read_text())["findings"] == []
+    assert json.loads((_attempt_dir(state) / "findings.json").read_text(encoding="utf-8"))["findings"] == []
 
 
 def test_an_incomplete_review_makes_the_attempt_incomplete_with_its_reason(monkeypatch, diff_target, tmp_path):
     """An incomplete review stage makes the attempt incomplete with that stage's reason."""
     monkeypatch.setattr(
-        command_module, "run_review", _stub_review(incomplete="review unit 1/1 failed for a.py: blocked")
+        "cyberjury.review.command.run_review", _stub_review(incomplete="review unit 1/1 failed for a.py: blocked")
     )
     state = tmp_path / "state"
 
@@ -429,7 +430,7 @@ def test_repository_review_with_model_errors_marks_units_failed(tmp_path, monkey
     assert run.record.status == review["status"] == "incomplete"
     items = list((_review_dir(state) / "review" / "items").glob("*.json"))
     assert review["metrics"]["failed"] == review["metrics"]["items"] == len(items) > 0
-    assert {json.loads(path.read_text())["status"] for path in items} == {"failed"}
+    assert {json.loads(path.read_text(encoding="utf-8"))["status"] for path in items} == {"failed"}
 
 
 def test_a_provider_that_rejects_access_fails_the_review_with_a_config_error(tmp_path, monkeypatch):
@@ -438,7 +439,9 @@ def test_a_provider_that_rejects_access_fails_the_review_with_a_config_error(tmp
     def reject(_system, _prompt):
         raise ProviderAccessError("provider rejected the request: invalid x-api-key")
 
-    monkeypatch.setattr(configuration_module, "make_provider", lambda *a, **k: MockProvider(responder=reject))
+    monkeypatch.setattr(
+        "cyberjury.providers.configuration.make_provider", lambda *_args, **_kwargs: MockProvider(responder=reject)
+    )
 
     run = _review(_repository(_flask_repository(tmp_path / "svc")), tmp_path / "state")
 
@@ -461,7 +464,9 @@ def test_partially_parsed_sources_are_counted_as_fact_limitations(tmp_path):
     """A repository with a syntax error in app.py reports one limitation on the facts record and stays ok."""
     repository = tmp_path / "svc"
     repository.mkdir()
-    (repository / "app.py").write_text("from flask import Flask\napp = Flask(__name__)\ndef broken(:\n")
+    (repository / "app.py").write_text(
+        "from flask import Flask\napp = Flask(__name__)\ndef broken(:\n", encoding="utf-8"
+    )
 
     run = _review(_repository(repository), tmp_path / "state")
 
@@ -474,19 +479,22 @@ def test_review_repository_skips_ignored_trees_of_a_git_work_tree(tmp_path):
     repository = tmp_path / "svc"
     repository.mkdir()
     git(repository, "init", "--quiet")
-    (repository / ".gitignore").write_text(".venv/\n")
-    (repository / "app.py").write_text("x = 1\n")
+    (repository / ".gitignore").write_text(".venv/\n", encoding="utf-8")
+    (repository / "app.py").write_text("x = 1\n", encoding="utf-8")
     (repository / ".venv" / "lib").mkdir(parents=True)
-    (repository / ".venv" / "lib" / "site.py").write_text("y = 2\n")
+    (repository / ".venv" / "lib" / "site.py").write_text("y = 2\n", encoding="utf-8")
     (repository / ".venv" / "lib64").symlink_to("lib", target_is_directory=True)
     state = tmp_path / "state"
 
     assert _review(_repository(repository), state).record.status == "ok"
 
     review = _review_dir(state)
-    files = [entry["path"] for entry in json.loads((review / "source" / "snapshot.json").read_text())["files"]]
+    files = [
+        entry["path"]
+        for entry in json.loads((review / "source" / "snapshot.json").read_text(encoding="utf-8"))["files"]
+    ]
     assert files == [".gitignore", "app.py"]
-    plan = json.loads((review / "plan" / "plan.json").read_text())
+    plan = json.loads((review / "plan" / "plan.json").read_text(encoding="utf-8"))
     assert [path for unit in plan["units"] for path in unit["owned_paths"]] == [".gitignore", "app.py"]
 
 
@@ -496,7 +504,7 @@ def test_review_repository_grounds_units_with_syntax_facts(tmp_path):
 
     assert _review(_repository(_graphable(tmp_path / "svc")), state).record.status == "ok"
 
-    grounding = json.loads((_review_dir(state) / "grounding" / "grounding.json").read_text())
+    grounding = json.loads((_review_dir(state) / "grounding" / "grounding.json").read_text(encoding="utf-8"))
     assert grounding["schema"] == "cyberjury.grounding/v1"
     assert all(context["seed_chars"] > 0 for context in grounding["contexts"])
     assert [
@@ -507,14 +515,14 @@ def test_review_repository_grounds_units_with_syntax_facts(tmp_path):
 def test_a_review_whose_live_source_changes_keeps_its_result_and_says_so(tmp_path, monkeypatch):
     """Editing app.py after the review finishes marks the attempt source_changed but keeps it ok."""
     repository = _flask_repository(tmp_path / "svc")
-    original = command_module.run_review
+    original = run_review
 
     def review_then_edit(*args, **kwargs):
         result = original(*args, **kwargs)
         (repository / "app.py").write_text("changed = True\n", encoding="utf-8")
         return result
 
-    monkeypatch.setattr(command_module, "run_review", review_then_edit)
+    monkeypatch.setattr("cyberjury.review.command.run_review", review_then_edit)
 
     attempt = _records(_review(_repository(repository), tmp_path / "state").out)[-1]
 
@@ -526,7 +534,7 @@ def test_a_review_whose_live_source_changes_keeps_its_result_and_says_so(tmp_pat
 def test_repository_review_concurrency_comes_from_the_environment(monkeypatch, tmp_path, concurrency, expected):
     """Repository concurrency is 8 when CYBERJURY_CONCURRENCY is unset and 4 when it is 4."""
     seen = {}
-    monkeypatch.setattr(command_module, "run_review", _stub_review(seen=seen))
+    monkeypatch.setattr("cyberjury.review.command.run_review", _stub_review(seen=seen))
     if concurrency is not None:
         monkeypatch.setenv("CYBERJURY_CONCURRENCY", concurrency)
 
@@ -541,25 +549,27 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     seen = {}
     monkeypatch.setenv("CYBERJURY_API_KEY", "secret-canary")
     monkeypatch.setenv("CYBERJURY_CONCURRENCY", "5")
-    monkeypatch.setattr(command_module, "run_review", _stub_review(seen=seen))
+    monkeypatch.setattr("cyberjury.review.command.run_review", _stub_review(seen=seen))
     state = tmp_path / "state"
 
     assert _review(diff_target.target, state).record.status == "ok"
 
     attempt = _attempt_dir(state)
-    request = json.loads((attempt / "request.json").read_text())
-    model_calls = json.loads((attempt / "model-calls.json").read_text())
+    request = json.loads((attempt / "request.json").read_text(encoding="utf-8"))
+    model_calls = json.loads((attempt / "model-calls.json").read_text(encoding="utf-8"))
     assert request["providers"]["seat"]["seat_id"].startswith("seat-")
     assert request["concurrency"] == {"review": 5}
     assert seen["concurrency"] == 5
     assert model_calls["schema"] == "cyberjury.model-calls/v1"
     assert model_calls["calls"] == []
-    assert "secret-canary" not in "".join(path.read_text() for path in _review_dir(state).rglob("*.json"))
+    assert "secret-canary" not in "".join(
+        path.read_text(encoding="utf-8") for path in _review_dir(state).rglob("*.json")
+    )
 
 
 def test_the_review_reads_its_seat_from_the_working_directory_env(monkeypatch, diff_target, tmp_path):
     """The provider, model, and key in ./.env select an anthropic seat running model-from-env."""
-    monkeypatch.setattr(command_module, "load_env_file", load_env_file)
+    monkeypatch.setattr("cyberjury.review.command.load_env_file", load_env_file)
     project = tmp_path / "project"
     project.mkdir()
     (project / ".env").write_text(
@@ -571,7 +581,7 @@ def test_the_review_reads_its_seat_from_the_working_directory_env(monkeypatch, d
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
     seen = {}
-    monkeypatch.setattr(command_module, "run_review", _stub_review(seen=seen))
+    monkeypatch.setattr("cyberjury.review.command.run_review", _stub_review(seen=seen))
 
     run = _review(diff_target.target, tmp_path / "state")
 
@@ -588,8 +598,11 @@ def test_reviews_persist_calls_bound_to_planned_units(tmp_path, scope):
 
     assert _review(change.target if scope == "diff" else _repository(change.repository), state).record.status == "ok"
 
-    unit_ids = {unit["id"] for unit in json.loads((_review_dir(state) / "plan" / "plan.json").read_text())["units"]}
-    calls = json.loads((_attempt_dir(state) / "model-calls.json").read_text())["calls"]
+    unit_ids = {
+        unit["id"]
+        for unit in json.loads((_review_dir(state) / "plan" / "plan.json").read_text(encoding="utf-8"))["units"]
+    }
+    calls = json.loads((_attempt_dir(state) / "model-calls.json").read_text(encoding="utf-8"))["calls"]
     assert calls
     assert all(call["unit_id"] in unit_ids for call in calls)
     assert all(call["trigger"] in {"initial_judgment", "evidence_followup"} for call in calls)
@@ -635,7 +648,7 @@ def test_a_review_directory_holds_lowercase_kebab_case_files_named_after_their_s
             return "cyberjury.unit-findings/v1"
         return f"cyberjury.{Path(name).stem}/v1"
 
-    assert {name: json.loads((review / name).read_text())["schema"] for name in files} == {
+    assert {name: json.loads((review / name).read_text(encoding="utf-8"))["schema"] for name in files} == {
         name: expected_schema(name) for name in files
     }
 
@@ -658,7 +671,7 @@ def test_repository_reruns_share_review_with_distinct_attempts(tmp_path):
 @pytest.mark.parametrize("scope", ["diff", "repository"])
 def test_every_stage_record_lists_the_artifacts_it_wrote(monkeypatch, tmp_path, scope):
     """Each stage artifact a record lists exists under the review directory and carries its schema."""
-    monkeypatch.setattr(command_module, "run_review", _stub_review())
+    monkeypatch.setattr("cyberjury.review.command.run_review", _stub_review())
     change = _git_change(tmp_path / "repo", {}, {"app.py": "source\n"})
     state = tmp_path / "state"
 
@@ -667,7 +680,7 @@ def test_every_stage_record_lists_the_artifacts_it_wrote(monkeypatch, tmp_path, 
     review = _review_dir(state)
     artifacts = {record["id"]: record["artifacts"] for record in _records(run.out)}
     schemas = {
-        path: json.loads((review / path).read_text())["schema"]
+        path: json.loads((review / path).read_text(encoding="utf-8"))["schema"]
         for paths in artifacts.values()
         for path in paths
         if not path.startswith("attempts/")
@@ -691,15 +704,15 @@ def test_repository_without_reviewable_source_fails_the_review_stage_before_mode
     """A repository holding only README.md plans no units and fails the review stage with an input error."""
     repository = tmp_path / "repo"
     repository.mkdir()
-    (repository / "README.md").write_text("unknown target\n")
+    (repository / "README.md").write_text("unknown target\n", encoding="utf-8")
     state = tmp_path / "state"
 
     review = _stage(_records(_review(_repository(repository), state).out), "review")
 
     assert review["status"] == "failed"
     assert review["error"]["code"] == "input"
-    assert json.loads((_review_dir(state) / "plan" / "plan.json").read_text())["units"] == []
-    assert json.loads((_attempt_dir(state) / "model-calls.json").read_text())["calls"] == []
+    assert json.loads((_review_dir(state) / "plan" / "plan.json").read_text(encoding="utf-8"))["units"] == []
+    assert json.loads((_attempt_dir(state) / "model-calls.json").read_text(encoding="utf-8"))["calls"] == []
 
 
 def test_a_repository_edited_before_resuming_fails_the_source_stage_with_a_fresh_hint(tmp_path):
@@ -707,7 +720,7 @@ def test_a_repository_edited_before_resuming_fails_the_source_stage_with_a_fresh
     repository = _seed_source(tmp_path / "svc")
     state = tmp_path / "state"
     assert _review(_repository(repository), state).record.status == "ok"
-    (repository / "app.py").write_text("value = 2\n")
+    (repository / "app.py").write_text("value = 2\n", encoding="utf-8")
 
     source = _stage(_records(_review(_repository(repository), state).out), "source")
 
@@ -717,22 +730,22 @@ def test_a_repository_edited_before_resuming_fails_the_source_stage_with_a_fresh
 
 def test_diff_runs_get_independent_review_sessions(monkeypatch, diff_target, tmp_path):
     """Two identical diff runs create two review directories with the same target and snapshot hashes."""
-    monkeypatch.setattr(command_module, "run_review", _stub_review())
+    monkeypatch.setattr("cyberjury.review.command.run_review", _stub_review())
 
     assert _review(diff_target.target, tmp_path).record.status == "ok"
     assert _review(diff_target.target, tmp_path).record.status == "ok"
 
     reviews = list((tmp_path / "reviews").iterdir())
     assert len(reviews) == 2
-    targets = [json.loads((review / "target" / "target.json").read_text()) for review in reviews]
-    snapshots = [json.loads((review / "source" / "snapshot.json").read_text()) for review in reviews]
+    targets = [json.loads((review / "target" / "target.json").read_text(encoding="utf-8")) for review in reviews]
+    snapshots = [json.loads((review / "source" / "snapshot.json").read_text(encoding="utf-8")) for review in reviews]
     assert len({target["target_sha256"] for target in targets}) == 1
     assert len({snapshot["snapshot_id"] for snapshot in snapshots}) == 1
 
 
 def test_repository_configuration_change_requires_fresh(monkeypatch, tmp_path):
     """Changing CYBERJURY_MODEL between runs fails the session stage citing --fresh, which then starts a new review."""
-    monkeypatch.setattr(command_module, "run_review", _stub_review())
+    monkeypatch.setattr("cyberjury.review.command.run_review", _stub_review())
     target = _repository(_seed_source(tmp_path / "repo"))
     state = tmp_path / "state"
 
@@ -755,7 +768,7 @@ def _terminate(*_args, **_kwargs):
 
 def test_a_terminated_review_keeps_its_model_calls_and_ends_interrupted(monkeypatch, diff_target, tmp_path):
     """A SIGTERM during the review keeps model-calls.json and records the attempt interrupted by SIGTERM."""
-    monkeypatch.setattr(command_module, "run_review", _terminate)
+    monkeypatch.setattr("cyberjury.review.command.run_review", _terminate)
     state = tmp_path / "state"
 
     run = _review(diff_target.target, state)
@@ -771,7 +784,7 @@ def test_a_review_terminated_during_source_capture_ends_the_source_stage_interru
     monkeypatch, diff_target, tmp_path
 ):
     """A SIGTERM while the contract receipt is captured records the source stage and the attempt interrupted."""
-    monkeypatch.setattr(command_module.ContractReceipt, "capture", _terminate)
+    monkeypatch.setattr("cyberjury.review.command.ContractReceipt.capture", _terminate)
 
     records = _records(_review(diff_target.target, tmp_path / "state").out)
 
@@ -781,12 +794,12 @@ def test_a_review_terminated_during_source_capture_ends_the_source_stage_interru
 
 def test_model_call_persistence_failure_marks_the_attempt_failed(monkeypatch, diff_target, tmp_path):
     """When writing model-calls.json raises, record.json carries a failed status and an internal error."""
-    monkeypatch.setattr(command_module, "run_review", _stub_review())
+    monkeypatch.setattr("cyberjury.review.command.run_review", _stub_review())
 
     def fail_write(_attempt, _document):
         raise RuntimeError("model call artifact failed")
 
-    monkeypatch.setattr(command_module.ReviewAttempt, "write_model_calls", fail_write)
+    monkeypatch.setattr("cyberjury.review.command.ReviewAttempt.write_model_calls", fail_write)
     state = tmp_path / "state"
 
     _review(diff_target.target, state)

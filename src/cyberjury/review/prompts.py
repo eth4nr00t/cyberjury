@@ -132,15 +132,19 @@ def finder_system(
 ) -> str:
     """Render the one review contract shared by every unit of a run."""
     sections = (
-        f"You are a senior application security engineer reviewing {target} for exploitable security "
-        f"vulnerabilities. {UNTRUSTED_SOURCE_RULE}",
+        (
+            f"You are a senior application security engineer reviewing {target} for exploitable security "
+            f"vulnerabilities. {UNTRUSTED_SOURCE_RULE}"
+        ),
         f"# Task Scope\n\n{scope}",
         _DECISION_BOUNDARY,
         security_kernel.strip(),
         severity_rubric.strip(),
         _EVIDENCE_RULES,
         navigation.strip(),
-        "# Output Fields\n\nThe provider enforces the response schema. Field meanings:\n"
-        f"{output_fields}\n{_REQUEST_FIELDS}",
+        (
+            "# Output Fields\n\nThe provider enforces the response schema. Field meanings:\n"
+            f"{output_fields}\n{_REQUEST_FIELDS}"
+        ),
     )
     return "\n\n".join(section for section in sections if section)

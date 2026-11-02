@@ -1,4 +1,4 @@
-"""OpenAIProvider tests cover the Responses API with a faked client."""
+"""OpenAIProvider maps requests, cache routing keys, usage, and response status onto the Responses API."""
 
 import sys
 from types import SimpleNamespace

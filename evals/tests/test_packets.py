@@ -1,7 +1,5 @@
 """Adjudication packets stay blind, and adjudicator results become validated ledgers."""
 
-from __future__ import annotations
-
 import hashlib
 import json
 from dataclasses import replace
@@ -16,7 +14,7 @@ A, B, C, D = ("candidate-" + letter * 20 for letter in "abcd")
 
 @pytest.fixture
 def runs_dirs(tmp_path, write_attempt):
-    """Write two runs directories, the first with a complete and a failed attempt."""
+    """Write two runs directories, the first with a complete and an incomplete attempt."""
     first_runs, second_runs = tmp_path / "first_runs", tmp_path / "second_runs"
     write_attempt(first_runs, 1, (A, B))
     write_attempt(first_runs, 2, (), complete=False)
@@ -153,8 +151,7 @@ def test_split_entries_keep_reports_of_the_same_place_from_every_run_together(tm
     assert all({report["run"] for report in entry["reports"]} == {"A", "B"} for entry in entries)
 
 
-def test_a_duplicate_of_a_duplicate_resolves_to_the_first_canonical(tmp_path, cases, write_attempt):
-    """C marked duplicate of B, itself a duplicate of A, is written with canonical_id A."""
+def _duplicate_round(tmp_path, cases, write_attempt, canonicals):
     runs = tmp_path / "runs"
     write_attempt(runs, 1, (A, B, C))
     out = tmp_path / "adjudication"
@@ -162,11 +159,17 @@ def test_a_duplicate_of_a_duplicate_resolves_to_the_first_canonical(tmp_path, ca
     result = _result(out, {f"Claim {A}": "supported"})
     by_candidate = _labels_by_candidate(out)
     for record in result[0]["records"]:
-        if record["label"] == by_candidate[B]:
-            record.update(verdict="duplicate", canonical=by_candidate[A])
-        if record["label"] == by_candidate[C]:
-            record.update(verdict="duplicate", canonical=by_candidate[B])
+        for duplicate, canonical in canonicals.items():
+            if record["label"] == by_candidate[duplicate]:
+                record.update(verdict="duplicate", canonical=by_candidate[canonical])
     (out / "result-1.json").write_text(json.dumps(result), encoding="utf-8")
+    return out
+
+
+def test_a_duplicate_of_a_duplicate_resolves_to_the_first_canonical(tmp_path, cases, write_attempt):
+    """C marked duplicate of B, itself a duplicate of A, is written with canonical_id A."""
+    runs = tmp_path / "runs"
+    out = _duplicate_round(tmp_path, cases, write_attempt, {B: A, C: B})
 
     assert write_ledgers(cases, out) == (1, [])
     ledger = json.loads(next(runs.rglob("ledger-01.json")).read_text(encoding="utf-8"))
@@ -176,17 +179,7 @@ def test_a_duplicate_of_a_duplicate_resolves_to_the_first_canonical(tmp_path, ca
 def test_duplicates_that_name_each_other_are_rejected_as_a_cycle(tmp_path, cases, write_attempt):
     """B a duplicate of C and C a duplicate of B raise a cycle error and write no ledger."""
     runs = tmp_path / "runs"
-    write_attempt(runs, 1, (A, B, C))
-    out = tmp_path / "adjudication"
-    build_packets(cases, [runs], out, groups=1)
-    result = _result(out, {f"Claim {A}": "supported"})
-    by_candidate = _labels_by_candidate(out)
-    for record in result[0]["records"]:
-        if record["label"] == by_candidate[B]:
-            record.update(verdict="duplicate", canonical=by_candidate[C])
-        if record["label"] == by_candidate[C]:
-            record.update(verdict="duplicate", canonical=by_candidate[B])
-    (out / "result-1.json").write_text(json.dumps(result), encoding="utf-8")
+    out = _duplicate_round(tmp_path, cases, write_attempt, {B: C, C: B})
 
     with pytest.raises(ValueError, match="cycle of duplicate canonicals"):
         write_ledgers(cases, out)

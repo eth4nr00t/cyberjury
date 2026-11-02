@@ -1,4 +1,4 @@
-"""Review request tests cover stable identity and credential-free endpoint records."""
+"""Review requests have stable identities and record endpoints without credentials."""
 
 from dataclasses import replace
 

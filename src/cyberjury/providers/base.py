@@ -18,7 +18,7 @@ class ProviderAccessError(RuntimeError):
 
 
 class ProviderCallError(RuntimeError):
-    """A provider call that still failed on its last attempt, with the number of attempts it took."""
+    """A provider call still failed on its last attempt, and the error records how many attempts it took."""
 
     def __init__(self, message: str, *, attempts: int) -> None:
         """Keep the failure message and the attempts spent before giving up."""

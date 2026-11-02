@@ -10,7 +10,7 @@ from cyberjury.review.context import GroundingContext
 from cyberjury.review.detection import Detection
 from cyberjury.review.engine import ReviewUnit
 from cyberjury.review.facts import Facts, FactsReceipt
-from cyberjury.review.failures import BackendUnavailable
+from cyberjury.review.failures import BackendUnavailableError
 from cyberjury.review.grounding import GroundingReceipt
 from cyberjury.review.navigation import SourceNavigator
 from cyberjury.review.recorder import Progress, Recorder
@@ -61,7 +61,7 @@ def extract_facts(
     try:
         facts = extract_syntax_facts(snapshot.root, selection.review_files, progress=progress)
     except Exception as exc:
-        raise BackendUnavailable(f"facts extraction failed, so this review has no grounding: {exc}") from exc
+        raise BackendUnavailableError(f"facts extraction failed, so this review has no grounding: {exc}") from exc
     return facts, FactsReceipt.create(backend_id=syntax_backend_id(), facts=facts)
 
 
@@ -104,7 +104,7 @@ def prepare_review[U: ReviewUnit](
         unit_plan = UnitPlanReceipt.create(facts=receipt, units=tuple(planned.records))
         measure.metrics.update(items=len(unit_plan.units), skipped_files=len(planned.skipped_files))
         measure.bind(unit_plan)
-        measure.bind(SkippedFiles(planned.skipped_files))
+        measure.bind(SkippedFiles(files=planned.skipped_files))
     with recorder.stage("grounding") as measure:
         units = tuple(replace(unit, id=record.id) for unit, record in zip(planned.units, unit_plan.units, strict=True))
         units = tuple(replace(unit, grounding=ground(unit, shared)) for unit in units)

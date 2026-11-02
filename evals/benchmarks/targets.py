@@ -48,7 +48,7 @@ def _git(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[str
     completed = subprocess.run(["git", *arguments], capture_output=True, text=True, check=False)
     if check and completed.returncode != 0:
         detail = (completed.stderr or "").strip() or f"exit status {completed.returncode}"
-        raise RuntimeError(f"git {' '.join(arguments)} failed: {detail}")
+        raise ValueError(f"git {' '.join(arguments)} failed: {detail}")
     return completed
 
 

@@ -4,10 +4,10 @@ from dataclasses import replace
 
 import pytest
 
-from cyberjury.review.diff import planning
 from cyberjury.review.diff.model import changed_line_ranges
 from cyberjury.review.diff.planning import build_diff_units, changed_definitions, plan_definition_units
-from cyberjury.review.failures import BackendUnavailable
+from cyberjury.review.failures import BackendUnavailableError
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 from tests.review.support import definition
 
 
@@ -19,7 +19,7 @@ def test_build_diff_units_of_an_empty_diff_is_empty(tmp_path):
 def test_changed_definition_mapping_keeps_deletion_and_enclosing_definitions(tmp_path):
     """A deleted require_admin line inside View.handle marks both View and handle as changed."""
     source = "class View(Base):\n    def handle(self):\n        require_admin(self)\n        return sensitive()\n"
-    (tmp_path / "view.py").write_text(source)
+    (tmp_path / "view.py").write_text(source, encoding="utf-8")
     method_start = source.index("    def")
     definitions = (
         definition("view.py", "View", 0, len(source), source=source),
@@ -42,7 +42,7 @@ def test_adjacent_definition_end_does_not_claim_the_next_line(tmp_path):
     """Changing the first line of b(), directly after a() ends, marks only b as changed."""
     first = "def a():\n    return 1\n"
     second = "def b():\n    return 2\n"
-    (tmp_path / "app.py").write_text(first + second)
+    (tmp_path / "app.py").write_text(first + second, encoding="utf-8")
     definitions = (
         definition("app.py", "a", 0, len(first), source=first + second),
         definition("app.py", "b", len(first), len(first + second), source=first + second),
@@ -80,7 +80,10 @@ def _two_changed_files(tmp_path, body_chars):
 def test_diff_surface_packing_does_not_charge_lazy_seed_definitions_to_context_budget(tmp_path, monkeypatch):
     """Two 100k-char definitions stay in one unit under a 1k-char patch target."""
     diff, definitions = _two_changed_files(tmp_path, 100_000)
-    monkeypatch.setattr(planning, "_SETTINGS", replace(planning._SETTINGS, target_patch_chars_per_unit=1_000))
+    monkeypatch.setattr(
+        "cyberjury.review.diff.planning._SETTINGS",
+        replace(DEFAULT_REVIEW_SETTINGS.diff, target_patch_chars_per_unit=1_000),
+    )
 
     units = build_diff_units(diff, root=tmp_path, definitions=definitions)
 
@@ -90,7 +93,10 @@ def test_diff_surface_packing_does_not_charge_lazy_seed_definitions_to_context_b
 def test_diff_surface_packing_bounds_the_lazy_definition_catalog(tmp_path, monkeypatch):
     """With max_definition_evidence_items_per_unit=1, two changed definitions split into two units."""
     diff, definitions = _two_changed_files(tmp_path, 100)
-    monkeypatch.setattr(planning, "_SETTINGS", replace(planning._SETTINGS, max_definition_evidence_items_per_unit=1))
+    monkeypatch.setattr(
+        "cyberjury.review.diff.planning._SETTINGS",
+        replace(DEFAULT_REVIEW_SETTINGS.diff, max_definition_evidence_items_per_unit=1),
+    )
 
     units = build_diff_units(diff, root=tmp_path, definitions=definitions)
 
@@ -98,12 +104,12 @@ def test_diff_surface_packing_bounds_the_lazy_definition_catalog(tmp_path, monke
 
 
 def test_an_unreadable_changed_source_fails_planning_instead_of_hiding_its_definitions(tmp_path):
-    """A non-UTF-8 app.py raises BackendUnavailable "diff planning could not read source app.py"."""
+    """A non-UTF-8 app.py raises BackendUnavailableError "diff planning could not read source app.py"."""
     (tmp_path / "app.py").write_bytes(b"def app():\n    return '\xff'\n")
     definitions = (definition("app.py", "app", 0, 10),)
     diff = "diff --git a/app.py b/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-def old():\n+def app():\n"
 
-    with pytest.raises(BackendUnavailable, match=r"diff planning could not read source app\.py"):
+    with pytest.raises(BackendUnavailableError, match=r"diff planning could not read source app\.py"):
         changed_definitions(tmp_path, ("app.py",), changed_line_ranges(diff), definitions)
 
 

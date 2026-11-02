@@ -4,7 +4,7 @@ from __future__ import annotations
 
 SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
 
-_INDEX = {s: i for i, s in enumerate(SEVERITIES)}
+_INDEX = {severity: rank for rank, severity in enumerate(SEVERITIES)}
 
 
 def severity_rank(severity: str) -> int:

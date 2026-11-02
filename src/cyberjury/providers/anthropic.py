@@ -78,14 +78,14 @@ def _user_content(prompt: str, cache_prefix: str, cache_segments: tuple[str, ...
 
 
 def _usage(response: Any) -> Usage:
-    u = getattr(response, "usage", None)
-    if u is None:
+    usage = getattr(response, "usage", None)
+    if usage is None:
         return Usage()
     return Usage(
-        input_tokens=token_count(getattr(u, "input_tokens", None)),
-        output_tokens=token_count(getattr(u, "output_tokens", None)),
-        cache_read_tokens=token_count(getattr(u, "cache_read_input_tokens", None)),
-        cache_write_tokens=token_count(getattr(u, "cache_creation_input_tokens", None)),
+        input_tokens=token_count(getattr(usage, "input_tokens", None)),
+        output_tokens=token_count(getattr(usage, "output_tokens", None)),
+        cache_read_tokens=token_count(getattr(usage, "cache_read_input_tokens", None)),
+        cache_write_tokens=token_count(getattr(usage, "cache_creation_input_tokens", None)),
     )
 
 

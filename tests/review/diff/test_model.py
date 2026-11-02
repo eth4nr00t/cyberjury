@@ -1,4 +1,4 @@
-"""Diff model tests cover patch paths, filtering, changed ranges, and bounded batch packing."""
+"""The diff model reads patch paths, filters unreviewable files, maps changed ranges, and packs bounded batches."""
 
 import pytest
 
@@ -226,7 +226,7 @@ def test_diff_line_ranges_keep_renamed_side_paths_distinct():
 def test_strip_unreviewable_files_skips_oversized_files_as_too_large(tmp_path):
     """A change to a bindata.go over the size limit is skipped as too_large and nothing is kept."""
     limit = DEFAULT_REVIEW_SETTINGS.execution.max_reviewed_source_bytes
-    (tmp_path / "bindata.go").write_text("package bindata\n\nvar data = `" + "a" * limit + "`\n")
+    (tmp_path / "bindata.go").write_text("package bindata\n\nvar data = `" + "a" * limit + "`\n", encoding="utf-8")
     diff = "diff --git a/bindata.go b/bindata.go\n--- a/bindata.go\n+++ b/bindata.go\n@@ -1 +1 @@\n-x\n+y\n"
 
     kept, skipped = strip_unreviewable_files(diff, detection_for(tmp_path, ["bindata.go"]), root=tmp_path)

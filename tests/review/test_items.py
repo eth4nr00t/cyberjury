@@ -1,4 +1,4 @@
-"""Item store tests cover saving one item's record and payload and reading them back to resume."""
+"""The item store saves one item's record and payload and reads them back to resume."""
 
 import pytest
 

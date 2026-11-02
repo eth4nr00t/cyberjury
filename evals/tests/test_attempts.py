@@ -1,7 +1,5 @@
 """Recorded attempts must come from a review of exactly the case source."""
 
-from __future__ import annotations
-
 import json
 
 import pytest

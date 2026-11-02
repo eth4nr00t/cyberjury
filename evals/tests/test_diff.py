@@ -1,15 +1,11 @@
 """Diff evaluation runs each pinned case through the product review command and records its artifacts."""
 
-from __future__ import annotations
-
 import json
 from dataclasses import replace
 
 import pytest
 
-from cyberjury.providers import configuration as configuration_module
 from cyberjury.record import Record
-from cyberjury.review import command as command_module
 from evals import diff
 from evals.benchmarks.contract import ChangeAnchor
 from tests.support import MockProvider
@@ -27,7 +23,7 @@ def _run(cases, state_dir, **values):
 @pytest.fixture
 def scripted_model(monkeypatch):
     """Serve every product seat from one scripted provider, with no environment file or real key."""
-    monkeypatch.setattr(command_module, "load_env_file", lambda: None)
+    monkeypatch.setattr("cyberjury.review.command.load_env_file", lambda: None)
     monkeypatch.setenv("CYBERJURY_API_KEY", "k")
 
     def install(findings=(), *, error: BaseException | None = None) -> MockProvider:
@@ -37,7 +33,7 @@ def scripted_model(monkeypatch):
             return _finder_reply([dict(item) for item in findings])
 
         provider = MockProvider(responder=respond)
-        monkeypatch.setattr(configuration_module, "make_provider", lambda *args, **kwargs: provider)
+        monkeypatch.setattr("cyberjury.providers.configuration.make_provider", lambda *_args, **_kwargs: provider)
         return provider
 
     return install
@@ -102,7 +98,7 @@ def test_run_records_a_failed_review_with_its_reason(tmp_path, case, scripted_mo
     assert (failed["attempt"], failed["complete"], again["attempt"]) == (1, False, 2)
     assert "backend stalled" in failed["error"]
     assert failed["findings"] == []
-    assert events[1].startswith(f"run 1/2 [1/1] {case.name} failed after ")
+    assert events[1].startswith(f"run 1/2 [1/1] {case.name} incomplete after ")
 
 
 def test_run_validates_change_anchors_before_any_model_call(tmp_path, case, scripted_model):
@@ -134,7 +130,7 @@ def test_an_interrupted_review_stops_the_run(tmp_path, case, monkeypatch):
         duration_seconds=1.0,
         attributes={"reason": "operator interrupted the command"},
     )
-    monkeypatch.setattr(diff, "run_review_command", lambda _command, **_streams: interrupted)
+    monkeypatch.setattr("evals.diff.run_review_command", lambda _command, **_streams: interrupted)
     records = []
 
     with pytest.raises(KeyboardInterrupt):

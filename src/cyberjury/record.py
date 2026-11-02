@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -72,14 +73,15 @@ def _valid_id(value: object) -> bool:
 
 
 def error_message(text: str) -> str:
-    """Return an error text safe to persist: credentials redacted and the length bounded."""
+    """Return an error text safe to persist and print: hidden characters removed, credentials redacted, bounded."""
+    text = "".join(_visible(character) for character in text)
     for pattern in _SECRETS:
         text = pattern.sub(lambda match: f"{match.group(1)}[redacted]", text)
     text = " ".join(text.split()) or "unknown error"
     return text if len(text) <= _MAX_MESSAGE_CHARS else text[: _MAX_MESSAGE_CHARS - 1] + "…"
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class RecordError:
     """Why a record did not finish ok."""
 
@@ -96,7 +98,7 @@ class RecordError:
         return {"code": self.code, "message": self.message}
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class Record:
     """The state of one attempt, stage, or item."""
 
@@ -184,13 +186,26 @@ class Record:
         parts += [f"{name}={value}" for name, value in data["metrics"].items()]
         parts += [f"{name}={_scalar(value)}" for name, value in self.attributes.items()]
         if self.error is not None:
-            parts.append(f"error: {self.error.code} {self.error.message}")
+            parts.append(f"error: {self.error.code} {error_message(self.error.message)}")
         return " ".join(parts)
 
 
 def _scalar(value: object) -> str:
     text = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
-    return json.dumps(text, ensure_ascii=False) if not text or any(character.isspace() for character in text) else text
+    hidden = [character for character in text if _is_hidden(character)]
+    if text and not hidden and not any(character.isspace() for character in text):
+        return text
+    return json.dumps(text, ensure_ascii=any(ord(character) > 127 for character in hidden))
+
+
+def _visible(character: str) -> str:
+    if character.isspace():
+        return " "
+    return "" if _is_hidden(character) else character
+
+
+def _is_hidden(character: str) -> bool:
+    return unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"}
 
 
 def render(record: Record) -> str:

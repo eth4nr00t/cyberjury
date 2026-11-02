@@ -156,7 +156,7 @@ def _grounded(tmp_path, name, facts_by_file):
 
 def test_reviewer_grounds_a_unit_with_only_its_own_files_facts(tmp_path):
     """The views.py prompt carries its calls[load_owner] hints while admin.py delete_all hints stay out."""
-    (tmp_path / "views.py").write_text("def list_items():\n    return load_owner()\n")
+    (tmp_path / "views.py").write_text("def list_items():\n    return load_owner()\n", encoding="utf-8")
     provider = MockProvider(default=EMPTY_REPLY)
     by_file = {
         "views.py": "def list_items()  calls[load_owner]",
@@ -171,7 +171,7 @@ def test_reviewer_grounds_a_unit_with_only_its_own_files_facts(tmp_path):
 
 def test_repository_syntax_hints_are_bounded_per_file_with_a_visible_marker(tmp_path):
     """Hints over the per-file character limit are truncated and labelled with 'first N characters'."""
-    (tmp_path / "large.py").write_text("value = 1\n")
+    (tmp_path / "large.py").write_text("value = 1\n", encoding="utf-8")
     limit = DEFAULT_REVIEW_SETTINGS.execution.max_syntax_hint_chars_per_file
     facts = "fact\n" * (limit // 5 + 1)
     provider = MockProvider(default=EMPTY_REPLY)
@@ -190,7 +190,7 @@ def test_repository_syntax_hints_are_bounded_per_file_with_a_visible_marker(tmp_
 def test_repository_units_with_seed_definitions_get_no_syntax_hints(tmp_path):
     """A views.py unit seeded with its show definition drops the facts marker and has empty syntax hints."""
     source = "def show():\n    return 1\n"
-    (tmp_path / "views.py").write_text(source)
+    (tmp_path / "views.py").write_text(source, encoding="utf-8")
     plan = DefinitionUnitPlan(seeds=(definition("views.py", "show", 0, len(source), source=source),))
 
     grounded = _ground(
@@ -206,7 +206,7 @@ def test_repository_units_with_seed_definitions_get_no_syntax_hints(tmp_path):
 
 def test_reviewer_adds_no_facts_block_without_a_map(tmp_path):
     """An empty facts map leaves the finder prompt without any 'syntax hints' block."""
-    (tmp_path / "v.py").write_text("x = 1")
+    (tmp_path / "v.py").write_text("x = 1", encoding="utf-8")
     provider = MockProvider(default=EMPTY_REPLY)
     review_unit(finder(provider), _grounded(tmp_path, "v.py", {}))
     assert "syntax hints" not in provider.calls[0]["prompt"]
@@ -214,7 +214,7 @@ def test_reviewer_adds_no_facts_block_without_a_map(tmp_path):
 
 def test_grounding_uses_only_the_exact_facts_path_when_basenames_repeat(tmp_path):
     """Root handlers.py receives FACTS_ROOT and not facts for src/a/handlers.py or src/b/handlers.py."""
-    (tmp_path / "handlers.py").write_text("def handle():\n    return 1\n")
+    (tmp_path / "handlers.py").write_text("def handle():\n    return 1\n", encoding="utf-8")
 
     grounded = _grounded(
         tmp_path,
@@ -228,7 +228,7 @@ def test_grounding_uses_only_the_exact_facts_path_when_basenames_repeat(tmp_path
 
 def test_gather_reads_only_the_span_window_of_a_chunked_unit(tmp_path):
     """A unit spanning the last 8 characters of a 30 KB file sees the ZZZZ tail but not the AAAA head."""
-    (tmp_path / "big.py").write_text("AAAA" + "B" * 30_000 + "ZZZZ")
+    (tmp_path / "big.py").write_text("AAAA" + "B" * 30_000 + "ZZZZ", encoding="utf-8")
     tail = gather_context(
         RepositoryUnit(name="big.py#2", root=str(tmp_path), file="big.py", span=(30_000, 30_008))
     ).seed
@@ -239,7 +239,7 @@ def test_gather_reads_only_the_span_window_of_a_chunked_unit(tmp_path):
 def test_gather_numbers_a_span_window_from_its_real_first_line(tmp_path):
     """A span starting at line300 renders as '300 | line300' under a 'lines 300-300' header."""
     text = "".join(f"line{i}\n" for i in range(1, 501))
-    (tmp_path / "big.py").write_text(text)
+    (tmp_path / "big.py").write_text(text, encoding="utf-8")
     start = text.index("line300")
     content = gather_context(
         RepositoryUnit(name="big.py#2", root=str(tmp_path), file="big.py", span=(start, start + 8))

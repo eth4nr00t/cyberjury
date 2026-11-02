@@ -41,7 +41,7 @@ class AnalyzerConfigurationError(RuntimeError):
     """The configured grammar queries cannot produce a valid analysis."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class LangSpec:
     """One language grammar and its graph queries."""
 
@@ -58,7 +58,7 @@ class LangSpec:
     structural_relationships: tuple[StructuralQuery, ...] = ()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ImportQuery:
     """One declarative import query and its optional remote literal."""
 
@@ -66,7 +66,7 @@ class ImportQuery:
     imported: str = ""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class StructuralQuery:
     """One declarative non-call relationship query."""
 
@@ -74,7 +74,7 @@ class StructuralQuery:
     query: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class AnalyzedDefinition:
     """One syntax definition and its unresolved call names."""
 
@@ -105,7 +105,7 @@ class AnalyzedCallsite:
     receiver: str = ""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class AnalyzedOwner:
     """The nearest lexical definition that owns another definition."""
 
@@ -114,7 +114,7 @@ class AnalyzedOwner:
     end: int
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class AnalyzedImport:
     """One import binding with its lexical owner."""
 
@@ -221,7 +221,8 @@ def load_specs() -> dict[str, LangSpec]:
             type_definitions=config["type_definitions"].strip(),
             calls=config["calls"].strip(),
             imports=tuple(
-                ImportQuery(item["query"].strip(), item.get("imported", "")) for item in config.get("imports", ())
+                ImportQuery(query=item["query"].strip(), imported=item.get("imported", ""))
+                for item in config.get("imports", ())
             ),
             namespace_imports=tuple(item.strip() for item in config.get("namespace_imports", ())),
             qualified_uses=config.get("qualified_uses", "").strip(),
@@ -345,8 +346,8 @@ type _DefinitionIndex = dict[tuple[int, int], tuple[Node, Node]]
 
 def _definition_index(definitions: tuple[tuple[Node, Node], ...]) -> _DefinitionIndex:
     index: _DefinitionIndex = {}
-    for definition in definitions:
-        index.setdefault((definition[0].start_byte, definition[0].end_byte), definition)
+    for node, identifier in definitions:
+        index.setdefault((node.start_byte, node.end_byte), (node, identifier))
     return index
 
 
@@ -402,41 +403,24 @@ def _definition_calls(
         if call is None or not belongs:
             continue
         callee = _first_capture(captures, "callee")
-        if callee is not None:
-            called = _text(source, callee)
-            callsite = _analyzed_callsite(source, call, called, offsets=offsets)
-            callsites.setdefault((callsite.start, callsite.end), callsite)
+        member = _first_capture(captures, "member") if callee is None else None
+        if callee is None and member is None:
             continue
-        member = _first_capture(captures, "member")
-        if member is not None:
-            called = _text(source, member)
-            receiver = _first_capture(captures, "receiver")
-            receiver_text = _text(source, receiver) if receiver is not None else ""
-            callsite = _analyzed_callsite(source, call, called, receiver=receiver_text, offsets=offsets)
-            callsites.setdefault((callsite.start, callsite.end), callsite)
+        receiver = _first_capture(captures, "receiver") if member is not None else None
+        start, end = _node_range(call, offsets)
+        callsite = AnalyzedCallsite(
+            start=start,
+            end=end,
+            expression=_text(source, call),
+            callee=_text(source, callee if callee is not None else member),
+            receiver=_text(source, receiver) if receiver is not None else "",
+        )
+        callsites.setdefault((callsite.start, callsite.end), callsite)
     return tuple(
         sorted(
             callsites.values(),
             key=lambda item: (item.start, item.end, item.callee, item.receiver, item.expression),
         )
-    )
-
-
-def _analyzed_callsite(
-    source: bytes,
-    call: Node,
-    spelling: str,
-    *,
-    receiver: str = "",
-    offsets: dict[int, int] | None,
-) -> AnalyzedCallsite:
-    start, end = _node_range(call, offsets)
-    return AnalyzedCallsite(
-        start=start,
-        end=end,
-        expression=_text(source, call),
-        callee=spelling,
-        receiver=receiver,
     )
 
 
@@ -451,7 +435,7 @@ def _lexical_owner(
         return None
     owner_node, owner_name = owner_match
     owner_start, owner_end = _node_range(owner_node, offsets)
-    return AnalyzedOwner(_text(source, owner_name), owner_start, owner_end)
+    return AnalyzedOwner(name=_text(source, owner_name), start=owner_start, end=owner_end)
 
 
 def _definitions(tree: _ParsedTree, file: str) -> tuple[AnalyzedDefinition, ...]:
@@ -649,7 +633,7 @@ def _structural_relationships(tree: _ParsedTree) -> tuple[AnalyzedStructuralRela
             ):
                 raise SourceParseError("structural relationship has no unique definition owner")
             owner_start, owner_end = _node_range(owner_node, offsets)
-            owner = AnalyzedOwner(_text(source, owner_name), owner_start, owner_end)
+            owner = AnalyzedOwner(name=_text(source, owner_name), start=owner_start, end=owner_end)
             for reference, target_name in zip(references, target_names, strict=True):
                 start, end = _node_range(reference, offsets)
                 if start < owner_start or end > owner_end:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class DiffReviewSettings:
     """Patch packing, retrieval, and context settings for diff review."""
 
@@ -17,7 +17,7 @@ class DiffReviewSettings:
     max_definition_evidence_items_per_unit: int = 64
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class RepositoryReviewSettings:
     """Discovery, unit construction, and context settings for repository review."""
 
@@ -26,7 +26,7 @@ class RepositoryReviewSettings:
     max_relationship_chars_per_unit: int = 60_000
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class IssueSettings:
     """Source and model output settings for the issue link judgment."""
 
@@ -34,7 +34,7 @@ class IssueSettings:
     max_output_tokens: int = 8_000
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class ReviewExecutionSettings:
     """Cross target limits on model calls, evidence, source navigation, and reviewed sources."""
 
@@ -55,7 +55,7 @@ class ReviewExecutionSettings:
     max_reviewed_source_bytes: int = 400_000
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, kw_only=True)
 class ReviewSettings:
     """The complete discoverable settings surface owned by the review engine."""
 

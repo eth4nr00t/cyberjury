@@ -1,10 +1,7 @@
 """Diff preparation owns skipped files, planning, grounding, and receipts before any model work."""
 
-from __future__ import annotations
-
 import pytest
 
-from cyberjury.review import prepare
 from cyberjury.review.diff.finder import DIFF_TARGET
 from cyberjury.review.diff.prepare import prepare_diff_review
 from cyberjury.review.grounding import GroundingReceipt
@@ -72,7 +69,7 @@ def test_a_diff_of_only_skipped_files_plans_no_units_without_facts_extraction(tm
     def unexpected_facts(*args, **kwargs):
         raise AssertionError("facts extraction must not run when no file is reviewable")
 
-    monkeypatch.setattr(prepare, "extract_syntax_facts", unexpected_facts)
+    monkeypatch.setattr("cyberjury.review.prepare.extract_syntax_facts", unexpected_facts)
 
     prepared, artifacts = _prepare(_patch("README.md", "Before", "After"), tmp_path)
 

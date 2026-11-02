@@ -2,52 +2,51 @@
 
 import pytest
 
-from cyberjury.review import detection
 from cyberjury.review.detection import detection_for, load_detection
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 
 def test_detection_ignores_tool_directories_and_marks_dependency_directories():
     """Paths under .venv and node_modules are ignored, while vendor and third_party paths are dependencies."""
-    d = load_detection()
-    assert d.is_ignored(".venv/lib/site.py")
-    assert d.is_ignored("web/node_modules/left-pad/index.js")
-    assert d.is_dependency("vendor/github.com/pkg/errors/errors.go")
-    assert d.is_dependency("src/third_party/zlib/inflate.c")
-    assert not d.is_dependency("src/vendor_api.go")
+    detection = load_detection()
+    assert detection.is_ignored(".venv/lib/site.py")
+    assert detection.is_ignored("web/node_modules/left-pad/index.js")
+    assert detection.is_dependency("vendor/github.com/pkg/errors/errors.go")
+    assert detection.is_dependency("src/third_party/zlib/inflate.c")
+    assert not detection.is_dependency("src/vendor_api.go")
 
 
 def test_is_test_path_by_directory_segment():
     """Paths under tests/, test/, and __tests__/ count as tests, while app/views.py and spec/openapi.yaml do not."""
-    d = load_detection()
-    assert d.is_test_path("app/tests/views.py")
-    assert d.is_test_path("src/test/java/app/UserServiceTest.java")
-    assert d.is_test_path("web/__tests__/billing.js")
-    assert not d.is_test_path("app/views.py")
-    assert not d.is_test_path("spec/openapi.yaml")
+    detection = load_detection()
+    assert detection.is_test_path("app/tests/views.py")
+    assert detection.is_test_path("src/test/java/app/UserServiceTest.java")
+    assert detection.is_test_path("web/__tests__/billing.js")
+    assert not detection.is_test_path("app/views.py")
+    assert not detection.is_test_path("spec/openapi.yaml")
 
 
 def test_is_test_path_by_naming_convention_across_ecosystems():
     """Python test_ prefixes, Go _test suffixes, JS/TS .spec and .test, and Solidity .t.sol names count as tests."""
-    d = load_detection()
-    assert d.is_test_path("app/test_views.py")
-    assert d.is_test_path("app/views_test.go")
-    assert d.is_test_path("app/billing.spec.js")
-    assert d.is_test_path("app/api.test.ts")
-    assert d.is_test_path("src/Vault.t.sol")
+    detection = load_detection()
+    assert detection.is_test_path("app/test_views.py")
+    assert detection.is_test_path("app/views_test.go")
+    assert detection.is_test_path("app/billing.spec.js")
+    assert detection.is_test_path("app/api.test.ts")
+    assert detection.is_test_path("src/Vault.t.sol")
 
 
 def test_is_test_path_keeps_production_sampleish_names():
     """Files like sample_rate.py, mock_billing.py, example_config.py, and latest.py are not test paths."""
-    d = load_detection()
-    for f in ("app/sample_rate.py", "app/mock_billing.py", "app/example_config.py", "app/latest.py"):
-        assert not d.is_test_path(f), f
+    detection = load_detection()
+    for path in ("app/sample_rate.py", "app/mock_billing.py", "app/example_config.py", "app/latest.py"):
+        assert not detection.is_test_path(path), path
 
 
 def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
     """Docs, lockfiles, test files, node_modules, and vendor paths across languages are classified as noise."""
-    d = load_detection()
-    for f in (
+    detection = load_detection()
+    for path in (
         "README.md",
         "docs/guide.rst",
         "site/intro.mdx",
@@ -68,13 +67,13 @@ def test_is_noise_path_drops_docs_lockfiles_tests_and_vendored():
         "conan.lock",
         "src/parser_unittest.cc",
     ):
-        assert d.is_noise_path(f), f
+        assert detection.is_noise_path(path), path
 
 
 def test_is_noise_path_keeps_source_and_security_relevant_non_source():
     """Source of every language plus build scripts, SQL, shell, Dockerfile, Terraform, and YAML are not noise."""
-    d = load_detection()
-    for f in (
+    detection = load_detection()
+    for path in (
         "src/lib.rs",
         "src/main/java/app/Latest.java",
         "src/parser.cc",
@@ -91,13 +90,13 @@ def test_is_noise_path_keeps_source_and_security_relevant_non_source():
         "infra/main.tf",
         "config/settings.yaml",
     ):
-        assert not d.is_noise_path(f), f
+        assert not detection.is_noise_path(path), path
 
 
 def test_translation_catalogs_are_noise_while_code_and_config_beside_them_are_kept():
     """Data files under locale, i18n, and l10n directories are noise, and Go code there and conf/app.ini are kept."""
-    d = load_detection()
-    for f in (
+    detection = load_detection()
+    for path in (
         "conf/locale/locale_de-DE.ini",
         "config/locales/fr.yml",
         "public/locales/zh-Hant/grafana.json",
@@ -105,9 +104,9 @@ def test_translation_catalogs_are_noise_while_code_and_config_beside_them_are_ke
         "Server/Localization/Core/de.json",
         "src/main/resources/i18n/messages_de.properties",
     ):
-        assert d.is_noise_path(f), f
-    for f in ("internal/locale/locale.go", "conf/app.ini", "config/settings.yaml"):
-        assert not d.is_noise_path(f), f
+        assert detection.is_noise_path(path), path
+    for path in ("internal/locale/locale.go", "conf/app.ini", "config/settings.yaml"):
+        assert not detection.is_noise_path(path), path
 
 
 def _write(root, files):
@@ -181,7 +180,7 @@ def test_a_misspelled_detection_field_is_rejected(tmp_path, monkeypatch):
     """A test_dir field raises an unknown fields error naming it instead of being dropped."""
     rules = tmp_path / "detection.yaml"
     rules.write_text("test_dir: [spec]\ndoc_extensions: []\nasset_extensions: []\n", encoding="utf-8")
-    monkeypatch.setattr(detection, "DETECTION_FILE", rules)
+    monkeypatch.setattr("cyberjury.review.detection.DETECTION_FILE", rules)
     load_detection.cache_clear()
 
     try:

@@ -1,12 +1,9 @@
 """The evals CLI records attempts, adjudicates them through packets and ledgers, and reports."""
 
-from __future__ import annotations
-
 import json
 
 import pytest
 
-import evals.cli as evals_cli
 from evals.cli import main
 
 A = "candidate-" + "a" * 20
@@ -27,7 +24,7 @@ def fake_diff_run(monkeypatch):
                 on_attempt(record)
         return records
 
-    monkeypatch.setattr(evals_cli, "run", run)
+    monkeypatch.setattr("evals.cli.run", run)
 
 
 def test_diff_writes_nonoverwriting_attempts_and_summarizes_the_run(tmp_path, capsys, fake_diff_run, benchmark_project):
@@ -39,13 +36,12 @@ def test_diff_writes_nonoverwriting_attempts_and_summarizes_the_run(tmp_path, ca
     assert main(args) == 1
 
     attempts = runs / "demo" / benchmark_project.diff_case.split(":", 1)[1]
-    assert [json.loads((attempts / f"attempt-0{n}.json").read_text(encoding="utf-8"))["attempt"] for n in (1, 2)] == [
-        1,
-        2,
-    ]
+    assert [
+        json.loads((attempts / f"attempt-0{number}.json").read_text(encoding="utf-8"))["attempt"] for number in (1, 2)
+    ] == [1, 2]
     output = capsys.readouterr().out
     assert "cases 1, runs 2, complete attempts 1/2, reports 0" in output
-    assert f"failed: {benchmark_project.diff_case} attempt 2: finder failed" in output
+    assert f"incomplete: {benchmark_project.diff_case} attempt 2: finder failed" in output
     with pytest.raises(ValueError, match="already exists"):
         main(args)
 
@@ -108,7 +104,7 @@ def test_record_registers_the_next_attempt_of_a_repository_case(tmp_path, monkey
     def record(case, directory, number):
         return {"case": case.name, "attempt": number, "complete": True, "findings": []}
 
-    monkeypatch.setattr(evals_cli, "recorded_attempt", record)
+    monkeypatch.setattr("evals.cli.recorded_attempt", record)
     args = ["record", benchmark_project.repository_case, str(tmp_path), "--runs-dir", str(tmp_path / "runs")]
     args += ["--benchmark", str(benchmark_project.benchmark)]
 

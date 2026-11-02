@@ -1,4 +1,4 @@
-"""AnthropicProvider tests use a faked SDK client and no key."""
+"""AnthropicProvider maps requests, cache blocks, usage, and stop reasons onto the Messages API."""
 
 import sys
 from types import SimpleNamespace

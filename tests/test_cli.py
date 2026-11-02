@@ -1,10 +1,7 @@
-"""CLI tests cover argument handling and the exit code of each review outcome."""
-
-from __future__ import annotations
+"""The CLI turns arguments into one review command and exits with the code of each review outcome."""
 
 import pytest
 
-from cyberjury import cli as cli_module
 from cyberjury.cli import main
 from cyberjury.record import Record, RecordError
 from cyberjury.review.command import ReviewCommand
@@ -36,7 +33,7 @@ def _commands(monkeypatch, *argvs: list[str]) -> list[ReviewCommand]:
         seen.append(command)
         return Record(id=new_attempt_id(), status="ok", started_at="2026-01-01T00:00:00Z", duration_seconds=0.0)
 
-    monkeypatch.setattr(cli_module, "run_review_command", record)
+    monkeypatch.setattr("cyberjury.cli.run_review_command", record)
     for argv in argvs:
         main(argv)
     return seen
@@ -97,6 +94,6 @@ def test_each_review_outcome_exits_with_its_code(monkeypatch, tmp_path, status, 
         attributes={"reason": reason} if reason is not None else {},
         error=RecordError(code=code, message="reason") if code is not None else None,
     )
-    monkeypatch.setattr(cli_module, "run_review_command", lambda _command, **_streams: attempt)
+    monkeypatch.setattr("cyberjury.cli.run_review_command", lambda _command, **_streams: attempt)
 
     assert main(["review", "repository", str(tmp_path)]) == expected

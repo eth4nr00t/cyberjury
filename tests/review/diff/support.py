@@ -57,19 +57,21 @@ def finder(provider) -> UnitFinder[DiffUnit]:
 
 
 def reply(findings: list[dict[str, object]]) -> str:
-    """Complete each finding with the required finder fields and serialize one reply."""
+    """Serialize one reply whose findings are completed copies carrying the required finder fields."""
+    completed = []
     for finding in findings:
-        finding.setdefault("evidence_refs", ["seed"])
-        finding.setdefault("title", "unsafe changed operation")
-        finding.setdefault("evidence", "concrete exploitable path")
-        for field, default in (
-            ("entrypoint", "changed code path"),
-            ("attack_path", "attacker input reaches the vulnerable operation"),
-        ):
-            finding[field] = finding.get(field) or default
-        if "file" in finding and "line" in finding:
-            finding.setdefault("change_anchor", {"file": finding["file"], "line": finding["line"], "side": "new"})
-    return json.dumps({"findings": findings, "evidence_requests": [], "source_queries": []})
+        item = {
+            "evidence_refs": ["seed"],
+            "title": "unsafe changed operation",
+            "evidence": "concrete exploitable path",
+            **finding,
+        }
+        item["entrypoint"] = item.get("entrypoint") or "changed code path"
+        item["attack_path"] = item.get("attack_path") or "attacker input reaches the vulnerable operation"
+        if "file" in item and "line" in item:
+            item.setdefault("change_anchor", {"file": item["file"], "line": item["line"], "side": "new"})
+        completed.append(item)
+    return json.dumps({"findings": completed, "evidence_requests": [], "source_queries": []})
 
 
 def review(

@@ -1,4 +1,4 @@
-"""Engine tests cover the review unit scheduler and the review outcome."""
+"""The unit scheduler reviews every open unit once, keeps restored work, and records each failed unit."""
 
 import pytest
 
@@ -94,7 +94,9 @@ def test_review_units_reuse_completed_units_and_retry_failed_units_keeping_their
         ["done", "failed", "open"],
         execute,
         restore=lambda unit: earlier.get(unit.id),
-        on_unit=lambda unit, cycle, _seconds: completed.append((unit.id, [f.title for f in cycle.findings])),
+        on_unit=lambda unit, cycle, _seconds: completed.append(
+            (unit.id, [finding.title for finding in cycle.findings])
+        ),
     )
 
     assert executed == ["failed", "open"]

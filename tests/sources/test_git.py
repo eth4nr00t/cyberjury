@@ -1,14 +1,12 @@
 """Git acquisition lists work trees, builds config-independent patches, and materializes exact committed blobs."""
 
-from __future__ import annotations
-
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 
-from cyberjury.sources import git as git_module
 from cyberjury.sources.git import GitSourceError, canonical_patch, materialize_revision, worktree_files
 from tests.support import git, two_commits
 
@@ -82,7 +80,7 @@ def test_canonical_patch_keeps_the_default_rename_representation(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "--quiet")
-    (repo / "before.py").write_text("value = 1\n")
+    (repo / "before.py").write_text("value = 1\n", encoding="utf-8")
     git(repo, "add", ".")
     git(repo, "commit", "--quiet", "-m", "base")
     base = git(repo, "rev-parse", "HEAD")
@@ -113,7 +111,7 @@ def test_canonical_patch_fails_loud_above_the_patch_byte_limit(monkeypatch, tmp_
     """With the patch byte limit set to 1, canonical_patch raises Git patch exceeds the byte limit."""
     repo = tmp_path / "repo"
     base, head = two_commits(repo)
-    monkeypatch.setattr(git_module, "_MAX_PATCH_BYTES", 1)
+    monkeypatch.setattr("cyberjury.sources.git._MAX_PATCH_BYTES", 1)
 
     with pytest.raises(GitSourceError, match="patch exceeds the byte limit"):
         canonical_patch(repo, base, head)
@@ -124,8 +122,8 @@ def test_materialization_writes_exact_blobs_without_a_smudge_filter(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "--quiet")
-    (repo / ".gitattributes").write_text("*.txt filter=demo\n")
-    (repo / "value.txt").write_text("blob-head\n")
+    (repo / ".gitattributes").write_text("*.txt filter=demo\n", encoding="utf-8")
+    (repo / "value.txt").write_text("blob-head\n", encoding="utf-8")
     git(repo, "add", ".")
     git(repo, "commit", "--quiet", "-m", "head")
     git(repo, "config", "filter.demo.smudge", "sed s/blob/worktree/")
@@ -193,13 +191,13 @@ def test_an_oversized_symlink_target_fails_materialization_and_leaves_nothing_be
     repo = tmp_path / "repo"
     revision = _commit_symlink(repo, b"a" * 5000)
     created = []
-    make_temporary = git_module.tempfile.mkdtemp
+    make_temporary = tempfile.mkdtemp
 
     def recorded(**kwargs):
         created.append(Path(make_temporary(**kwargs)))
         return str(created[-1])
 
-    monkeypatch.setattr(git_module.tempfile, "mkdtemp", recorded)
+    monkeypatch.setattr("cyberjury.sources.git.tempfile.mkdtemp", recorded)
     yielded = []
 
     with pytest.raises(GitSourceError, match="exceeds the byte limit"), materialize_revision(repo, revision) as root:
@@ -221,7 +219,7 @@ def test_materialization_fails_loud_above_the_source_byte_limits(monkeypatch, tm
     """A 5-byte app.py blob over a 1-byte file or tree limit raises GitSourceError naming that limit."""
     repo = tmp_path / "repo"
     _base, head = two_commits(repo)
-    monkeypatch.setattr(git_module, limit, 1)
+    monkeypatch.setattr(f"cyberjury.sources.git.{limit}", 1)
 
     with pytest.raises(GitSourceError, match=message), materialize_revision(repo, head):
         pass

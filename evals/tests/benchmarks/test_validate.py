@@ -1,7 +1,5 @@
 """Benchmark validation enforces the versioned contract and its semantic checks."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import pytest

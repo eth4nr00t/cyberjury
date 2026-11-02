@@ -23,7 +23,7 @@ class RunSummary:
     runs: str
     cases: int
     attempts: int
-    failed: list[str]
+    incomplete: list[str]
     unadjudicated: list[str]
     recall: dict[str, int]
     recall_by_run: dict[int, dict[str, int]]
@@ -39,12 +39,12 @@ class RunSummary:
 
 def summarize(cases: dict[str, BenchmarkCase], runs: Path, calls: Sequence[Path] = ()) -> RunSummary:
     """Summarize every attempt under one runs directory and the model call receipts of the same runs."""
-    failed, unadjudicated, adjudicated = [], [], []
+    incomplete, unadjudicated, adjudicated = [], [], []
     for attempt in find_attempts(runs):
         if attempt.case not in cases:
             raise ValueError(f"{attempt.path} names an unknown case {attempt.case!r}")
         if not attempt.complete:
-            failed.append(f"{attempt.case} attempt {attempt.number}: {attempt.error}")
+            incomplete.append(f"{attempt.case} attempt {attempt.number}: {attempt.error}")
         elif not attempt.ledger_path.is_file():
             unadjudicated.append(str(attempt.path))
         else:
@@ -66,7 +66,7 @@ def summarize(cases: dict[str, BenchmarkCase], runs: Path, calls: Sequence[Path]
         runs=str(runs),
         cases=len({item.case for item in adjudicated}),
         attempts=len(adjudicated),
-        failed=failed,
+        incomplete=incomplete,
         unadjudicated=unadjudicated,
         recall={
             "found": sum(run["found"] for run in by_run.values()),
@@ -120,8 +120,8 @@ def _cost(paths: Sequence[Path]) -> dict[str, object]:
 def failures(summary: RunSummary) -> list[str]:
     """Return the failures that block a run: incomplete work and mixed rubrics."""
     fails = []
-    if summary.failed:
-        fails.append(_count(len(summary.failed), "failed attempt", "failed attempts"))
+    if summary.incomplete:
+        fails.append(_count(len(summary.incomplete), "incomplete attempt", "incomplete attempts"))
     if summary.unadjudicated:
         fails.append(_count(len(summary.unadjudicated), "attempt without a ledger", "attempts without a ledger"))
     if pending := summary.verdicts["needs_review"]:
@@ -143,8 +143,10 @@ def format_summary(summary: RunSummary) -> str:
     precision = "unknown" if summary.precision is None else f"{summary.precision:.1%}"
     lines = [
         f"=== run: {summary.runs} ===",
-        f"  cases {summary.cases}, adjudicated attempts {summary.attempts}, "
-        f"failed {len(summary.failed)}, without ledger {len(summary.unadjudicated)}",
+        (
+            f"  cases {summary.cases}, adjudicated attempts {summary.attempts}, "
+            f"incomplete {len(summary.incomplete)}, without ledger {len(summary.unadjudicated)}"
+        ),
         f"  reviewed recall {recall['found']}/{recall['total']}",
     ]
     lines += [f"    run {number}: {run['found']}/{run['total']}" for number, run in summary.recall_by_run.items()]
@@ -158,14 +160,18 @@ def format_summary(summary: RunSummary) -> str:
         lines += [f"    {item}" for item in partial]
     counts = summary.verdicts
     lines += [
-        f"  report precision {precision} = supported {counts['supported']} / (supported {counts['supported']} "
-        f"+ not_actionable {counts['not_actionable']}), reports {summary.reports}",
+        (
+            f"  report precision {precision} = supported {counts['supported']} / (supported {counts['supported']} "
+            f"+ not_actionable {counts['not_actionable']}), reports {summary.reports}"
+        ),
         f"    excluded from precision: duplicate {counts['duplicate']}, needs_review {counts['needs_review']}",
-        f"  issues {summary.issues['issues']}: duplicate issues {summary.issues['duplicate_issues']}, "
-        f"mixed issues {summary.issues['mixed_issues']}",
+        (
+            f"  issues {summary.issues['issues']}: duplicate issues {summary.issues['duplicate_issues']}, "
+            f"mixed issues {summary.issues['mixed_issues']}"
+        ),
     ]
     lines += [f"  ledger round {round_id}, rubric sha256 {rubric}" for round_id, rubric in summary.ledger_rounds]
-    lines += [f"  failed: {item}" for item in summary.failed]
+    lines += [f"  incomplete: {item}" for item in summary.incomplete]
     lines += [f"  without ledger: {item}" for item in summary.unadjudicated]
     cost = summary.cost
     if cost["receipts"]:
@@ -210,4 +216,4 @@ def to_json(summary: RunSummary) -> dict[str, object]:
 def write_json(path: str, summary: RunSummary, fails: list[str]) -> None:
     """Write the run summary and its failures."""
     document = {"run": to_json(summary), "failures": fails}
-    Path(path).write_text(json.dumps(document, indent=2), encoding="utf-8")
+    Path(path).write_text(json.dumps(document, indent=1, ensure_ascii=False), encoding="utf-8")

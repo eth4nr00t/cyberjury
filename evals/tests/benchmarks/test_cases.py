@@ -1,7 +1,5 @@
 """Benchmark cases materialize the repository and diff cases of one project definition."""
 
-from __future__ import annotations
-
 from dataclasses import replace
 
 import pytest

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cyberjury.review.failures import BackendUnavailable
+from cyberjury.review.failures import BackendUnavailableError
 
 
 def read_repository_source(root: str | Path, rel: str, *, label: str) -> str | None:
@@ -15,7 +15,7 @@ def read_repository_source(root: str | Path, rel: str, *, label: str) -> str | N
     try:
         return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        raise BackendUnavailable(f"{label} could not read source {rel}: {exc}") from exc
+        raise BackendUnavailableError(f"{label} could not read source {rel}: {exc}") from exc
 
 
 def normalized_location_path(rel: str) -> str:
@@ -39,5 +39,5 @@ def is_unsafe_rel(rel: str) -> bool:
     """Report whether a finding location is empty, absolute, or traverses a parent directory."""
     if not rel:
         return True
-    p = Path(rel)
-    return p.is_absolute() or ".." in p.parts
+    path = Path(rel)
+    return path.is_absolute() or ".." in path.parts

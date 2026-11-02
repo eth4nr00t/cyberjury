@@ -8,7 +8,6 @@ import pytest
 
 from cyberjury.review.context import GroundingContext, SourceSpan
 from cyberjury.review.repository.finder import REPOSITORY_TARGET
-from cyberjury.review.run import NoReviewableSourceError
 from cyberjury.review.seats import ReviewSeats
 from cyberjury.workspace import WorkspaceCorruptionError, read_record
 from tests.review.diff import support as diff
@@ -51,19 +50,6 @@ def test_empty_diff_is_complete_without_model_work():
     assert provider.calls == []
 
 
-def test_a_repository_with_only_test_files_has_no_reviewable_source(tmp_path):
-    """A repository holding only tests/test_app.py raises NoReviewableSourceError before any model call."""
-    target = tmp_path / "svc"
-    (target / "tests").mkdir(parents=True)
-    (target / "tests" / "test_app.py").write_text("def test_app():\n    assert True\n", encoding="utf-8")
-    provider = MockProvider(default=EMPTY_REPLY)
-
-    with pytest.raises(NoReviewableSourceError, match="no readable production source files found in svc"):
-        run_repository_review(target, tmp_path / "ws", provider=provider)
-
-    assert provider.calls == []
-
-
 def test_each_unit_is_sent_only_its_own_grounding():
     """Each of two per-file units sends only its own grounding text, once each across the two prompts."""
     provider = MockProvider(default=diff.reply([]))
@@ -96,7 +82,9 @@ def test_concurrency_yields_same_union_as_serial(tmp_path):
     serial = _run(units, provider(), concurrency=1)
     parallel = _run(units, provider(), concurrency=4)
 
-    assert [c.candidate_id for c in serial.findings] == [c.candidate_id for c in parallel.findings]
+    assert [reported.candidate_id for reported in serial.findings] == [
+        reported.candidate_id for reported in parallel.findings
+    ]
     assert len(parallel.findings) == 6
     assert serial.complete is True
     assert parallel.complete is True
@@ -115,7 +103,7 @@ def test_a_failed_unit_keeps_the_findings_of_the_other_units():
 
     result = diff.review(diff.FILE_A_DIFF + diff.FILE_B_DIFF, provider=provider, max_chars=1)
 
-    assert [f.evidence for f in result.outcome.findings] == ["unguarded sink"]
+    assert [reported.evidence for reported in result.outcome.findings] == ["unguarded sink"]
     assert result.outcome.complete is False
     failure = result.outcome.failures[0]
     assert (failure.index, failure.total, failure.paths) == (1, 2, ("a.py",))
@@ -139,11 +127,13 @@ def create_transfer():
 @pytest.fixture
 def custody_repository(tmp_path):
     """Write a two-file Flask repository and return its root."""
-    d = tmp_path / "custody"
-    (d / "app" / "services").mkdir(parents=True)
-    (d / "app" / "routes.py").write_text(_FLASK_APP)
-    (d / "app" / "services" / "wallet.py").write_text("def get_wallet(wid):\n    return {'id': wid}\n")
-    return d
+    root = tmp_path / "custody"
+    (root / "app" / "services").mkdir(parents=True)
+    (root / "app" / "routes.py").write_text(_FLASK_APP, encoding="utf-8")
+    (root / "app" / "services" / "wallet.py").write_text(
+        "def get_wallet(wid):\n    return {'id': wid}\n", encoding="utf-8"
+    )
+    return root
 
 
 _WALLET_FINDING = finding(
@@ -169,7 +159,9 @@ def _unit_records(review: Path) -> list[dict]:
     return [
         {
             "clean": read_record(path).status == "ok",
-            "findings": json.loads((review / "review" / "findings" / path.name).read_text())["findings"],
+            "findings": json.loads((review / "review" / "findings" / path.name).read_text(encoding="utf-8"))[
+                "findings"
+            ],
         }
         for path in sorted(items.glob("*.json"))
     ]
@@ -180,7 +172,7 @@ def test_repository_run_completes_and_records_each_unit(custody_repository, tmp_
     result = run_repository_review(custody_repository, tmp_path / "ws", provider=_wallet_provider())
 
     assert result.outcome.complete is True
-    assert [f["entrypoint"] for f in result.findings.findings] == ["GET /wallets/<wallet_id>"]
+    assert [reported["entrypoint"] for reported in result.findings.findings] == ["GET /wallets/<wallet_id>"]
     records = _unit_records(tmp_path / "ws")
     assert [record["clean"] for record in records] == [True, True]
     assert sorted(len(record["findings"]) for record in records) == [0, 1]
@@ -190,7 +182,7 @@ def test_repository_reviews_raw_source_and_completes_when_facts_are_limited(tmp_
     """A partially parsed app.py is reviewed and completes with its parse limitation in the finder prompt."""
     target = tmp_path / "opaque"
     target.mkdir()
-    (target / "app.py").write_text("from flask import Flask\napp = Flask(__name__)\ndef broken(:\n")
+    (target / "app.py").write_text("from flask import Flask\napp = Flask(__name__)\ndef broken(:\n", encoding="utf-8")
     provider = MockProvider(default=EMPTY_REPLY)
 
     result = run_repository_review(target, tmp_path / "ws", provider=provider)
@@ -215,12 +207,12 @@ def test_repository_run_counts_an_unreceipted_finder_candidate_as_incomplete(tmp
 
 def test_resume_skips_reviewed_units(custody_repository, tmp_path):
     """A second run in the same workspace makes no provider calls and returns the same findings."""
-    ws = tmp_path / "ws"
-    first = run_repository_review(custody_repository, ws, provider=_wallet_provider())
+    workspace = tmp_path / "ws"
+    first = run_repository_review(custody_repository, workspace, provider=_wallet_provider())
     assert first.findings.findings
 
     resumed = _wallet_provider()
-    second = run_repository_review(custody_repository, ws, provider=resumed)
+    second = run_repository_review(custody_repository, workspace, provider=resumed)
 
     assert resumed.calls == []
     assert second.findings == first.findings
@@ -231,7 +223,8 @@ def _two_entrypoint_repository(root):
         (root / pkg).mkdir(parents=True)
         (root / pkg / "routes.py").write_text(
             "from flask import Flask, request\napp = Flask(__name__)\n"
-            f'@app.route("/{pkg}/<x>")\ndef h_{pkg}(x):\n    return request.args.get("y", "")\n'
+            f'@app.route("/{pkg}/<x>")\ndef h_{pkg}(x):\n    return request.args.get("y", "")\n',
+            encoding="utf-8",
         )
     return root
 
@@ -249,21 +242,21 @@ def _raising_provider(fail_unit, *, error=None):
 def test_failed_unit_stays_open_and_is_retried_on_resume_keeping_its_findings(tmp_path):
     """A rate-limited beta/routes.py stays unclean, and resume reviews only it and keeps the alpha finding."""
     repository = _two_entrypoint_repository(tmp_path / "twop")
-    ws = tmp_path / "ws"
-    first = run_repository_review(repository, ws, provider=_raising_provider("beta/routes.py"))
+    workspace = tmp_path / "ws"
+    first = run_repository_review(repository, workspace, provider=_raising_provider("beta/routes.py"))
 
     assert first.outcome.complete is False
     assert first.outcome.failures[0].paths == ("beta/routes.py",)
     assert "provider rate limited" in first.outcome.failures[0].reason
-    assert sorted(record["clean"] for record in _unit_records(ws)) == [False, True]
+    assert sorted(record["clean"] for record in _unit_records(workspace)) == [False, True]
 
     resumed = _raising_provider("")
-    retried = run_repository_review(repository, ws, provider=resumed)
+    retried = run_repository_review(repository, workspace, provider=resumed)
 
     assert _reviewed_units(resumed) == ["beta/routes.py"]
     assert retried.outcome.complete is True
-    assert [record["clean"] for record in _unit_records(ws)] == [True, True]
-    assert sorted(f["file"] for f in retried.findings.findings) == ["alpha/routes.py", "beta/routes.py"]
+    assert [record["clean"] for record in _unit_records(workspace)] == [True, True]
+    assert sorted(reported["file"] for reported in retried.findings.findings) == ["alpha/routes.py", "beta/routes.py"]
 
 
 class _Interrupted(BaseException):
@@ -273,17 +266,17 @@ class _Interrupted(BaseException):
 def test_an_interrupted_run_resumes_only_open_units(tmp_path):
     """After a BaseException on beta/routes.py, resume reviews only beta and completes with both findings."""
     repository = _two_entrypoint_repository(tmp_path / "twop")
-    ws = tmp_path / "ws"
+    workspace = tmp_path / "ws"
 
     with pytest.raises(_Interrupted):
-        run_repository_review(repository, ws, provider=_raising_provider("beta/routes.py", error=_Interrupted()))
+        run_repository_review(repository, workspace, provider=_raising_provider("beta/routes.py", error=_Interrupted()))
 
     resumed = _raising_provider("")
-    result = run_repository_review(repository, ws, provider=resumed)
+    result = run_repository_review(repository, workspace, provider=resumed)
 
     assert _reviewed_units(resumed) == ["beta/routes.py"]
     assert result.outcome.complete is True
-    assert sorted(f["file"] for f in result.findings.findings) == ["alpha/routes.py", "beta/routes.py"]
+    assert sorted(reported["file"] for reported in result.findings.findings) == ["alpha/routes.py", "beta/routes.py"]
 
 
 @pytest.mark.parametrize(
@@ -291,22 +284,22 @@ def test_an_interrupted_run_resumes_only_open_units(tmp_path):
     [
         pytest.param(lambda _document: "{ this is not valid json", id="invalid-json"),
         pytest.param(lambda _document: "{}", id="no-schema"),
-        pytest.param(lambda _document: '{"schema": "cyberjury.unit-findings/v0", "findings": []}', id="old-schema"),
+        pytest.param(lambda document: json.dumps(document | {"schema": "cyberjury.other/v1"}), id="wrong-schema"),
         pytest.param(
             lambda document: json.dumps(document | {"findings": [{"title": "missing fields"}]}), id="malformed-finding"
         ),
     ],
 )
 def test_a_corrupt_unit_payload_on_resume_raises_loud(custody_repository, tmp_path, corrupt):
-    """Invalid JSON, wrong schema, or malformed findings in a unit payload raise before any provider call."""
-    ws = tmp_path / "ws"
-    run_repository_review(custody_repository, ws, provider=_wallet_provider())
-    path = sorted((ws / "review" / "findings").glob("*.json"))[0]
-    path.write_text(corrupt(json.loads(path.read_text())), encoding="utf-8")
+    """Invalid JSON, a missing or wrong schema, or malformed findings in a unit payload raise before a provider call."""
+    workspace = tmp_path / "ws"
+    run_repository_review(custody_repository, workspace, provider=_wallet_provider())
+    path = sorted((workspace / "review" / "findings").glob("*.json"))[0]
+    path.write_text(corrupt(json.loads(path.read_text(encoding="utf-8"))), encoding="utf-8")
     resumed = _wallet_provider()
 
     with pytest.raises(WorkspaceCorruptionError, match=r"corrupt.*--fresh"):
-        run_repository_review(custody_repository, ws, provider=resumed)
+        run_repository_review(custody_repository, workspace, provider=resumed)
 
     assert resumed.calls == []
 

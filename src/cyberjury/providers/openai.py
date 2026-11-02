@@ -76,15 +76,15 @@ class OpenAIProvider(Provider):
 
 
 def _usage(response: Any) -> Usage:
-    u = getattr(response, "usage", None)
-    if u is None:
+    usage = getattr(response, "usage", None)
+    if usage is None:
         return Usage()
-    details = getattr(u, "input_tokens_details", None)
+    details = getattr(usage, "input_tokens_details", None)
     cached = token_count(getattr(details, "cached_tokens", None))
     written = token_count(getattr(details, "cache_write_tokens", None))
     return Usage(
-        input_tokens=max(token_count(getattr(u, "input_tokens", None)) - cached - written, 0),
-        output_tokens=token_count(getattr(u, "output_tokens", None)),
+        input_tokens=max(token_count(getattr(usage, "input_tokens", None)) - cached - written, 0),
+        output_tokens=token_count(getattr(usage, "output_tokens", None)),
         cache_read_tokens=cached,
         cache_write_tokens=written,
     )

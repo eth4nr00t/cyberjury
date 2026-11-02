@@ -380,7 +380,6 @@ class SourceNavigationSession:
         targets = tuple(dict.fromkeys(requested))
         blocks: list[str] = []
         source_evidence: list[SourceEvidence] = []
-        coverage = GroundingCoverage()
         read_chars = 0
         for index, target_id in enumerate(targets, start=1):
             target = self._targets.get(target_id)
@@ -398,13 +397,12 @@ class SourceNavigationSession:
                 blocks.append(_already_delivered(heading, receipt.source_span, target.id, delivered_as))
             self._delivered[target.id] = _span_key(receipt.source_span)
             source_evidence.append(receipt)
-            coverage = GroundingCoverage(
-                included=(*coverage.included, target.identity),
-                references=(*coverage.references, target.id),
-            )
         return SourceNavigationResult(
             text="\n\n".join(blocks),
-            coverage=coverage,
+            coverage=GroundingCoverage(
+                included=tuple(item.identity for item in source_evidence),
+                references=tuple(item.id for item in source_evidence),
+            ),
             source_evidence=tuple(source_evidence),
         )
 
@@ -468,13 +466,15 @@ class SourceNavigationSession:
             return ""
         statements = sorted(set(statements))
         lines = [
-            f"No definition named {inline_source(name)} was found in the reviewed source. "
-            f"Import statements that name {inline_source(name)}:"
+            (
+                f"No definition named {inline_source(name)} was found in the reviewed source. "
+                f"Import statements that name {inline_source(name)}:"
+            ),
+            *(
+                f"- {one_line_source(path)}:{line} | {inline_source(text)}"
+                for _, path, line, text in statements[: _EXECUTION.source_query_results_per_page]
+            ),
         ]
-        lines.extend(
-            f"- {one_line_source(path)}:{line} | {inline_source(text)}"
-            for _, path, line, text in statements[: _EXECUTION.source_query_results_per_page]
-        )
         if len(statements) > _EXECUTION.source_query_results_per_page:
             lines.append(
                 f"- {len(statements) - _EXECUTION.source_query_results_per_page} more import statements are not listed"
@@ -536,16 +536,13 @@ class SourceNavigationSession:
         calls = []
         for callsite in self._callsites.values():
             candidate_ids = self._call_candidates[callsite.id]
-            if direction in {"callees", "both"} and callsite.caller_definition_id == definition_id:
-                calls.append((callsite, candidate_ids))
-                continue
-            if direction in {"callers", "both"} and definition_id in candidate_ids:
+            if (direction in {"callees", "both"} and callsite.caller_definition_id == definition_id) or (
+                direction in {"callers", "both"} and definition_id in candidate_ids
+            ):
                 calls.append((callsite, candidate_ids))
         calls = sorted(calls, key=lambda item: (item[0].source.path, item[0].source.start, item[0].id))
         selected_calls, more = _page(tuple(calls), page)
-        lines = [
-            f"`search_call_candidates` for `{definition_id}` direction `{direction}`, page {page}.",
-        ]
+        lines = [f"`search_call_candidates` for `{definition_id}` direction `{direction}`, page {page}."]
         for callsite, candidate_ids in selected_calls:
             lines.extend(self._render_call_candidate(callsite, candidate_ids))
         lines.extend(_page_tail(empty=not selected_calls, more=more, page=page))
@@ -568,9 +565,7 @@ class SourceNavigationSession:
             for candidate_id in relationship.candidate_target_definition_ids or ("",)
         )
         selected_relationships, more = _page(expanded, page)
-        lines = [
-            f"`search_structural_candidates` for `{definition_id}` direction `{direction}`, page {page}.",
-        ]
+        lines = [f"`search_structural_candidates` for `{definition_id}` direction `{direction}`, page {page}."]
         for relationship, candidate_id in selected_relationships:
             lines.extend(self._render_structural_candidate(relationship, candidate_id))
         lines.extend(_page_tail(empty=not selected_relationships, more=more, page=page))
@@ -586,8 +581,10 @@ class SourceNavigationSession:
             name=f"{relationship.kind} {relationship.reference}",
         )
         lines = [
-            f"- relationship `{relationship.id}` kind `{relationship.kind}` reference "
-            f"{inline_source(relationship.reference)}",
+            (
+                f"- relationship `{relationship.id}` kind `{relationship.kind}` reference "
+                f"{inline_source(relationship.reference)}"
+            ),
             f"  syntax source `{relation_target.id}` {one_line_source(relationship.source.path)}",
         ]
         if relationship.source_definition_id:
@@ -612,11 +609,12 @@ class SourceNavigationSession:
             callsite.source,
             name=f"call {callsite.callee_spelling}",
         )
-        self._discovered_definition_ids.add(caller.id)
         lines = [
             f"- callsite `{callsite.id}` {inline_source(' '.join(callsite.expression.split()))}",
-            f"  caller `{caller.id}` source `{caller_target.id}` "
-            f"{one_line_source(caller.source.path)}:{one_line_source(caller.name)}",
+            (
+                f"  caller `{caller.id}` source `{caller_target.id}` "
+                f"{one_line_source(caller.source.path)}:{one_line_source(caller.name)}"
+            ),
             f"  call source `{call_target.id}` receiver {inline_source(callsite.receiver_expression)}",
         ]
         observations = self._observations_by_callsite.get(callsite.id, ())
@@ -629,7 +627,6 @@ class SourceNavigationSession:
         for candidate_id in candidate_ids:
             candidate = self._relationship_definitions[candidate_id]
             candidate_target = self._relationship_target(candidate)
-            self._discovered_definition_ids.add(candidate.id)
             lines.append(f"  candidate `{candidate.id}` source `{candidate_target.id}` {_definition_label(candidate)}")
         return lines
 
@@ -804,9 +801,7 @@ def _render_search(
     *,
     exact_match: bool,
 ) -> str:
-    lines = [
-        f"Source query {index} `{kind}` for {inline_source(query)}, page {page}.",
-    ]
+    lines = [f"Source query {index} `{kind}` for {inline_source(query)}, page {page}."]
     if not exact_match and targets:
         lines.append(
             "No definition matches the qualified name exactly. These definitions only share its last segment "

@@ -1,4 +1,4 @@
-"""RetryProvider tests inject sleep and randomness for deterministic retry behavior."""
+"""RetryProvider retries transient failures and blank or unparsable replies, but never an access rejection."""
 
 import threading
 from typing import ClassVar
