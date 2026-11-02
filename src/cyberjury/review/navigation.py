@@ -94,7 +94,7 @@ class SourceTarget:
         definition_id: str = "",
         source_kind: Literal["production", "documentation", "dependency"] = "production",
     ) -> SourceTarget:
-        """Build an opaque id from one exact repository source range."""
+        """Build a navigable target with an opaque id over one exact repository source range."""
         identity = source_identity(file, name, start, end)
         return cls(
             id=source_id(identity),
@@ -139,7 +139,7 @@ class SourceNavigator:
         documentation_files: Iterable[str] = (),
         dependency_files: Iterable[str] = (),
     ) -> SourceNavigator | None:
-        """Build navigation from shared facts without adding resolver semantics."""
+        """Build navigation from shared facts without adding resolver semantics, or None when no file is navigable."""
         definitions = definitions_by_name(relationship_evidence.definitions)
         files = tuple(
             dict.fromkeys(
@@ -272,7 +272,10 @@ class SourceNavigationSession:
             self._executed_query_keys.add(query_key)
             kind = query["kind"]
             if kind in {"search_symbols", "search_text"}:
-                exact = self._search(index, query, blocks, held_receipts, target_chars=target_chars)
+                found, exact = self._search(
+                    index, query, held_receipts, used_chars=len("\n\n".join(blocks)), target_chars=target_chars
+                )
+                blocks.extend(found)
                 if exact is not None:
                     coverage = merge_grounding_coverage((coverage, exact.coverage))
                     source_evidence.extend(exact.source_evidence)
@@ -320,11 +323,11 @@ class SourceNavigationSession:
         self,
         index: int,
         query: dict[str, object],
-        blocks: list[str],
         held_receipts: list[SourceEvidence],
         *,
+        used_chars: int,
         target_chars: int,
-    ) -> SourceNavigationResult | None:
+    ) -> tuple[list[str], SourceNavigationResult | None]:
         kind, page = query["kind"], query["page"]
         if kind == "search_symbols":
             targets, more, exact_match = self._search_symbols(query["query"], page)
@@ -332,30 +335,28 @@ class SourceNavigationSession:
         else:
             targets, more = self._search_text(query["query"], page)
             exact_match, label = True, "Unique exact text match"
-        blocks.append(
-            _render_search(
-                index,
-                kind,
-                query["query"],
-                targets,
-                page,
-                more,
-                self._held_targets(targets, held_receipts),
-                exact_match=exact_match,
-            )
+        listing = _render_search(
+            index,
+            kind,
+            query["query"],
+            targets,
+            page,
+            more,
+            self._held_targets(targets, held_receipts),
+            exact_match=exact_match,
         )
         if kind == "search_symbols" and not exact_match and page == 0:
             bindings = self._import_bindings(query["query"].split(".")[0])
             if bindings:
-                blocks[-1] += "\n" + bindings
+                listing += "\n" + bindings
         if not exact_match:
-            return None
-        exact = self._unique_exact_read(
-            targets, page=page, more=more, blocks=blocks, target_chars=target_chars, label=label
-        )
-        if exact is not None:
-            blocks.append(f"{label}:\n{exact.text}")
-        return exact
+            return [listing], None
+        used_chars += (2 if used_chars else 0) + len(listing)
+        block = self._unique_exact_block(targets, page=page, more=more, label=label)
+        if block is None or used_chars + 2 + len(block) > target_chars:
+            return [listing], None
+        exact = self.read([targets[0].id], target_chars=max(target_chars, _EXECUTION.max_source_query_target_chars * 2))
+        return [listing, f"{label}:\n{exact.text}"], exact
 
     def _held_targets(self, targets: tuple[SourceTarget, ...], receipts: list[SourceEvidence]) -> dict[str, str]:
         held = {}
@@ -387,13 +388,12 @@ class SourceNavigationSession:
                 raise SourceNavigationError(f"evidence request {index} references unknown target {target_id!r}")
             delivered_as = self._delivered_as(target)
             receipt = self._receipt(target)
-            label = _SOURCE_LABELS[target.source_kind]
-            heading = f"{label} `{target.id}` {one_line_source(target.file)}:{one_line_source(target.name)}"
+            heading = _read_heading(target)
             if delivered_as is None:
                 read_chars += len(receipt.text)
                 if read_chars > target_chars:
                     raise SourceBudgetError(f"evidence requests exceed the {target_chars} character target")
-                blocks.append(f"Read {heading}:\n{fenced_source(receipt.text)}")
+                blocks.append(_read_block(target, receipt))
             else:
                 blocks.append(_already_delivered(heading, receipt.source_span, target.id, delivered_as))
             self._delivered[target.id] = _span_key(receipt.source_span)
@@ -408,27 +408,13 @@ class SourceNavigationSession:
             source_evidence=tuple(source_evidence),
         )
 
-    def _unique_exact_read(
-        self,
-        targets: tuple[SourceTarget, ...],
-        *,
-        page: int,
-        more: bool,
-        blocks: list[str],
-        target_chars: int,
-        label: str,
-    ) -> SourceNavigationResult | None:
+    def _unique_exact_block(
+        self, targets: tuple[SourceTarget, ...], *, page: int, more: bool, label: str
+    ) -> str | None:
         if page != 0 or len(targets) != 1 or more or self._delivered_as(targets[0]) is not None:
             return None
-        exact = self.read(
-            [targets[0].id],
-            target_chars=max(target_chars, _EXECUTION.max_source_query_target_chars * 2),
-        )
-        candidate = "\n\n".join((*blocks, f"{label}:\n{exact.text}"))
-        if len(candidate) > target_chars:
-            self._delivered.pop(targets[0].id, None)
-            return None
-        return exact
+        target = targets[0]
+        return f"{label}:\n{_read_block(target, self._receipt(target))}"
 
     def can_read(self, target: str) -> bool:
         """Report whether this session returned an exact target in an earlier search."""
@@ -780,6 +766,15 @@ def parse_source_queries(value: list[dict[str, object]]) -> list[dict[str, objec
         else:
             queries.append({**raw, "query": raw["query"].strip()})
     return queries
+
+
+def _read_block(target: SourceTarget, receipt: SourceEvidence) -> str:
+    return f"Read {_read_heading(target)}:\n{fenced_source(receipt.text)}"
+
+
+def _read_heading(target: SourceTarget) -> str:
+    label = _SOURCE_LABELS[target.source_kind]
+    return f"{label} `{target.id}` {one_line_source(target.file)}:{one_line_source(target.name)}"
 
 
 def _definition_label(definition: DefinitionEvidence) -> str:

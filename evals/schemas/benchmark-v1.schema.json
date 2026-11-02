@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/eth4nr00t/cyberjury/main/evals/benchmarks/schemas/benchmark-v1.schema.json",
+  "$id": "https://raw.githubusercontent.com/eth4nr00t/cyberjury/main/evals/schemas/benchmark-v1.schema.json",
   "title": "Benchmark Schema",
   "description": "The version 1 schema for one benchmark project: the pinned repository and its review cases, each with the checks a review must find.",
   "type": "object",

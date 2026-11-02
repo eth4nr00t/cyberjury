@@ -5,7 +5,7 @@ import json
 import pytest
 
 from cyberjury.canonical import canonical_sha256
-from cyberjury.providers.base import CompletionResult, Provider, Usage
+from cyberjury.providers.base import CompletionResult, Provider, ProviderAccessError, ProviderCallError, Usage
 from cyberjury.providers.metering import (
     MeteringProvider,
     UsageMeter,
@@ -74,6 +74,21 @@ def test_a_failed_call_is_recorded_but_adds_no_usage():
 
     assert usage_from_calls(meter.call_snapshot())["model_requests"] == 0
     assert meter.call_snapshot()[0]["status"] == "failed"
+
+
+@pytest.mark.parametrize("error", [ProviderCallError, ProviderAccessError])
+def test_a_call_that_failed_after_retries_records_its_attempts(error):
+    """A provider failure or access rejection on the third attempt is recorded as a failed call with attempt 3."""
+
+    class _Exhausted(Provider):
+        def complete(self, **_kwargs):
+            raise error("RuntimeError: down", attempts=3)
+
+    meter = UsageMeter()
+    with pytest.raises(error):
+        _call(MeteringProvider(_Exhausted(), meter))
+
+    assert (meter.call_snapshot()[0]["status"], meter.call_snapshot()[0]["attempt"]) == ("failed", 3)
 
 
 def test_meter_records_role_unit_prompt_size_usage_duration_and_status():

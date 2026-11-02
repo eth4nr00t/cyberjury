@@ -3,4 +3,7 @@
 from evals.cli import main
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except ValueError as exc:
+        raise SystemExit(f"error: {exc}") from None

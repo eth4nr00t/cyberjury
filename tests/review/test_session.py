@@ -1,6 +1,7 @@
 """Review session tests cover logical identity, attempts, and where each stage writes its artifacts."""
 
 import json
+import shutil
 from dataclasses import replace
 
 import pytest
@@ -180,3 +181,17 @@ def test_an_attempt_runs_until_its_terminal_record_is_written(tmp_path):
     _finish(attempt)
 
     assert attempt.workspace.read_record().status == "ok"
+
+
+def test_a_locator_naming_a_deleted_review_session_requires_a_fresh_start(tmp_path):
+    """A deleted repository review makes the next reusing run fail with a --fresh hint instead of recreating it."""
+    intent = ReviewIntent(target=TargetInput(kind="repository", repository=str(tmp_path)))
+    state = tmp_path.parent / f"{tmp_path.name}-state"
+    session = ReviewSession.select_active(state, intent, reuse=True)
+    _finish(_start(session, _request()))
+    shutil.rmtree(session.workspace.path)
+
+    with pytest.raises(SessionConflictError, match="no longer exists, start again with --fresh"):
+        ReviewSession.select_active(state, intent, reuse=True)
+
+    assert not session.workspace.path.exists()

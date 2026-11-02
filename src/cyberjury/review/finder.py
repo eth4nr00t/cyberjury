@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from typing import Protocol
 
 from cyberjury.providers.base import Provider, ProviderAccessError, ResponseSchema
 from cyberjury.review.context import (
     EvidencePromptContext,
+    GroundingContext,
     SourceEvidence,
     SourceSpan,
     cited_source_spans,
@@ -94,13 +96,20 @@ def findings_from_reply(
     return findings
 
 
+class SystemRenderer(Protocol):
+    """Render a target's finder system contract from the shared kernel, rubric, and navigation contract."""
+
+    def __call__(self, *, security_kernel: str, severity_rubric: str, navigation: str) -> str:
+        """Return the system prompt every unit of one run shares."""
+
+
 @dataclass(frozen=True, kw_only=True)
 class ReviewTarget[U: ReviewUnit]:
     """What differs between review targets around the shared finder judgment."""
 
     role: str
     response_schema: ResponseSchema
-    system: Callable[..., str]
+    system: SystemRenderer
     findings_from_reply: Callable[[U, RoleReply], list[Finding]]
     locate: Callable[[U, Finding, tuple[SourceEvidence, ...], tuple[SourceSpan, ...]], Finding | None]
     location_failure: str
@@ -135,9 +144,11 @@ class UnitFinder[U: ReviewUnit]:
     def review_unit(self, unit: U) -> ReviewCycle:
         """Judge one grounded unit, keep only located findings, and bind their source operations and cited spans."""
         grounding = unit.grounding
+        if grounding is None:
+            raise ValueError(f"review unit {unit.id} was not grounded before review")
         navigation = grounding.navigator.session() if grounding.navigator is not None else None
         try:
-            judgment = self._judge(unit, navigation)
+            judgment = self._judge(unit, grounding, navigation)
         except ProviderAccessError:
             raise
         except Exception as exc:
@@ -168,7 +179,9 @@ class UnitFinder[U: ReviewUnit]:
             ],
         )
 
-    def _judge(self, unit: U, navigation: SourceNavigationSession | None) -> EvidenceJudgment:
+    def _judge(
+        self, unit: U, grounding: GroundingContext, navigation: SourceNavigationSession | None
+    ) -> EvidenceJudgment:
         target = self._target
 
         def ask(prompt_context: EvidencePromptContext) -> RoleReply:
@@ -185,7 +198,7 @@ class UnitFinder[U: ReviewUnit]:
             return parse_role_response(result.text, role=target.role, response_schema=target.response_schema)
 
         return run_evidence_judgment(
-            unit.grounding,
+            grounding,
             ask=ask,
             findings_from_reply=lambda reply: target.findings_from_reply(unit, reply),
             target_chars=_EXECUTION.target_evidence_request_chars,

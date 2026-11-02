@@ -262,3 +262,41 @@ def test_grouping_never_drops_a_finding():
     )
     assert [len(issue.members) for issue in issues] == [5, 2]
     assert issues[0].linked_by == ("judgment", "location")
+
+
+@pytest.mark.parametrize(
+    ("write_models", "line", "message"),
+    [
+        (False, 12, "source of models.py is unavailable for the issue link judgment"),
+        (True, 99, "models.py:99 is outside its source"),
+    ],
+)
+def test_a_pair_whose_source_cannot_be_shown_fails_without_asking_the_judge(tmp_path, write_models, line, message):
+    """A missing models.py or a line past its end records the pair error, asks no judge, and writes no item."""
+    _source(tmp_path, "views.py")
+    if write_models:
+        _source(tmp_path, "models.py")
+    view = _finding("view", file="views.py", line=5, cites=[("models.py", 10, 99), GATE])
+    model = _finding("model", file="models.py", line=line, cites=[GATE])
+    judge = StubIssueJudge()
+
+    links = _link([view, model], judge, tmp_path)
+
+    assert (links.links, links.judged, judge.pairs) == ((), 0, [])
+    assert message in links.errors[0]
+    assert not (tmp_path / "review" / "link" / "items").exists()
+
+
+def test_a_blank_rationale_fails_the_judgment_and_is_asked_again_on_resume(tmp_path):
+    """A same_fix reply with a whitespace rationale links nothing, records a failed item, and is re-asked later."""
+    findings = list(_linked_pair(tmp_path))
+    store = ItemStore(tmp_path / "review", "link")
+    provider = MockProvider(default=json.dumps({"same_fix": True, "rationale": "   "}))
+    judge = ModelIssueJudge(provider=provider, model="mock", seat_id="seat-test")
+
+    failed = _link(findings, judge, tmp_path, store=store)
+    _link(findings, judge, tmp_path, store=store)
+
+    assert failed.links == ()
+    assert "issue link reply requires a nonempty rationale" in failed.errors[0]
+    assert len(provider.calls) == 2

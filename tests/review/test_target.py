@@ -127,3 +127,26 @@ def test_repository_target_requires_a_real_nonsymlink_directory(tmp_path):
     assert resolve_repository_target(repository).repository_root == str(repository.resolve())
     with pytest.raises(TargetResolutionError, match="symlink"):
         resolve_repository_target(link)
+
+
+def test_three_dot_target_rejects_a_range_with_more_than_one_merge_base(tmp_path):
+    """Criss-cross merges give left...right two merge bases, so the range is rejected instead of picking one."""
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    git(repository, "init", "--quiet", "--initial-branch=main")
+    (repository / "base.txt").write_text("base\n")
+    git(repository, "add", ".")
+    git(repository, "commit", "--quiet", "-m", "base")
+    for branch in ("left", "right"):
+        git(repository, "checkout", "--quiet", "-b", branch, "main")
+        (repository / f"{branch}.txt").write_text(f"{branch}\n")
+        git(repository, "add", ".")
+        git(repository, "commit", "--quiet", "-m", branch)
+    left, right = git(repository, "rev-parse", "left"), git(repository, "rev-parse", "right")
+    git(repository, "checkout", "--quiet", "left")
+    git(repository, "merge", "--quiet", "--no-ff", "-m", "merge right", right)
+    git(repository, "checkout", "--quiet", "right")
+    git(repository, "merge", "--quiet", "--no-ff", "-m", "merge left", left)
+
+    with pytest.raises(TargetResolutionError, match="exactly one merge base"):
+        resolve_diff_target(repository, "left...right")

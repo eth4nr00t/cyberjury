@@ -11,6 +11,20 @@ REQUEST_TIMEOUT_SECONDS = 240.0
 class ProviderAccessError(RuntimeError):
     """The provider rejected the credentials, the permission, or the model of a request, so no retry can succeed."""
 
+    def __init__(self, message: str, *, attempts: int = 1) -> None:
+        """Keep the rejection message and the attempts spent before the rejection."""
+        super().__init__(message)
+        self.attempts = attempts
+
+
+class ProviderCallError(RuntimeError):
+    """A provider call that still failed on its last attempt, with the number of attempts it took."""
+
+    def __init__(self, message: str, *, attempts: int) -> None:
+        """Keep the failure message and the attempts spent before giving up."""
+        super().__init__(message)
+        self.attempts = attempts
+
 
 @dataclass(frozen=True, kw_only=True)
 class Usage:
@@ -20,6 +34,11 @@ class Usage:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+
+
+def token_count(value: object) -> int:
+    """Read one SDK usage counter as an integer, treating a missing or non-numeric value as zero."""
+    return int(value) if isinstance(value, (int, float)) else 0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -54,4 +73,4 @@ class Provider(ABC):
         cache_prefix: str = "",
         cache_segments: tuple[str, ...] = (),
     ) -> CompletionResult:
-        """Return one completion of the user prompt under the closed response schema."""
+        """Complete a prompt that starts with cache_prefix and then each cache segment, under the response schema."""

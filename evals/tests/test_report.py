@@ -78,16 +78,13 @@ def test_report_sums_cost_from_model_call_receipts(tmp_path, cases, write_attemp
     assert "    initial_judgment finder: requests 1, failed 0, input tokens 12" in text
 
 
-def test_report_fails_failed_attempts_and_precision_below_the_floor(tmp_path, cases, write_attempt, write_ledger):
-    """One failed attempt and precision 50% under a 60% floor produce two failures."""
+def test_report_fails_a_run_with_a_failed_attempt(tmp_path, cases, write_attempt, write_ledger):
+    """One failed attempt beside an adjudicated one produces one failure."""
     runs = tmp_path / "runs"
     write_ledger(write_attempt(runs, 1, (A, B)), {A: _CREDIT, B: ("not_actionable", ())})
     write_attempt(runs, 2, (), complete=False)
 
-    assert failures(summarize(cases, runs), precision_floor=0.6) == [
-        "1 failed attempts",
-        "report precision 50% is below the floor 60%",
-    ]
+    assert failures(summarize(cases, runs)) == ["1 failed attempt"]
 
 
 def test_report_withholds_precision_and_fails_while_work_is_open(tmp_path, cases, write_attempt, write_ledger):
@@ -100,9 +97,9 @@ def test_report_withholds_precision_and_fails_while_work_is_open(tmp_path, cases
 
     assert summary.precision is None
     assert len(summary.unadjudicated) == 1
-    assert failures(summary, precision_floor=0.9) == [
-        "1 attempts without a ledger",
-        "1 reports still needing source assessment",
+    assert failures(summary) == [
+        "1 attempt without a ledger",
+        "1 report still needing source assessment",
     ]
 
 
@@ -112,6 +109,4 @@ def test_report_fails_a_run_that_mixes_rubrics(tmp_path, cases, write_attempt, w
     write_ledger(write_attempt(runs, 1, (A,)), {A: _CREDIT}, rubric_sha256="e" * 64)
     write_ledger(write_attempt(runs, 2, (A,)), {A: _CREDIT}, round_id="round-" + "1" * 16)
 
-    assert failures(summarize(cases, runs), precision_floor=0) == [
-        "run mixes ledgers adjudicated under different rubrics"
-    ]
+    assert failures(summarize(cases, runs)) == ["run mixes ledgers adjudicated under different rubrics"]

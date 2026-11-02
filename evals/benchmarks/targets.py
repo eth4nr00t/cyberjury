@@ -33,7 +33,7 @@ def git_target_root(target: Mapping[str, str]) -> Path:
 
 @contextmanager
 def source_root(target: Mapping[str, str]) -> Iterator[Path]:
-    """Check out the exact source commit of a Git target."""
+    """Yield a temporary detached worktree at the exact source commit of a Git target, removed on exit."""
     root = git_target_root(target)
     temporary = Path(tempfile.mkdtemp(prefix="cyberjury-eval-target-"))
     try:

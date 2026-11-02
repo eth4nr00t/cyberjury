@@ -44,7 +44,7 @@ class GroundingCoverage:
 
     @property
     def complete(self) -> bool:
-        """Require every evidence need to be resolved, while fact limitations stay advisory."""
+        """Report whether every evidence need is resolved, while fact limitations stay advisory."""
         return not self.unresolved
 
     @property

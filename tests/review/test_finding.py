@@ -75,7 +75,7 @@ def test_candidate_id_hashes_the_target_identity_of_the_finding():
         category="missing-authorization",
         entrypoint="POST /export",
         anchor=("app/v.py", 9, "old"),
-        root_cause="Unscoped account export",
+        title="Unscoped account export",
         source_operation_id="call-account-export",
     )
     assert repository.candidate_id == candidate_identity(
@@ -85,6 +85,6 @@ def test_candidate_id_hashes_the_target_identity_of_the_finding():
         category="missing-authorization",
         entrypoint="POST /export",
         anchor=None,
-        root_cause="Unscoped account export",
+        title="Unscoped account export",
         source_operation_id="",
     )

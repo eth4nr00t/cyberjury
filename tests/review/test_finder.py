@@ -344,3 +344,13 @@ def test_finder_call_records_semantic_response_failures():
     call = meter.call_snapshot()[0]
     assert call["status"] == "failed"
     assert "$response.findings[0] is missing fields" in call["failure_reason"]
+
+
+def test_an_ungrounded_unit_is_rejected_before_any_model_call():
+    """A unit with no grounding raises a not grounded error and the provider is never called."""
+    provider = MockProvider(responses=[repository.finder_reply()])
+
+    with pytest.raises(ValueError, match="was not grounded"):
+        repository.finder(provider).review_unit(_unit("u", None))
+
+    assert provider.calls == []

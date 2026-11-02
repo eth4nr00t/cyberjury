@@ -70,7 +70,7 @@ class ReviewSession:
         reuse: bool,
     ) -> ReviewSession:
         """Select the active repository review or publish a new one."""
-        review_id, created = SessionLocator.open(root).select_with_state(intent.intent_sha256, reuse=reuse)
+        review_id, created = SessionLocator.open(root).select_or_create(intent.intent_sha256, reuse=reuse)
         if created:
             return cls.open(root, intent, review_id=review_id)
         return cls.open_existing(root, intent, review_id=review_id)

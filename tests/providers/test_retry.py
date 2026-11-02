@@ -5,7 +5,14 @@ from typing import ClassVar
 
 import pytest
 
-from cyberjury.providers.base import CompletionResult, Provider, ProviderAccessError, ResponseSchema, Usage
+from cyberjury.providers.base import (
+    CompletionResult,
+    Provider,
+    ProviderAccessError,
+    ProviderCallError,
+    ResponseSchema,
+    Usage,
+)
 from cyberjury.providers.retry import EmptyResponseError, RetryProvider
 
 _OK = '{"value":"ok"}'
@@ -54,12 +61,14 @@ def test_retries_then_succeeds():
 
 
 def test_reraises_after_exhausting_attempts():
-    """Five failures with max_attempts=3 re-raise the RuntimeError tagged with cyberjury_attempts=3."""
-    inner = _FailsThenReplies(fail_times=5, exc=RuntimeError("transient"))
+    """Five failures with max_attempts=3 raise ProviderCallError naming RuntimeError with 3 attempts and its cause."""
+    error = RuntimeError("transient")
+    inner = _FailsThenReplies(fail_times=5, exc=error)
     provider = _retry(inner, max_attempts=3, sleep=lambda _: None)
-    with pytest.raises(RuntimeError, match="transient") as caught:
+    with pytest.raises(ProviderCallError, match="RuntimeError: transient") as caught:
         _call(provider)
-    assert caught.value.cyberjury_attempts == 3
+    assert caught.value.attempts == 3
+    assert caught.value.__cause__ is error
     assert inner.calls == 3
 
 
@@ -82,11 +91,12 @@ def test_retries_blank_body_then_succeeds():
 
 
 def test_raises_when_body_blank_every_attempt():
-    """Empty text on all three attempts raises EmptyResponseError after exactly three calls."""
+    """Empty text on all three attempts raises EmptyResponseError with 3 attempts after exactly three calls."""
     inner = _Blank(blank_times=5)
     provider = _retry(inner, max_attempts=3, sleep=lambda _: None)
-    with pytest.raises(EmptyResponseError):
+    with pytest.raises(EmptyResponseError) as caught:
         _call(provider)
+    assert caught.value.attempts == 3
     assert inner.calls == 3
 
 
@@ -239,12 +249,13 @@ class _Hang(Provider):
 
 
 def test_hard_timeout_aborts_a_hung_call():
-    """A call blocked past the 0.2 second hard_timeout raises TimeoutError after one attempt."""
+    """A call blocked past the 0.2 second hard_timeout fails with a TimeoutError cause after one attempt."""
     inner = _Hang()
     provider = _retry(inner, max_attempts=1, hard_timeout=0.2, sleep=lambda _: None)
     try:
-        with pytest.raises(TimeoutError):
+        with pytest.raises(ProviderCallError) as caught:
             _call(provider)
+        assert isinstance(caught.value.__cause__, TimeoutError)
         assert inner.calls == 1
     finally:
         inner.release.set()
@@ -276,10 +287,11 @@ def test_hard_timeout_retries_then_recovers():
     assert inner.calls == 2
 
 
-def test_a_rejected_key_is_not_retried():
-    """A 401 response raises ProviderAccessError after one call and never sleeps."""
+@pytest.mark.parametrize("status", [401, 403, 404])
+def test_a_rejected_key_permission_or_model_is_not_retried(status):
+    """A 401, 403, or 404 response raises ProviderAccessError after one call and never sleeps."""
     exc = RuntimeError("invalid x-api-key")
-    exc.status_code = 401
+    exc.status_code = status
     slept = []
     inner = _FailsThenReplies(fail_times=5, exc=exc)
 
@@ -287,3 +299,21 @@ def test_a_rejected_key_is_not_retried():
         _call(_retry(inner, max_attempts=3, sleep=slept.append))
 
     assert (inner.calls, slept) == (1, [])
+
+
+def test_a_rejection_after_a_transient_failure_counts_both_attempts():
+    """A transient failure followed by a 401 raises ProviderAccessError with attempts 2."""
+    rejected = RuntimeError("invalid x-api-key")
+    rejected.status_code = 401
+
+    class _TransientThenRejected(Provider):
+        def __init__(self):
+            self.failures = [RuntimeError("transient"), rejected]
+
+        def complete(self, **_kwargs):
+            raise self.failures.pop(0)
+
+    with pytest.raises(ProviderAccessError) as caught:
+        _call(_retry(_TransientThenRejected(), max_attempts=3, sleep=lambda _delay: None))
+
+    assert caught.value.attempts == 2

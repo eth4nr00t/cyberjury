@@ -31,7 +31,7 @@ def decodes_as_utf8(data: bytes) -> bool:
 
 
 def select_files(root: str | Path, files: Sequence[str], detection: Detection) -> FileSelection:
-    """Keep every readable non-noise text file for review and record the ones that cannot be read."""
+    """Select readable source, documentation, and dependency files, and record skipped or empty sources."""
     base = Path(root)
     sources: list[str] = []
     documentation: list[str] = []

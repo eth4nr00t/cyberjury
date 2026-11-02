@@ -29,7 +29,7 @@ class FactLimitation:
 
     @property
     def message(self) -> str:
-        """Render the limitation for prompts and operator diagnostics."""
+        """Render the limitation for the finder prompt."""
         location = f" at {self.line}:{self.column}" if self.line is not None and self.column is not None else ""
         return f"{self.source}{location}: {self.analyzer} {self.reason}"
 

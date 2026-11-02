@@ -64,7 +64,7 @@ class ReviewOutcome:
 
     @property
     def complete(self) -> bool:
-        """Require every unit to finish clean."""
+        """Report whether every unit finished clean."""
         return not self.failures
 
 

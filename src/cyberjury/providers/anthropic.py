@@ -10,6 +10,7 @@ from cyberjury.providers.base import (
     Provider,
     ResponseSchema,
     Usage,
+    token_count,
 )
 
 DEFAULT_BASE_URL = "https://api.anthropic.com"
@@ -81,15 +82,11 @@ def _usage(response: Any) -> Usage:
     if u is None:
         return Usage()
     return Usage(
-        input_tokens=_int(getattr(u, "input_tokens", None)),
-        output_tokens=_int(getattr(u, "output_tokens", None)),
-        cache_read_tokens=_int(getattr(u, "cache_read_input_tokens", None)),
-        cache_write_tokens=_int(getattr(u, "cache_creation_input_tokens", None)),
+        input_tokens=token_count(getattr(u, "input_tokens", None)),
+        output_tokens=token_count(getattr(u, "output_tokens", None)),
+        cache_read_tokens=token_count(getattr(u, "cache_read_input_tokens", None)),
+        cache_write_tokens=token_count(getattr(u, "cache_creation_input_tokens", None)),
     )
-
-
-def _int(value: Any) -> int:
-    return int(value) if isinstance(value, (int, float)) else 0
 
 
 def _extract_text(response: Any) -> str:

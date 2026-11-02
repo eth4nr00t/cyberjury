@@ -1,4 +1,4 @@
-"""Product tests run without the developer's model seat and SDK credential environment."""
+"""Tests run without the developer's model seat and SDK credential environment."""
 
 import os
 

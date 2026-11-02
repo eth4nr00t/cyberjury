@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import queue
 import random
 import threading
@@ -15,6 +14,7 @@ from cyberjury.providers.base import (
     CompletionResult,
     Provider,
     ProviderAccessError,
+    ProviderCallError,
     ResponseSchema,
     Usage,
 )
@@ -24,7 +24,7 @@ _MAX_DELAY_SECONDS = 60.0
 _ACCESS_STATUS_CODES = frozenset({401, 403, 404})
 
 
-class EmptyResponseError(RuntimeError):
+class EmptyResponseError(ProviderCallError):
     """The provider's final attempt returned a blank body."""
 
 
@@ -125,7 +125,7 @@ class RetryProvider(Provider):
         cache_prefix: str = "",
         cache_segments: tuple[str, ...] = (),
     ) -> CompletionResult:
-        """Retry transient failures and blank or incomplete replies, and return usage summed over every attempt."""
+        """Retry failures other than an access rejection and blank or unparsable replies, summing attempt usage."""
         usage = Usage()
         for attempt in range(1, self._max_attempts + 1):
             try:
@@ -143,11 +143,9 @@ class RetryProvider(Provider):
                 )
             except Exception as exc:
                 if getattr(exc, "status_code", None) in _ACCESS_STATUS_CODES:
-                    raise ProviderAccessError(f"provider rejected the request: {exc}") from exc
+                    raise ProviderAccessError(f"provider rejected the request: {exc}", attempts=attempt) from exc
                 if attempt == self._max_attempts:
-                    with contextlib.suppress(Exception):
-                        exc.cyberjury_attempts = attempt
-                    raise
+                    raise ProviderCallError(f"{type(exc).__name__}: {exc}", attempts=attempt) from exc
                 self._sleep(self._backoff(exc, attempt))
                 continue
             usage = _add_usage(usage, result.usage)
@@ -157,7 +155,5 @@ class RetryProvider(Provider):
             if complete or (last and not blank):
                 return replace(result, usage=usage, attempts=attempt)
             if last:
-                error = EmptyResponseError("provider returned a blank response after all attempts")
-                error.cyberjury_attempts = attempt
-                raise error
+                raise EmptyResponseError("provider returned a blank response after all attempts", attempts=attempt)
             self._sleep(_BASE_DELAY_SECONDS * attempt)

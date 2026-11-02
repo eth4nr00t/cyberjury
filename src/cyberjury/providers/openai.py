@@ -11,6 +11,7 @@ from cyberjury.providers.base import (
     Provider,
     ResponseSchema,
     Usage,
+    token_count,
 )
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -79,15 +80,11 @@ def _usage(response: Any) -> Usage:
     if u is None:
         return Usage()
     details = getattr(u, "input_tokens_details", None)
-    cached = _int(getattr(details, "cached_tokens", None))
-    written = _int(getattr(details, "cache_write_tokens", None))
+    cached = token_count(getattr(details, "cached_tokens", None))
+    written = token_count(getattr(details, "cache_write_tokens", None))
     return Usage(
-        input_tokens=max(_int(getattr(u, "input_tokens", None)) - cached - written, 0),
-        output_tokens=_int(getattr(u, "output_tokens", None)),
+        input_tokens=max(token_count(getattr(u, "input_tokens", None)) - cached - written, 0),
+        output_tokens=token_count(getattr(u, "output_tokens", None)),
         cache_read_tokens=cached,
         cache_write_tokens=written,
     )
-
-
-def _int(value: Any) -> int:
-    return int(value) if isinstance(value, (int, float)) else 0

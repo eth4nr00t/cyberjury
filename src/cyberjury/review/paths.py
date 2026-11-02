@@ -36,7 +36,7 @@ def resolve_source_path(root: str | Path, rel: str) -> Path | None:
 
 
 def is_unsafe_rel(rel: str) -> bool:
-    """Reject empty, absolute, and parent traversing finding locations."""
+    """Report whether a finding location is empty, absolute, or traverses a parent directory."""
     if not rel:
         return True
     p = Path(rel)

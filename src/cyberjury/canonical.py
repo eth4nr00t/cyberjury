@@ -17,5 +17,5 @@ def canonical_sha256(value: object) -> str:
 
 
 def text_sha256(value: str) -> str:
-    """Hash one exact text value."""
+    """Hash the UTF-8 encoding of one exact text value."""
     return hashlib.sha256(value.encode()).hexdigest()

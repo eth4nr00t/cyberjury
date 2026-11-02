@@ -42,6 +42,39 @@ class AnalyzerConfigurationError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class LangSpec:
+    """One language grammar and its graph queries."""
+
+    name: str
+    extensions: tuple[str, ...]
+    module: str
+    accessor: str
+    definitions: str
+    type_definitions: str
+    calls: str
+    imports: tuple[ImportQuery, ...]
+    namespace_imports: tuple[str, ...] = ()
+    qualified_uses: str = ""
+    structural_relationships: tuple[StructuralQuery, ...] = ()
+
+
+@dataclass(frozen=True)
+class ImportQuery:
+    """One declarative import query and its optional remote literal."""
+
+    query: str
+    imported: str = ""
+
+
+@dataclass(frozen=True)
+class StructuralQuery:
+    """One declarative non-call relationship query."""
+
+    kind: StructuralRelationKind
+    query: str
+
+
+@dataclass(frozen=True)
 class AnalyzedDefinition:
     """One syntax definition and its unresolved call names."""
 
@@ -75,39 +108,6 @@ class AnalyzedOwner:
     name: str
     start: int
     end: int
-
-
-@dataclass(frozen=True)
-class LangSpec:
-    """One language grammar and its graph queries."""
-
-    name: str
-    extensions: tuple[str, ...]
-    module: str
-    accessor: str
-    definitions: str
-    type_definitions: str
-    calls: str
-    imports: tuple[ImportQuery, ...]
-    namespace_imports: tuple[str, ...] = ()
-    qualified_uses: str = ""
-    structural_relationships: tuple[StructuralQuery, ...] = ()
-
-
-@dataclass(frozen=True)
-class ImportQuery:
-    """One declarative import query and its optional remote literal."""
-
-    query: str
-    imported: str = ""
-
-
-@dataclass(frozen=True)
-class StructuralQuery:
-    """One declarative non-call relationship query."""
-
-    kind: StructuralRelationKind
-    query: str
 
 
 @dataclass(frozen=True)

@@ -10,7 +10,7 @@ from threading import Lock
 from time import perf_counter
 
 from cyberjury.canonical import canonical_sha256
-from cyberjury.providers.base import CompletionResult, Provider, ResponseSchema
+from cyberjury.providers.base import CompletionResult, Provider, ProviderAccessError, ProviderCallError, ResponseSchema
 
 MODEL_CALLS_SCHEMA = "cyberjury.model-calls/v1"
 
@@ -90,7 +90,7 @@ class UsageMeter:
             return [dict(record) for record in self.calls]
 
     def document(self) -> dict[str, object]:
-        """Return the strict attempt artifact for every model call."""
+        """Return the hashed model-calls artifact of every recorded call and the usage totals derived from them."""
         records = self.call_snapshot()
         calls = [{"sequence": index, **record} for index, record in enumerate(records, 1)]
         semantic: dict[str, object] = {"calls": calls, "usage": usage_from_calls(records)}
@@ -156,7 +156,7 @@ class MeteringProvider(Provider):
             )
         except Exception as exc:
             record.update(
-                attempt=getattr(exc, "cyberjury_attempts", 1),
+                attempt=exc.attempts if isinstance(exc, (ProviderAccessError, ProviderCallError)) else 1,
                 status="failed",
                 failure_reason=f"{type(exc).__name__}: {exc}",
             )

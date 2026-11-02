@@ -13,8 +13,7 @@ from cyberjury.review.finding import Finding
 from cyberjury.review.replies import RoleReply
 
 
-def findings_from_reply(unit: DiffUnit, reply: RoleReply) -> list[Finding]:
-    """Map the shared finding fields and request a correction for a change anchor outside the unit's changes."""
+def _findings_from_reply(unit: DiffUnit, reply: RoleReply) -> list[Finding]:
     return finder.findings_from_reply(
         reply, lambda item, index: _change_anchor_correction(item["change_anchor"], index, unit.line_ranges)
     )
@@ -85,7 +84,7 @@ DIFF_TARGET = ReviewTarget[DiffUnit](
     role="diff finder",
     response_schema=FINDER_RESPONSE_SCHEMA,
     system=diff_finder_system,
-    findings_from_reply=findings_from_reply,
+    findings_from_reply=_findings_from_reply,
     locate=locate,
     location_failure="one or more findings lack a current unit location receipt or exact change anchor",
     covers_all_files=False,

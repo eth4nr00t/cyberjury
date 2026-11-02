@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-import cyberjury.sources.snapshot as snapshotmod
+from cyberjury.sources import snapshot as snapshot_module
 from cyberjury.sources.paths import SourceSnapshotError
 from cyberjury.sources.snapshot import SourceSnapshot, source_snapshot_files
 from tests.support import git
@@ -215,7 +215,22 @@ def test_materialize_copies_exact_bytes_modes_and_relative_symlinks(tmp_path):
 def test_snapshot_fails_loud_above_the_source_byte_limits(monkeypatch, tmp_path, limit, message):
     """A 10-byte app.py over a 1-byte file or tree limit raises SourceSnapshotError naming that limit."""
     (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
-    monkeypatch.setattr(snapshotmod, limit, 1)
+    monkeypatch.setattr(snapshot_module, limit, 1)
 
     with pytest.raises(SourceSnapshotError, match=message):
         SourceSnapshot.capture(tmp_path, ("app.py",))
+
+
+def test_scope_drift_is_reported_only_for_a_source_error(tmp_path):
+    """A scope provider raising SourceSnapshotError means drift, while any other error propagates unchanged."""
+    (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
+
+    def unreadable():
+        raise SourceSnapshotError("Git work tree is unreadable")
+
+    def broken():
+        raise KeyError("listing bug")
+
+    assert SourceSnapshot.capture(tmp_path, ("app.py",), scope_provider=unreadable).matches() is False
+    with pytest.raises(KeyError, match="listing bug"):
+        SourceSnapshot.capture(tmp_path, ("app.py",), scope_provider=broken).matches()

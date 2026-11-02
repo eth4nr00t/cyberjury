@@ -13,9 +13,11 @@ EMPTY_SCHEMA = ResponseSchema(
 
 
 def git(cwd: Path, *args: str) -> str:
-    """Run one git command with a fixed test identity and return its trimmed output."""
+    """Run one git command with a fixed test identity and no user or system Git configuration, and return its output."""
     env = {
         **os.environ,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_AUTHOR_NAME": "Test",
         "GIT_AUTHOR_EMAIL": "test@example.com",
         "GIT_COMMITTER_NAME": "Test",

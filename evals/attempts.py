@@ -144,14 +144,14 @@ def recorded_attempt(case: BenchmarkCase, directory: Path, number: int, *, error
     }
 
 
-def _require_case_source(case: BenchmarkCase, directory: Path, source_revision: str) -> None:
+def _require_case_source(case: BenchmarkCase, directory: Path, snapshot_id: str) -> None:
     session = directory.resolve().parent.parent
     if directory.resolve().parent.name != "attempts":
         raise ValueError(f"{directory} is not a review attempt directory inside its review session")
     target, snapshot = read_json(session / "target" / "target.json"), read_json(session / "source" / "snapshot.json")
     if not isinstance(target, dict) or target.get("kind") != case.kind:
         raise ValueError(f"{session} is not a {case.kind} review session")
-    if not isinstance(snapshot, dict) or snapshot.get("snapshot_id") != source_revision:
+    if not isinstance(snapshot, dict) or snapshot.get("snapshot_id") != snapshot_id:
         raise ValueError(f"{session} source/snapshot.json does not identify the reviewed source of {directory}")
     if case.kind == "diff":
         git = target.get("git") if isinstance(target.get("git"), dict) else {}
@@ -164,7 +164,7 @@ def _require_case_source(case: BenchmarkCase, directory: Path, source_revision: 
         return
     with source_root(case.target) as root:
         expected = capture_source_snapshot(root)
-    if expected.snapshot_id == source_revision:
+    if expected.snapshot_id == snapshot_id:
         return
     wanted = {entry.path: entry.to_dict() for entry in expected.entries}
     reviewed = {entry["path"]: entry for entry in snapshot["files"]}

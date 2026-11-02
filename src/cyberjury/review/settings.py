@@ -49,6 +49,9 @@ class ReviewExecutionSettings:
     max_source_query_target_chars: int = 24_000
     max_initial_candidate_source_chars: int = 4_000
     max_syntax_hint_chars_per_file: int = 1_200
+    max_call_expression_chars: int = 120
+    max_callee_calls_listed: int = 12
+    max_definition_preview_lines: int = 3
     max_reviewed_source_bytes: int = 400_000
 
 

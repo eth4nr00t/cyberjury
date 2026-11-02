@@ -2,6 +2,7 @@
 
 import fcntl
 import json
+import os
 import stat
 
 import pytest
@@ -105,40 +106,51 @@ def test_locator_reuses_active_session_and_can_publish_a_new_one(tmp_path):
     locator = SessionLocator.open(tmp_path)
     key = "3" * 64
 
-    first, created = locator.select_with_state(key, reuse=True)
-    reused, reused_created = locator.select_with_state(key, reuse=True)
-    second, _ = locator.select_with_state(key, reuse=False)
+    first, created = locator.select_or_create(key, reuse=True)
+    reused, reused_created = locator.select_or_create(key, reuse=True)
+    second, _ = locator.select_or_create(key, reuse=False)
 
     assert created is True
     assert reused_created is False
     assert reused == first
     assert second != first
-    assert locator.select_with_state(key, reuse=True) == (second, False)
+    assert locator.select_or_create(key, reuse=True) == (second, False)
 
 
 def test_locator_session_id_must_name_a_review_session(tmp_path):
     """A locator entry rewritten to a fetch- session id raises WorkspaceCorruptionError."""
     locator = SessionLocator.open(tmp_path)
     key = "c" * 64
-    locator.select_with_state(key, reuse=True)
+    locator.select_or_create(key, reuse=True)
     path = locator.path / f"{key}.json"
     value = json.loads(path.read_text())
     value["session_id"] = "fetch-20260101-000000-" + "d" * 8
     path.write_text(json.dumps(value))
 
     with pytest.raises(WorkspaceCorruptionError, match="identity"):
-        locator.select_with_state(key, reuse=True)
+        locator.select_or_create(key, reuse=True)
 
 
 def test_existing_state_root_permissions_are_not_changed(tmp_path):
     """A pre-existing 0755 state directory keeps its mode while the created reviews namespace is 0700."""
     root = tmp_path / "shared"
-    root.mkdir(mode=0o755)
+    root.mkdir()
+    os.chmod(root, 0o755)
 
     SessionWorkspace.open_or_create(root, session_id="review-20260101-000000-" + "4" * 8)
 
     assert stat.S_IMODE(root.stat().st_mode) == 0o755
     assert stat.S_IMODE((root / "reviews").stat().st_mode) == 0o700
+
+
+def test_an_existing_reviews_namespace_open_to_other_users_is_rejected(tmp_path):
+    """A pre-existing 0755 reviews namespace raises a permissions error instead of holding review data."""
+    root = tmp_path / "state"
+    (root / "reviews").mkdir(parents=True)
+    os.chmod(root / "reviews", 0o755)
+
+    with pytest.raises(WorkspacePathError, match="permissions are too broad"):
+        SessionWorkspace.open_or_create(root, session_id="review-20260101-000000-" + "6" * 8)
 
 
 def _symlinked_state_dir(tmp_path):

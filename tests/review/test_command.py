@@ -14,11 +14,11 @@ from types import SimpleNamespace
 
 import pytest
 
-import cyberjury.review.command as commandmod
 from cyberjury.envfile import load_env_file
-from cyberjury.providers import configuration as provider_configuration_module
+from cyberjury.providers import configuration as configuration_module
 from cyberjury.providers.base import ProviderAccessError
 from cyberjury.record import STAGES, Record
+from cyberjury.review import command as command_module
 from cyberjury.review.command import ReviewCommand, attempt_output, classify_error, run_review_command
 from cyberjury.review.recorder import TERMINATED
 from cyberjury.review.request import TargetInput
@@ -30,7 +30,7 @@ from tests.support import MockProvider, git
 
 @pytest.fixture(autouse=True)
 def _no_env_file(monkeypatch):
-    monkeypatch.setattr(commandmod, "load_env_file", lambda: None)
+    monkeypatch.setattr(command_module, "load_env_file", lambda: None)
 
 
 @pytest.fixture(autouse=True)
@@ -111,7 +111,7 @@ def _stub_review(*, incomplete: str = "", seen: dict | None = None):
 
 def _scripted_provider(monkeypatch, default: str = EMPTY_REPLY) -> None:
     monkeypatch.setenv("CYBERJURY_API_KEY", "k")
-    monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(default=default))
+    monkeypatch.setattr(configuration_module, "make_provider", lambda *a, **k: MockProvider(default=default))
 
 
 def _seed_source(repository: Path) -> Path:
@@ -292,7 +292,7 @@ def test_the_state_directory_comes_from_the_environment_or_the_user_data_directo
     monkeypatch, diff_target, tmp_path, variables, expected
 ):
     """The session goes under CYBERJURY_STATE_DIR, else $XDG_DATA_HOME/cyberjury, else ~/.local/share/cyberjury."""
-    monkeypatch.setattr(commandmod, "run_review", _stub_review())
+    monkeypatch.setattr(command_module, "run_review", _stub_review())
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     for name, value in variables.items():
@@ -319,7 +319,7 @@ def test_a_state_directory_inside_the_repository_is_rejected_before_it_is_create
 
 def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, diff_target, tmp_path):
     """A diff review checks out its revision exactly once and deletes that checkout afterwards."""
-    original = commandmod.materialize_diff_target
+    original = command_module.materialize_diff_target
     roots = []
 
     @contextlib.contextmanager
@@ -328,7 +328,7 @@ def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, d
             roots.append(root)
             yield root
 
-    monkeypatch.setattr(commandmod, "materialize_diff_target", counted)
+    monkeypatch.setattr(command_module, "materialize_diff_target", counted)
 
     assert _review(diff_target.target, tmp_path / "state").record.status == "ok"
     assert len(roots) == 1
@@ -338,7 +338,7 @@ def test_diff_review_materializes_the_revision_once_and_closes_it(monkeypatch, d
 def test_a_dangling_symlink_outside_the_change_does_not_fail_a_diff_review(monkeypatch, tmp_path):
     """A committed test/tool link to an untracked build output leaves the review ok with app.py as its one unit."""
     seen = {}
-    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
+    monkeypatch.setattr(command_module, "run_review", _stub_review(seen=seen))
     repo = tmp_path / "repo"
     (repo / "test").mkdir(parents=True)
     git(repo, "init", "--quiet")
@@ -386,7 +386,7 @@ def test_hunkless_diff_sections_are_listed_as_skipped_files(tmp_path):
 def test_review_diff_grounds_its_unit_and_runs_at_the_default_concurrency(monkeypatch, diff_target, tmp_path):
     """The single diff unit carries +x = 1 and a.py source, and the review runs at concurrency 8."""
     seen = {}
-    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
+    monkeypatch.setattr(command_module, "run_review", _stub_review(seen=seen))
 
     assert _review(diff_target.target, tmp_path / "state").record.status == "ok"
 
@@ -410,7 +410,9 @@ def test_review_diff_empty_git_range_is_ok(diff_target, tmp_path):
 
 def test_an_incomplete_review_makes_the_attempt_incomplete_with_its_reason(monkeypatch, diff_target, tmp_path):
     """An incomplete review stage makes the attempt incomplete with that stage's reason."""
-    monkeypatch.setattr(commandmod, "run_review", _stub_review(incomplete="review unit 1/1 failed for a.py: blocked"))
+    monkeypatch.setattr(
+        command_module, "run_review", _stub_review(incomplete="review unit 1/1 failed for a.py: blocked")
+    )
     state = tmp_path / "state"
 
     attempt = _records(_review(diff_target.target, state).out)[-1]
@@ -440,7 +442,7 @@ def test_a_provider_that_rejects_access_fails_the_review_with_a_config_error(tmp
     def reject(_system, _prompt):
         raise ProviderAccessError("provider rejected the request: invalid x-api-key")
 
-    monkeypatch.setattr(provider_configuration_module, "make_provider", lambda *a, **k: MockProvider(responder=reject))
+    monkeypatch.setattr(configuration_module, "make_provider", lambda *a, **k: MockProvider(responder=reject))
 
     run = _review(_repository(_flask_repository(tmp_path / "svc")), tmp_path / "state")
 
@@ -509,14 +511,14 @@ def test_review_repository_grounds_units_with_syntax_facts(tmp_path):
 def test_a_review_whose_live_source_changes_keeps_its_result_and_says_so(tmp_path, monkeypatch):
     """Editing app.py after the review finishes marks the attempt source_changed but keeps it ok."""
     repository = _flask_repository(tmp_path / "svc")
-    original = commandmod.run_review
+    original = command_module.run_review
 
     def review_then_edit(*args, **kwargs):
         result = original(*args, **kwargs)
         (repository / "app.py").write_text("changed = True\n", encoding="utf-8")
         return result
 
-    monkeypatch.setattr(commandmod, "run_review", review_then_edit)
+    monkeypatch.setattr(command_module, "run_review", review_then_edit)
 
     attempt = _records(_review(_repository(repository), tmp_path / "state").out)[-1]
 
@@ -528,7 +530,7 @@ def test_a_review_whose_live_source_changes_keeps_its_result_and_says_so(tmp_pat
 def test_repository_review_concurrency_comes_from_the_environment(monkeypatch, tmp_path, concurrency, expected):
     """Repository concurrency is 8 when CYBERJURY_CONCURRENCY is unset and 4 when it is 4."""
     seen = {}
-    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
+    monkeypatch.setattr(command_module, "run_review", _stub_review(seen=seen))
     if concurrency is not None:
         monkeypatch.setenv("CYBERJURY_CONCURRENCY", concurrency)
 
@@ -543,7 +545,7 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
     seen = {}
     monkeypatch.setenv("CYBERJURY_API_KEY", "secret-canary")
     monkeypatch.setenv("CYBERJURY_CONCURRENCY", "5")
-    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
+    monkeypatch.setattr(command_module, "run_review", _stub_review(seen=seen))
     state = tmp_path / "state"
 
     assert _review(diff_target.target, state).record.status == "ok"
@@ -561,7 +563,7 @@ def test_diff_observable_request_matches_engine_options(monkeypatch, diff_target
 
 def test_the_review_reads_its_seat_from_the_working_directory_env(monkeypatch, diff_target, tmp_path):
     """The provider, model, and key in ./.env select an anthropic seat running model-from-env."""
-    monkeypatch.setattr(commandmod, "load_env_file", load_env_file)
+    monkeypatch.setattr(command_module, "load_env_file", load_env_file)
     project = tmp_path / "project"
     project.mkdir()
     (project / ".env").write_text(
@@ -573,7 +575,7 @@ def test_the_review_reads_its_seat_from_the_working_directory_env(monkeypatch, d
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
     seen = {}
-    monkeypatch.setattr(commandmod, "run_review", _stub_review(seen=seen))
+    monkeypatch.setattr(command_module, "run_review", _stub_review(seen=seen))
 
     run = _review(diff_target.target, tmp_path / "state")
 
@@ -660,7 +662,7 @@ def test_repository_reruns_share_review_with_distinct_attempts(tmp_path):
 @pytest.mark.parametrize("scope", ["diff", "repository"])
 def test_every_stage_record_lists_the_artifacts_it_wrote(monkeypatch, tmp_path, scope):
     """Each stage artifact a record lists exists under the review directory and carries its schema."""
-    monkeypatch.setattr(commandmod, "run_review", _stub_review())
+    monkeypatch.setattr(command_module, "run_review", _stub_review())
     change = _git_change(tmp_path / "repo", {}, {"app.py": "source\n"})
     state = tmp_path / "state"
 
@@ -719,7 +721,7 @@ def test_a_repository_edited_before_resuming_fails_the_source_stage_with_a_fresh
 
 def test_diff_runs_get_independent_review_sessions(monkeypatch, diff_target, tmp_path):
     """Two identical diff runs create two review directories with the same target and snapshot hashes."""
-    monkeypatch.setattr(commandmod, "run_review", _stub_review())
+    monkeypatch.setattr(command_module, "run_review", _stub_review())
 
     assert _review(diff_target.target, tmp_path).record.status == "ok"
     assert _review(diff_target.target, tmp_path).record.status == "ok"
@@ -734,7 +736,7 @@ def test_diff_runs_get_independent_review_sessions(monkeypatch, diff_target, tmp
 
 def test_repository_configuration_change_requires_fresh(monkeypatch, tmp_path):
     """Changing CYBERJURY_MODEL between runs fails the session stage citing --fresh, which then starts a new review."""
-    monkeypatch.setattr(commandmod, "run_review", _stub_review())
+    monkeypatch.setattr(command_module, "run_review", _stub_review())
     target = _repository(_seed_source(tmp_path / "repo"))
     state = tmp_path / "state"
 
@@ -757,7 +759,7 @@ def _terminate(*_args, **_kwargs):
 
 def test_a_terminated_review_keeps_its_model_calls_and_ends_interrupted(monkeypatch, diff_target, tmp_path):
     """A SIGTERM during the review keeps model-calls.json and records the attempt interrupted by SIGTERM."""
-    monkeypatch.setattr(commandmod, "run_review", _terminate)
+    monkeypatch.setattr(command_module, "run_review", _terminate)
     state = tmp_path / "state"
 
     run = _review(diff_target.target, state)
@@ -773,7 +775,7 @@ def test_a_review_terminated_during_source_capture_ends_the_source_stage_interru
     monkeypatch, diff_target, tmp_path
 ):
     """A SIGTERM while the contract receipt is captured records the source stage and the attempt interrupted."""
-    monkeypatch.setattr(commandmod.ContractReceipt, "capture", _terminate)
+    monkeypatch.setattr(command_module.ContractReceipt, "capture", _terminate)
 
     records = _records(_review(diff_target.target, tmp_path / "state").out)
 
@@ -783,12 +785,12 @@ def test_a_review_terminated_during_source_capture_ends_the_source_stage_interru
 
 def test_model_call_persistence_failure_marks_the_attempt_failed(monkeypatch, diff_target, tmp_path):
     """When writing model-calls.json raises, record.json carries a failed status and an internal error."""
-    monkeypatch.setattr(commandmod, "run_review", _stub_review())
+    monkeypatch.setattr(command_module, "run_review", _stub_review())
 
     def fail_write(_attempt, _document):
         raise RuntimeError("model call artifact failed")
 
-    monkeypatch.setattr(commandmod.ReviewAttempt, "write_model_calls", fail_write)
+    monkeypatch.setattr(command_module.ReviewAttempt, "write_model_calls", fail_write)
     state = tmp_path / "state"
 
     _review(diff_target.target, state)

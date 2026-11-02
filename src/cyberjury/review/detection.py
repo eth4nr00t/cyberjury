@@ -17,11 +17,24 @@ from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
 _EXECUTION = DEFAULT_REVIEW_SETTINGS.execution
 _ATTRIBUTES = ("linguist-vendored", "linguist-documentation")
+_FIELDS = frozenset(
+    {
+        "asset_extensions",
+        "dependency_dirs",
+        "doc_extensions",
+        "ignored_dirs",
+        "lockfiles",
+        "test_dirs",
+        "test_name_patterns",
+        "translation_dirs",
+        "translation_extensions",
+    }
+)
 
 
 @dataclass(frozen=True)
 class Detection:
-    """File classification rules loaded from the review contract."""
+    """Review contract file classification rules plus the target's .gitattributes rules and oversized files."""
 
     ignored_dirs: frozenset[str]
     dependency_dirs: frozenset[str]
@@ -93,6 +106,9 @@ class Detection:
 def load_detection() -> Detection:
     """Load the language-neutral classification rules joined with every language's file conventions."""
     data = yaml.safe_load(DETECTION_FILE.read_text(encoding="utf-8"))
+    unknown = sorted(set(data) - _FIELDS)
+    if unknown:
+        raise ValueError(f"detection rules contain unknown fields: {', '.join(unknown)}")
     languages = load_languages().values()
 
     def joined(key: str) -> tuple[str, ...]:

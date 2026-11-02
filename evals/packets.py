@@ -7,57 +7,39 @@ import json
 import secrets
 import string
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from evals.adjudication import EVAL_LEDGER_SCHEMA, adjudicate
-from evals.attempts import Attempt, collect_attempts, find_attempts, load_attempt, read_json, unique_attempts
+from evals.attempts import Attempt, collect_attempts, load_attempt, read_json
 from evals.benchmarks.cases import BenchmarkCase, checks_sha256, expected_checks
 from evals.benchmarks.targets import source_root, target_repository
-from evals.benchmarks.validate import validate_document
+from evals.schemas import validate_document
 
 RUBRIC = Path(__file__).resolve().parent / "adjudication-rubric-v1.md"
 _PROVENANCE = frozenset({"id", "evidence_refs", "issue_id", "unit_complete"})
 _INDEX = ("label", "run", "file", "line", "title")
 
 
+@dataclass(frozen=True, kw_only=True)
+class PacketRound:
+    """What one packet build wrote: its counts, round identity, and private mapping."""
+
+    cases: int
+    attempts: int
+    skipped: int
+    reports: int
+    round_id: str
+    mapping: Path
+
+
 def _report(finding: dict) -> dict:
     return {key: value for key, value in finding.items() if key not in _PROVENANCE}
 
 
-def default_mapping_path(out: Path) -> Path:
+def mapping_file(out: Path) -> Path:
     """Return the private mapping location beside, never inside, an adjudicator directory."""
     return out.parent / f"{out.name}.private" / "mapping.json"
-
-
-def _reference_attempts(references: Sequence[Path]) -> list[Attempt]:
-    attempts: list[Attempt] = []
-    for reference in references:
-        if not reference.is_file():
-            attempts.extend(find_attempts(reference))
-            continue
-        mapping = read_json(reference)
-        if not isinstance(mapping, dict) or not isinstance(mapping.get("attempts"), dict):
-            raise ValueError(f"reference {reference} is neither a runs directory nor a packets mapping")
-        attempts.extend(load_attempt(path) for path in mapping["attempts"])
-    return unique_attempts(attempts)
-
-
-def _references(case: BenchmarkCase, attempts: Sequence[Attempt]) -> list[dict]:
-    references = []
-    for attempt in attempts:
-        if attempt.case != case.name or not attempt.ledger_path.is_file():
-            continue
-        ledger = read_json(attempt.ledger_path)
-        try:
-            adjudicate(case, attempt, ledger, None)
-        except ValueError as exc:
-            raise ValueError(f"reference ledger {attempt.ledger_path} cannot be used: {exc}") from exc
-        references.extend(
-            _report(attempt.findings[record["candidate_id"]])
-            | {"verdict": record["verdict"], "check_ids": record["check_ids"], "reason": record["reason"]}
-            for record in ledger["records"]
-        )
-    return references
 
 
 def build_packets(
@@ -67,22 +49,17 @@ def build_packets(
     *,
     groups: int,
     max_reports: int | None = None,
-    mapping_path: Path | None = None,
-    references: Sequence[Path] = (),
-) -> dict[str, object]:
+) -> PacketRound:
     """Write anonymized packets for every complete attempt under the runs directories."""
-    mapping_path = mapping_path or default_mapping_path(out)
-    if mapping_path.resolve().is_relative_to(out.resolve()):
-        raise ValueError("the private mapping must be written outside the adjudicator packet directory")
+    mapping_path = mapping_file(out)
     attempts = collect_attempts(runs)
     complete = [attempt for attempt in attempts if attempt.complete]
-    prior = _reference_attempts(references)
     by_case: dict[str, list[Attempt]] = {}
     for attempt in complete:
         if attempt.case not in cases:
             raise ValueError(f"{attempt.path} names an unknown case {attempt.case!r}")
         by_case.setdefault(attempt.case, []).append(attempt)
-    entries, labels, reference_counts = [], {}, {}
+    entries, labels = [], {}
     for name, case_attempts in sorted(by_case.items()):
         case = cases[name]
         ordered = sorted(case_attempts, key=lambda attempt: attempt.sha256)
@@ -102,9 +79,6 @@ def build_packets(
         }
         if "base" in case.target:
             entry["base"] = case.target["base"]
-        if references:
-            entry["reference_decisions"] = _references(case, prior)
-            reference_counts[name] = len(entry["reference_decisions"])
         size = max_reports or len(reports) or 1
         located = sorted(reports, key=lambda report: (report["file"], report["line"]))
         chunks = [located[start : start + size] for start in range(0, len(located), size)] or [[]]
@@ -133,31 +107,39 @@ def build_packets(
         (out / f"packet-{group + 1}.json").write_text(
             json.dumps(entries[group::groups], indent=1, ensure_ascii=False), encoding="utf-8"
         )
-    return {
-        "cases": len(by_case),
-        "attempts": len(complete),
-        "skipped": len(attempts) - len(complete),
-        "reports": len(labels),
-        "round_id": mapping["round_id"],
-        "mapping": str(mapping_path),
-        "references": reference_counts if references else None,
-        "reference_attempts_without_ledger": sum(not attempt.ledger_path.is_file() for attempt in prior),
-    }
+    return PacketRound(
+        cases=len(by_case),
+        attempts=len(complete),
+        skipped=len(attempts) - len(complete),
+        reports=len(labels),
+        round_id=mapping["round_id"],
+        mapping=mapping_path,
+    )
 
 
 def write_ledgers(
     cases: dict[str, BenchmarkCase],
     packets: Path,
     *,
-    mapping_path: Path | None = None,
     supersede: bool = False,
 ) -> tuple[int, list[str]]:
-    """Convert adjudicator results into ledgers, writing each one only after it validates."""
-    mapping = read_json(mapping_path or default_mapping_path(packets))
+    """Validate every ledger, then remove other-round ledgers of these attempts and write only the valid ones."""
+    mapping = read_json(mapping_file(packets))
     rubric_sha256 = hashlib.sha256(RUBRIC.read_bytes()).hexdigest()
     if rubric_sha256 != mapping["rubric_sha256"]:
         raise ValueError("the adjudication rubric changed after these packets were built")
-    round_id = mapping["round_id"]
+    results = _read_results(packets, mapping["labels"])
+    ledgers = _build_ledgers(cases, mapping, results, rubric_sha256)
+    stale = _ledgers_of_other_rounds(ledgers, mapping["round_id"], supersede=supersede)
+    valid, failures = _validate_ledgers(cases, ledgers)
+    for path in stale:
+        path.unlink()
+    for attempt, ledger in valid:
+        attempt.ledger_path.write_text(json.dumps(ledger, indent=1, ensure_ascii=False), encoding="utf-8")
+    return len(valid), failures
+
+
+def _read_results(packets: Path, labels: dict) -> dict[str, dict]:
     results: dict[str, dict] = {}
     for path in sorted(packets.glob("result-*.json")):
         result = read_json(path)
@@ -167,10 +149,16 @@ def write_ledgers(
                 if record["label"] in results:
                     raise ValueError(f"report {record['label']} is assessed twice")
                 results[record["label"]] = record | {"case": entry["case"]}
-    labels = mapping["labels"]
     if set(results) != set(labels):
         missing, unknown = sorted(set(labels) - set(results)), sorted(set(results) - set(labels))
         raise ValueError(f"adjudicator results must cover every label once, missing {missing}, unknown {unknown}")
+    return results
+
+
+def _build_ledgers(
+    cases: dict[str, BenchmarkCase], mapping: dict, results: dict[str, dict], rubric_sha256: str
+) -> list[tuple[Attempt, dict]]:
+    labels = mapping["labels"]
     by_attempt: dict[str, list[str]] = {path: [] for path in mapping["attempts"]}
     for label, where in labels.items():
         by_attempt[where["attempt"]].append(label)
@@ -185,12 +173,12 @@ def write_ledgers(
         if digest != mapping["checks_sha256"].get(attempt.case):
             raise ValueError(f"the checks of {attempt.case} changed after these packets were built")
         ledger = _ledger(attempt, cases[attempt.case].target["commit"], by_attempt[path], labels, results)
-        ledgers.append(
-            (
-                attempt,
-                ledger | {"round_id": round_id, "rubric_sha256": rubric_sha256, "checks_sha256": digest},
-            )
-        )
+        bound = {"round_id": mapping["round_id"], "rubric_sha256": rubric_sha256, "checks_sha256": digest}
+        ledgers.append((attempt, ledger | bound))
+    return ledgers
+
+
+def _ledgers_of_other_rounds(ledgers: list[tuple[Attempt, dict]], round_id: str, *, supersede: bool) -> list[Path]:
     stale = [
         attempt.ledger_path for attempt, _ in ledgers if _ledger_round(attempt.ledger_path) not in {None, round_id}
     ]
@@ -199,9 +187,13 @@ def write_ledgers(
             f"{len(stale)} attempts already have a ledger from another adjudication round, for example {stale[0]}, "
             "pass --supersede to replace every ledger of this round's attempts"
         )
-    for path in stale:
-        path.unlink()
-    written, failures = 0, []
+    return stale
+
+
+def _validate_ledgers(
+    cases: dict[str, BenchmarkCase], ledgers: list[tuple[Attempt, dict]]
+) -> tuple[list[tuple[Attempt, dict]], list[str]]:
+    valid, failures = [], []
     for name in sorted({attempt.case for attempt, _ in ledgers}):
         case = cases[name]
         with source_root(case.target) as root:
@@ -213,9 +205,8 @@ def write_ledgers(
                 except ValueError as exc:
                     failures.append(f"{attempt.path}: {exc}")
                     continue
-                attempt.ledger_path.write_text(json.dumps(ledger, indent=1, ensure_ascii=False), encoding="utf-8")
-                written += 1
-    return written, failures
+                valid.append((attempt, ledger))
+    return valid, failures
 
 
 def _ledger_round(path: Path) -> str | None:

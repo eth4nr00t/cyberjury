@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import replace
 
 import pytest
 
 from cyberjury.providers import configuration as configuration_module
 from cyberjury.record import Record
-from cyberjury.review import command as commandmod
+from cyberjury.review import command as command_module
 from evals import diff
 from evals.benchmarks.contract import ChangeAnchor
 from tests.support import MockProvider
@@ -28,10 +27,7 @@ def _run(cases, state_dir, **values):
 @pytest.fixture
 def scripted_model(monkeypatch):
     """Serve every product seat from one scripted provider, with no environment file or real key."""
-    for name in list(os.environ):
-        if name.startswith(("CYBERJURY_", "ANTHROPIC_", "OPENAI_")):
-            monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(commandmod, "load_env_file", lambda: None)
+    monkeypatch.setattr(command_module, "load_env_file", lambda: None)
     monkeypatch.setenv("CYBERJURY_API_KEY", "k")
 
     def install(findings=(), *, error: BaseException | None = None) -> MockProvider:

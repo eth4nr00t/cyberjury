@@ -51,7 +51,7 @@ class Finding:
 
     @property
     def candidate_id(self) -> str:
-        """Return one violation identity from its location, class, entrypoint, anchors, and root cause."""
+        """Return one violation identity from its location, class, entrypoint, anchors, and title."""
         anchor = self.change_anchor
         return candidate_identity(
             target="diff" if anchor is not None else "repository",
@@ -60,7 +60,7 @@ class Finding:
             category=self.category,
             entrypoint=self.entrypoint,
             anchor=(anchor.file, anchor.line, anchor.side) if anchor is not None else None,
-            root_cause=self.title,
+            title=self.title,
             source_operation_id=self.source_operation_id,
         )
 

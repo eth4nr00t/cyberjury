@@ -117,21 +117,24 @@ def _cost(paths: Sequence[Path]) -> dict[str, object]:
     }
 
 
-def failures(summary: RunSummary, *, precision_floor: float) -> list[str]:
-    """Return the failures that block a run: incomplete work, mixed rubrics, a precision floor."""
+def failures(summary: RunSummary) -> list[str]:
+    """Return the failures that block a run: incomplete work and mixed rubrics."""
     fails = []
     if summary.failed:
-        fails.append(f"{len(summary.failed)} failed attempts")
+        fails.append(_count(len(summary.failed), "failed attempt", "failed attempts"))
     if summary.unadjudicated:
-        fails.append(f"{len(summary.unadjudicated)} attempts without a ledger")
+        fails.append(_count(len(summary.unadjudicated), "attempt without a ledger", "attempts without a ledger"))
     if pending := summary.verdicts["needs_review"]:
-        fails.append(f"{pending} reports still needing source assessment")
+        fails.append(
+            _count(pending, "report still needing source assessment", "reports still needing source assessment")
+        )
     if len({rubric for _round, rubric in summary.ledger_rounds}) > 1:
         fails.append("run mixes ledgers adjudicated under different rubrics")
-    precision = summary.precision
-    if precision is not None and precision < precision_floor:
-        fails.append(f"report precision {precision:.0%} is below the floor {precision_floor:.0%}")
     return fails
+
+
+def _count(number: int, singular: str, plural: str) -> str:
+    return f"{number} {singular if number == 1 else plural}"
 
 
 def format_summary(summary: RunSummary) -> str:

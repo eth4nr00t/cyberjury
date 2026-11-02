@@ -23,6 +23,9 @@ from cyberjury.review.relationships import (
     RelationshipEvidenceBundle,
     SourceReference,
 )
+from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
+
+_EXECUTION = DEFAULT_REVIEW_SETTINGS.execution
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -89,13 +92,15 @@ class _CallListing:
         line, _ = self.sources.lines(callsite.source, f"candidate call source {callsite.id}")
         callee_start, callee_end = self.sources.lines(callee.source, f"candidate call source {callee.id}")
         expression = " ".join(callsite.expression.split())
-        expression = expression if len(expression) <= 120 else expression[:117] + "..."
+        limit = _EXECUTION.max_call_expression_chars
+        expression = expression if len(expression) <= limit else expression[: limit - 3] + "..."
         text = (
             f"  - {inline_source(expression)} at {one_line_source(callsite.source.path)}:{line}, candidate callee "
             f"{one_line_source(callee.source.path)}:{one_line_source(callee.name)} lines "
             f"{callee_start}-{callee_end}, {receipt}"
         )
-        callee_calls = tuple(dict.fromkeys(self.calls_by_definition.get(callee.id, ())))[:12]
+        calls = tuple(dict.fromkeys(self.calls_by_definition.get(callee.id, ())))
+        callee_calls = calls[: _EXECUTION.max_callee_calls_listed]
         if callee_calls:
             text += f", candidate callee calls: {', '.join(_inline_code(call) for call in callee_calls)}"
         return text
@@ -290,6 +295,6 @@ def _definition_preview(source: str) -> str:
         preview = " ".join(parts)
         if len(preview) >= MAX_PREVIEW_CHARS or line.endswith(":") or "{" in line or line.endswith(";"):
             break
-        if len(parts) == 3:
+        if len(parts) == _EXECUTION.max_definition_preview_lines:
             break
     return " ".join(parts)[:MAX_PREVIEW_CHARS]

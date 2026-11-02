@@ -1,4 +1,4 @@
-"""Deterministic source and patch bytes acquired from committed Git objects."""
+"""Git queries, work tree listings, and deterministic source and patch bytes from committed objects."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import tempfile
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 from cyberjury.sources.paths import (
     MAX_SOURCE_FILE_BYTES,
@@ -96,7 +97,7 @@ def resolve_root(repository: str | Path) -> Path:
 
 
 def object_format(repository: str | Path) -> str:
-    """Return the repository object format."""
+    """Return sha1 or sha256, the object format of the repository, and reject any other format."""
     value = _git(repository, "rev-parse", "--show-object-format").strip()
     if value not in {"sha1", "sha256"}:
         raise GitSourceError(f"unsupported Git object format: {value}")
@@ -244,44 +245,16 @@ def _write_git_blobs(repository: str, blobs: tuple[_GitBlob, ...], source_root: 
     with process:
         try:
             for blob in blobs:
-                process.stdin.write(blob.object_id.encode("ascii") + b"\n")
-                process.stdin.flush()
-                header = process.stdout.readline().decode("ascii").strip().split(" ")
-                if len(header) != 3 or header[0] != blob.object_id or header[1] != "blob":
-                    raise GitSourceError(f"Git object is not the expected blob for {blob.path!r}")
-                try:
-                    size = int(header[2])
-                except ValueError as exc:
-                    raise GitSourceError(f"Git blob size is invalid for {blob.path!r}") from exc
-                if size > MAX_SOURCE_FILE_BYTES:
-                    raise GitSourceError(f"Git blob exceeds the byte limit: {blob.path!r}")
+                size = _request_blob(process, blob)
                 total_bytes += size
                 if total_bytes > MAX_SOURCE_TREE_BYTES:
                     raise GitSourceError("Git tree exceeds the total byte limit")
                 path = source_root / blob.path
                 path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 if blob.mode == "120000":
-                    if size > _MAX_GIT_SYMLINK_BYTES:
-                        raise GitSourceError(f"Git symlink target exceeds the byte limit: {blob.path!r}")
-                    content = process.stdout.read(size)
-                    if len(content) != size:
-                        raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
-                    try:
-                        link_target = content.decode("utf-8")
-                    except UnicodeError:
-                        link_target = ""
-                    if safe_link_target(link_target):
-                        path.symlink_to(link_target)
+                    _write_symlink(process.stdout, blob, size, path)
                 else:
-                    remaining = size
-                    with path.open("xb") as stream:
-                        while remaining:
-                            chunk = process.stdout.read(min(READ_CHUNK_BYTES, remaining))
-                            if not chunk:
-                                raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
-                            stream.write(chunk)
-                            remaining -= len(chunk)
-                    path.chmod(0o755 if blob.mode == "100755" else 0o644)
+                    _write_file(process.stdout, blob, size, path)
                 if process.stdout.read(1) != b"\n":
                     raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
             process.stdin.close()
@@ -290,6 +263,47 @@ def _write_git_blobs(repository: str, blobs: tuple[_GitBlob, ...], source_root: 
         except BaseException:
             process.kill()
             raise
+
+
+def _request_blob(process: subprocess.Popen[bytes], blob: _GitBlob) -> int:
+    process.stdin.write(blob.object_id.encode("ascii") + b"\n")
+    process.stdin.flush()
+    header = process.stdout.readline().decode("ascii").strip().split(" ")
+    if len(header) != 3 or header[0] != blob.object_id or header[1] != "blob":
+        raise GitSourceError(f"Git object is not the expected blob for {blob.path!r}")
+    try:
+        size = int(header[2])
+    except ValueError as exc:
+        raise GitSourceError(f"Git blob size is invalid for {blob.path!r}") from exc
+    if size > MAX_SOURCE_FILE_BYTES:
+        raise GitSourceError(f"Git blob exceeds the byte limit: {blob.path!r}")
+    return size
+
+
+def _write_symlink(stream: IO[bytes], blob: _GitBlob, size: int, path: Path) -> None:
+    if size > _MAX_GIT_SYMLINK_BYTES:
+        raise GitSourceError(f"Git symlink target exceeds the byte limit: {blob.path!r}")
+    content = stream.read(size)
+    if len(content) != size:
+        raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
+    try:
+        link_target = content.decode("utf-8")
+    except UnicodeError:
+        link_target = ""
+    if safe_link_target(link_target):
+        path.symlink_to(link_target)
+
+
+def _write_file(stream: IO[bytes], blob: _GitBlob, size: int, path: Path) -> None:
+    remaining = size
+    with path.open("xb") as output:
+        while remaining:
+            chunk = stream.read(min(READ_CHUNK_BYTES, remaining))
+            if not chunk:
+                raise GitSourceError(f"Git blob is truncated for {blob.path!r}")
+            output.write(chunk)
+            remaining -= len(chunk)
+    path.chmod(0o755 if blob.mode == "100755" else 0o644)
 
 
 @contextlib.contextmanager

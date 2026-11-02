@@ -229,7 +229,7 @@ def strip_unreviewable_files(diff: str, detection: Detection, *, root: Path) -> 
 
 
 def pack_diff_chunks(diff: str, max_chars: int) -> list[str]:
-    """Pack file and hunk chunks in source order under a soft line boundary."""
+    """Pack file and hunk chunks in source order into batches of at most max_chars where a chunk allows it."""
     chunks = [part for chunk in split_diff_by_file(diff) for part in _split_oversized_file_chunk(chunk, max_chars)]
     batches: list[str] = []
     current: list[str] = []

@@ -92,28 +92,18 @@ def _cmd_record(args) -> int:
 
 
 def _cmd_packets(args) -> int:
-    counts = build_packets(
+    packets = build_packets(
         load_cases(args.benchmark),
         [Path(path) for path in args.runs],
         Path(args.out),
         groups=args.groups,
         max_reports=args.max_reports,
-        mapping_path=Path(args.mapping) if args.mapping else None,
-        references=[Path(path) for path in args.references],
     )
     print(
-        f"packets {args.out}: cases {counts['cases']}, complete attempts {counts['attempts']}, "
-        f"reports {counts['reports']}, skipped incomplete attempts {counts['skipped']}"
+        f"packets {args.out}: cases {packets.cases}, complete attempts {packets.attempts}, "
+        f"reports {packets.reports}, skipped incomplete attempts {packets.skipped}"
     )
-    print(f"round {counts['round_id']}, private mapping {counts['mapping']} (do not give it to adjudicators)")
-    references = counts["references"]
-    if references is not None:
-        if not any(references.values()):
-            print("references: no earlier verdicts were found for any case, so adjudicators will see empty references")
-        for name, count in references.items():
-            print(f"  references {name}: earlier verdicts {count}")
-        if counts["reference_attempts_without_ledger"]:
-            print(f"  reference attempts without a ledger {counts['reference_attempts_without_ledger']}")
+    print(f"round {packets.round_id}, private mapping {packets.mapping} (do not give it to adjudicators)")
     return 0
 
 
@@ -121,7 +111,6 @@ def _cmd_ledger(args) -> int:
     written, rejected = write_ledgers(
         load_cases(args.benchmark),
         Path(args.packets),
-        mapping_path=Path(args.mapping) if args.mapping else None,
         supersede=args.supersede,
     )
     print(f"ledgers written {written}, rejected {len(rejected)}")
@@ -132,7 +121,7 @@ def _cmd_ledger(args) -> int:
 
 def _cmd_report(args) -> int:
     summary = summarize(load_cases(args.benchmark), Path(args.runs), [Path(path) for path in args.calls])
-    fails = failures(summary, precision_floor=args.precision_floor)
+    fails = failures(summary)
     print(format_summary(summary))
     print("report PASS" if not fails else f"report FAIL, {len(fails)} blocking")
     for fail in fails:
@@ -154,10 +143,8 @@ def _cmd_validate(args) -> int:
     return 0
 
 
-def _command(sub, name: str, summary: str, **options) -> argparse.ArgumentParser:
-    return sub.add_parser(
-        name, help=summary, description=f"{summary[0].upper()}{summary[1:]}.", allow_abbrev=False, **options
-    )
+def _command(sub, name: str, summary: str) -> argparse.ArgumentParser:
+    return sub.add_parser(name, help=summary, description=f"{summary[0].upper()}{summary[1:]}.", allow_abbrev=False)
 
 
 def _add_benchmark(parser: argparse.ArgumentParser) -> None:
@@ -218,13 +205,10 @@ def main(argv: list[str] | None = None) -> int:
         "runs", metavar="runs_dir", nargs="+", help="runs directories whose attempts are packaged into one round"
     )
     packets_parser.add_argument(
-        "--out", metavar="DIR", required=True, help="directory adjudicators receive: packets and rubric only"
-    )
-    packets_parser.add_argument(
-        "--mapping",
-        metavar="FILE",
-        default=None,
-        help="new private mapping path outside --out, default <out>.private/mapping.json",
+        "--out",
+        metavar="DIR",
+        required=True,
+        help="directory adjudicators receive: packets and rubric only, with the private mapping in <out>.private",
     )
     packets_parser.add_argument(
         "--groups",
@@ -241,22 +225,11 @@ def main(argv: list[str] | None = None) -> int:
         help="maximum reports in one packet entry, splitting a larger case into entries that list each other, "
         "default no limit",
     )
-    packets_parser.add_argument(
-        "--references",
-        metavar="PATH",
-        action="append",
-        default=[],
-        help="adjudicated runs directory, or the private mapping.json of an earlier round, whose ledger verdicts "
-        "are shown to adjudicators, default no references, repeatable",
-    )
     _add_benchmark(packets_parser)
     packets_parser.set_defaults(func=_cmd_packets)
 
     ledger_parser = _command(sub, "ledger", "validate adjudicator results and write a ledger beside each attempt")
     ledger_parser.add_argument("packets", help="packets directory holding result-N.json")
-    ledger_parser.add_argument(
-        "--mapping", metavar="FILE", default=None, help="private mapping path, default <packets>.private/mapping.json"
-    )
     ledger_parser.add_argument(
         "--supersede",
         action="store_true",
@@ -273,13 +246,6 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         help="model call receipt or directory, default no cost report, repeatable",
-    )
-    report_parser.add_argument(
-        "--precision-floor",
-        metavar="RATIO",
-        type=float,
-        default=0.0,
-        help="report precision below which the run fails, supported / (supported + not_actionable), default 0",
     )
     report_parser.add_argument(
         "--json",

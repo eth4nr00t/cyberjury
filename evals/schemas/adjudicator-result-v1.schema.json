@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/eth4nr00t/cyberjury/main/evals/benchmarks/schemas/adjudicator-result-v1.schema.json",
+  "$id": "https://raw.githubusercontent.com/eth4nr00t/cyberjury/main/evals/schemas/adjudicator-result-v1.schema.json",
   "title": "Adjudicator Result Schema",
   "description": "The version 1 schema for the verdicts an adjudicator writes for one adjudication packet.",
   "type": "array",

@@ -1,5 +1,8 @@
 """Detection config data drives source, noise, and test path classification."""
 
+import pytest
+
+from cyberjury.review import detection
 from cyberjury.review.detection import detection_for, load_detection
 from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 
@@ -172,3 +175,17 @@ def test_files_over_the_size_limit_are_classified_as_oversized(tmp_path):
     )
 
     assert detection_for(tmp_path, files).oversized_files == frozenset({"bindata.go"})
+
+
+def test_a_misspelled_detection_field_is_rejected(tmp_path, monkeypatch):
+    """A test_dir field raises an unknown fields error naming it instead of being dropped."""
+    rules = tmp_path / "detection.yaml"
+    rules.write_text("test_dir: [spec]\ndoc_extensions: []\nasset_extensions: []\n", encoding="utf-8")
+    monkeypatch.setattr(detection, "DETECTION_FILE", rules)
+    load_detection.cache_clear()
+
+    try:
+        with pytest.raises(ValueError, match="unknown fields: test_dir"):
+            load_detection()
+    finally:
+        load_detection.cache_clear()

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from evals.attempts import Attempt
 from evals.benchmarks.cases import BenchmarkCase, checks_sha256
-from evals.benchmarks.validate import validate_document
+from evals.schemas import validate_document
 
 EVAL_LEDGER_SCHEMA = "cyberjury.eval-ledger/v1"
 VERDICTS = ("duplicate", "needs_review", "not_actionable", "supported")

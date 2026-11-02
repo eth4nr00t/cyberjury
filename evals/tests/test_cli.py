@@ -102,21 +102,6 @@ def test_packets_ledger_and_report_measure_one_adjudicated_run(tmp_path, capsys,
     }
 
 
-def test_packets_say_when_references_hold_no_earlier_verdicts(tmp_path, capsys, write_attempt, benchmark_project):
-    """References with an attempt but no ledger report 0 earlier verdicts and one ledgerless attempt."""
-    runs, earlier = tmp_path / "runs", tmp_path / "earlier"
-    write_attempt(runs, 1, (A,))
-    write_attempt(earlier, 1, (A,))
-    benchmark = ["--benchmark", str(benchmark_project.benchmark)]
-
-    assert main(["packets", str(runs), "--out", str(tmp_path / "out"), "--references", str(earlier), *benchmark]) == 0
-
-    output = capsys.readouterr().out
-    assert "references: no earlier verdicts were found for any case" in output
-    assert f"references {benchmark_project.diff_case}: earlier verdicts 0" in output
-    assert "reference attempts without a ledger 1" in output
-
-
 def test_record_registers_the_next_attempt_of_a_repository_case(tmp_path, monkeypatch, capsys, benchmark_project):
     """Recording a second repository review attempt numbers it attempt 2."""
 

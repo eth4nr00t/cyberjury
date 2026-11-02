@@ -100,6 +100,30 @@ class _MalformedEvidenceRequest(EvidenceRequestError):
         super().__init__(failure)
 
 
+@dataclass(kw_only=True)
+class _FindingPools:
+    committed: FindingAccumulator = field(default_factory=FindingAccumulator)
+    awaiting_evidence: FindingAccumulator = field(default_factory=FindingAccumulator)
+    uncorrected: FindingAccumulator = field(default_factory=FindingAccumulator)
+
+    def accepted(self) -> list[Finding]:
+        accepted = FindingAccumulator()
+        accepted.add(self.committed.findings)
+        accepted.add(self.awaiting_evidence.findings)
+        return accepted.findings
+
+    def retained(self) -> list[Finding]:
+        retained = FindingAccumulator()
+        retained.add(self.uncorrected.findings)
+        retained.add(self.accepted())
+        return retained.findings
+
+    def settle(self, findings: list[Finding]) -> list[Finding]:
+        self.committed.add(self.awaiting_evidence.findings)
+        self.committed.add(findings)
+        return self.committed.findings
+
+
 class _EvidenceExchange:
     def __init__(
         self,
@@ -114,9 +138,7 @@ class _EvidenceExchange:
         self.navigation = navigation
         self.findings_from_reply = findings_from_reply
         self.target_chars = target_chars
-        self.accumulator = FindingAccumulator()
-        self.provisional = FindingAccumulator()
-        self.correction_fallback = FindingAccumulator()
+        self.findings = _FindingPools()
         self.followup_budget = max_followups if navigation is not None or context.evidence else 0
         self.prompt = _with_request_budget(
             replace(context.prompt, navigation_available=navigation is not None),
@@ -136,18 +158,8 @@ class _EvidenceExchange:
         if navigation is not None:
             navigation.record_delivered(context.source_evidence, seed_spans=context.source_spans)
 
-    def _retained_findings(self) -> list[Finding]:
-        retained = FindingAccumulator()
-        retained.add(self.correction_fallback.findings)
-        retained.add(self.accumulator.findings)
-        retained.add(self.provisional.findings)
-        return retained.findings
-
     def _accepted_records(self) -> tuple[Mapping[str, object], ...]:
-        accepted = FindingAccumulator()
-        accepted.add(self.accumulator.findings)
-        accepted.add(self.provisional.findings)
-        return tuple(finding.reply_record() for finding in accepted.findings)
+        return tuple(finding.reply_record() for finding in self.findings.accepted())
 
     def _published_ids(self) -> set[str]:
         return {
@@ -166,7 +178,7 @@ class _EvidenceExchange:
         findings: list[Finding] | None = None,
     ) -> EvidenceJudgment:
         return _evidence_judgment(
-            findings=self._retained_findings() if findings is None else findings,
+            findings=self.findings.retained() if findings is None else findings,
             coverage=self.coverage,
             unresolved=unresolved,
             failure_reason=failure_reason,
@@ -187,8 +199,8 @@ class _EvidenceExchange:
             )
         except CorrectableRoleResponseError as exc:
             record_model_parse(exception_reason(exc))
-            self.accumulator.add(exc.response_findings)
-            self.correction_fallback.add(exc.fallback_findings)
+            self.findings.committed.add(exc.response_findings)
+            self.findings.uncorrected.add(exc.fallback_findings)
             raise _RejectedBatch(
                 "response",
                 f"Response correction required. {exc.instruction} {_CORRECTED_RESPONSE} "
@@ -198,7 +210,7 @@ class _EvidenceExchange:
             ) from exc
         except _MalformedEvidenceRequest as exc:
             record_model_parse(exception_reason(exc))
-            self.correction_fallback.add(exc.findings)
+            self.findings.uncorrected.add(exc.findings)
             unread = self._published_ids() - self.available_refs
             raise _RejectedBatch(
                 "unknown_evidence",
@@ -208,7 +220,7 @@ class _EvidenceExchange:
             ) from exc
         except SourceQueryLimitError as exc:
             record_model_parse(exception_reason(exc))
-            self.accumulator.add(exc.response_findings)
+            self.findings.committed.add(exc.response_findings)
             raise _RejectedBatch(
                 "query_limit",
                 f"The previous response returned {exc.count} source queries, but one batch permits "
@@ -227,7 +239,7 @@ class _EvidenceExchange:
 
     def accept(self, reply: _ParsedEvidenceReply) -> EvidenceJudgment | None:
         requested = _implicit_reference_requests(
-            list(self.provisional.findings),
+            list(self.findings.awaiting_evidence.findings),
             available=self.available_refs,
             evidence_ids={item.id for item in self.context.evidence},
             navigation=self.navigation,
@@ -257,15 +269,13 @@ class _EvidenceExchange:
                 raise _RejectedBatch(
                     "delivered_request",
                     f"These requested items are already delivered: {', '.join(repeated_requests)}. "
-                    "Cite source receipts directly. Do not request these items again. "
+                    "Cite their evidence ids directly. Do not request these items again. "
                     "Return the judgment or request different unread evidence.",
                     failure_reason="model repeated an already delivered request without a judgment",
                     unresolved=repeated_requests,
                 )
-            self.accumulator.add(self.provisional.findings)
-            self.accumulator.add(reply.findings)
-            return self.finish((), "", findings=self.accumulator.findings)
-        self.provisional.add((*reply.findings, *reply.deferred))
+            return self.finish((), "", findings=self.findings.settle(reply.findings))
+        self.findings.awaiting_evidence.add((*reply.findings, *reply.deferred))
         cited_only = [item for item in requested if item not in reply.requested]
         if self.evidence_exchanges >= self.followup_budget and cited_only == requested and not source_queries:
             return self.finish(
@@ -378,31 +388,134 @@ class _Turn:
     correction: str | None = None
 
 
-def _exchange_record(turn: _Turn, result: EvidenceJudgment | None) -> dict[str, object]:
-    if result is None:
-        outcome, stop_reason = ("correction" if turn.correction is not None else "evidence"), ""
-    elif result.failure_reason:
-        outcome, stop_reason = "stopped", result.failure_reason
-    else:
-        outcome, stop_reason = "judgment", ""
-    return {
-        "outcome": outcome,
-        "findings": turn.findings,
-        "deferred": turn.deferred,
-        "requested": turn.requested,
-        "source_queries": turn.source_queries,
-        "delivered": turn.delivered,
-        "delivered_chars": turn.delivered_chars,
-        "held": turn.held,
-        "correction": turn.correction,
-        "stop_reason": stop_reason,
-    }
+def _with_request_budget(prompt: EvidencePromptContext, remaining: int) -> EvidencePromptContext:
+    return replace(
+        prompt,
+        budget=_request_budget_instruction(remaining, navigation_available=prompt.navigation_available),
+    )
 
 
-def _exhausted_followups_reason(budget: int) -> str:
-    if budget == 0:
-        return "finder requested evidence, but this judgment has no evidence catalog or source navigation"
-    return f"finder requested evidence after {budget} follow-up{'' if budget == 1 else 's'}"
+def _request_budget_instruction(remaining: int, *, navigation_available: bool) -> str:
+    if remaining == 0:
+        return (
+            "No evidence or source request batches remain. Return the final judgment using only source "
+            "already delivered, with empty `evidence_requests` and `source_queries`. "
+            "A further request makes this judgment incomplete."
+        )
+    label = "batch remains" if remaining == 1 else "batches remain"
+    budget = f"Evidence request budget: {remaining} request {label}."
+    if not navigation_available:
+        return f"Source navigation is unavailable. Return an empty `source_queries` list. {budget}"
+    return budget
+
+
+def _evidence_judgment(
+    *,
+    findings: list[Finding],
+    coverage: GroundingCoverage,
+    source_evidence: list[SourceEvidence],
+    unresolved: tuple[str, ...],
+    failure_reason: str,
+) -> EvidenceJudgment:
+    grounding = (
+        merge_grounding_coverage((coverage, GroundingCoverage(unresolved=unresolved))) if unresolved else coverage
+    )
+    return EvidenceJudgment(
+        findings=findings,
+        grounding=grounding,
+        failure_reason=failure_reason,
+        source_evidence=tuple(source_evidence),
+    )
+
+
+def _parse_evidence_reply(
+    reply: RoleReply,
+    *,
+    findings_from_reply: Callable[[RoleReply], list[Finding]],
+    available_refs: set[str],
+    evidence_ids: set[str],
+    navigation: SourceNavigationSession | None,
+) -> _ParsedEvidenceReply:
+    findings = findings_from_reply(reply)
+    raw_requests = reply["evidence_requests"]
+    try:
+        requested_evidence_ids = evidence_request_ids(raw_requests)
+    except EvidenceRequestError as exc:
+        well_formed = tuple(item for item in raw_requests if is_evidence_id(item))
+        raise _MalformedEvidenceRequest(str(exc), tuple(findings), tuple(dict.fromkeys(well_formed))) from exc
+    repeated_evidence_requests = tuple(item for item in requested_evidence_ids if item in available_refs)
+    unread_evidence_ids = tuple(item for item in requested_evidence_ids if item not in available_refs)
+    try:
+        source_queries = parse_source_queries(reply["source_queries"])
+    except SourceQueryLimitError as exc:
+        exc.response_findings = tuple(findings)
+        raise
+    requested = _implicit_reference_requests(
+        findings,
+        available=available_refs,
+        evidence_ids=evidence_ids,
+        navigation=navigation,
+        evidence_requests=list(unread_evidence_ids),
+    )
+    accepted, deferred = _partition_evidence_bound_findings(
+        findings,
+        available=available_refs,
+        requested=set(requested),
+    )
+    return _ParsedEvidenceReply(
+        findings=accepted,
+        requested=requested,
+        source_queries=source_queries,
+        deferred=deferred,
+        repeated_evidence_requests=repeated_evidence_requests,
+    )
+
+
+def _implicit_reference_requests(
+    findings: list[Finding],
+    *,
+    available: set[str],
+    evidence_ids: set[str],
+    navigation: SourceNavigationSession | None,
+    evidence_requests: list[str],
+) -> list[str]:
+    cited: list[str] = []
+    for finding in findings:
+        for reference in finding.evidence_refs:
+            if reference in available or reference in cited:
+                continue
+            if reference in evidence_ids or (navigation is not None and navigation.can_read(reference)):
+                cited.append(reference)
+    return [*cited, *(item for item in evidence_requests if item not in cited)]
+
+
+def _partition_evidence_bound_findings(
+    findings: list[Finding],
+    *,
+    available: set[str],
+    requested: set[str],
+) -> tuple[list[Finding], list[Finding]]:
+    accepted: list[Finding] = []
+    deferred: list[Finding] = []
+    invalid: list[int] = []
+    for index, finding in enumerate(findings):
+        unknown = tuple(ref for ref in finding.evidence_refs if ref not in available)
+        if not unknown:
+            accepted.append(finding)
+        elif set(unknown).issubset(requested):
+            deferred.append(finding)
+        else:
+            invalid.append(index)
+    if invalid:
+        readable = ", ".join(sorted(available))
+        raise CorrectableRoleResponseError(
+            f"{', '.join(f'findings[{index}].evidence_refs' for index in invalid)} cite ids that are not published "
+            f"in this review. Cite only delivered ids ({readable}) or request a published catalog id before citing "
+            "it. Do not invent or alter an evidence id.",
+            response_findings=tuple(accepted),
+            fallback_findings=tuple(findings),
+        )
+    return accepted, deferred
 
 
 def _malformed_request_correction(failure: str, valid_ids: tuple[str, ...]) -> str:
@@ -418,6 +531,121 @@ def _malformed_request_correction(failure: str, valid_ids: tuple[str, ...]) -> s
         f"findings were accepted.{resubmit} Request only exact ids published in this review. Do not invent or "
         "transform ids. File paths, module names, and descriptions are not evidence ids, and source outside the "
         f"reviewed repository cannot be requested. {_CORRECTED_RESPONSE}"
+    )
+
+
+def _exhausted_followups_reason(budget: int) -> str:
+    if budget == 0:
+        return "finder requested evidence, but this judgment has no evidence catalog or source navigation"
+    return f"finder requested evidence after {budget} follow-up{'' if budget == 1 else 's'}"
+
+
+def _deliver_within_budget(
+    context: GroundingContext,
+    navigation: SourceNavigationSession | None,
+    *,
+    requested: list[str],
+    source_queries: list[dict[str, object]],
+    target_chars: int,
+) -> tuple[SourceNavigationResult, list[str], list[dict[str, object]]]:
+    capped = requested[: _EXECUTION.max_evidence_requests_per_batch]
+    for kept in range(len(capped) + len(source_queries), 0, -1):
+        kept_ids, kept_queries = capped[:kept], source_queries[: max(0, kept - len(capped))]
+        try:
+            delivered = _deliver_evidence_exchange(
+                context,
+                navigation,
+                requested=kept_ids,
+                source_queries=kept_queries,
+                target_chars=target_chars,
+            )
+        except EvidenceBudgetError:
+            if kept == 1:
+                raise
+            continue
+        return delivered, requested[len(kept_ids) :], source_queries[len(kept_queries) :]
+    raise ValueError("an evidence exchange needs at least one request")
+
+
+def _deliver_evidence_exchange(
+    context: GroundingContext,
+    navigation: SourceNavigationSession | None,
+    *,
+    requested: list[str],
+    source_queries: list[dict[str, object]],
+    target_chars: int,
+) -> SourceNavigationResult:
+    transaction = navigation.transaction() if navigation is not None else nullcontext()
+    with transaction:
+        exact = (
+            _deliver_exact_evidence(context, navigation, requested, target_chars=target_chars)
+            if requested
+            else SourceNavigationResult(text="")
+        )
+        if navigation is not None:
+            navigation.record_delivered(exact.source_evidence)
+        if source_queries and navigation is None:
+            raise SourceNavigationError("source_queries are unavailable for this judgment")
+        navigated = (
+            navigation.execute(source_queries, target_chars=target_chars)
+            if navigation is not None and source_queries
+            else SourceNavigationResult(text="")
+        )
+        navigation_blocks = [exact.text] if exact.text else []
+        if navigated.text:
+            navigation_blocks.append(navigated.text)
+        text = "\n\n".join(navigation_blocks)
+        one_indivisible_item = len(requested) + len(source_queries) == 1
+        if len(text) > target_chars and not one_indivisible_item:
+            raise EvidenceBudgetError(f"evidence exchange exceeds the {target_chars} character target")
+    coverage = merge_grounding_coverage((exact.coverage, navigated.coverage))
+    return SourceNavigationResult(
+        text=text,
+        coverage=coverage,
+        source_evidence=(*exact.source_evidence, *navigated.source_evidence),
+    )
+
+
+def _deliver_exact_evidence(
+    context: GroundingContext,
+    navigation: SourceNavigationSession | None,
+    requested: list[str],
+    *,
+    target_chars: int,
+) -> SourceNavigationResult:
+    ids = tuple(requested)
+    published_by_id = {item.id: item for item in context.evidence}
+    published_ids = tuple(item for item in ids if item in published_by_id)
+    source_ids = tuple(
+        item for item in ids if item not in published_by_id and navigation is not None and navigation.can_read(item)
+    )
+    known = {*published_ids, *source_ids}
+    unknown = tuple(item for item in ids if item not in known)
+    if unknown:
+        raise UnknownEvidenceRequest(unknown)
+
+    selected = select_evidence(context.evidence, published_ids)
+    navigated = (
+        navigation.read(list(source_ids), target_chars=target_chars)
+        if navigation is not None and source_ids
+        else SourceNavigationResult(text="")
+    )
+    selected_sources = tuple(
+        SourceEvidence(
+            id=item_id,
+            identity=published_by_id[item_id].identity,
+            text=published_by_id[item_id].text,
+            source_span=published_by_id[item_id].source_span,
+        )
+        for item_id in published_ids
+    )
+    return SourceNavigationResult(
+        text="\n\n".join(block for block in (selected.text, navigated.text) if block),
+        coverage=replace(
+            merge_grounding_coverage((selected.coverage, navigated.coverage)),
+            references=ids,
+        ),
+        source_evidence=(*selected_sources, *navigated.source_evidence),
     )
 
 
@@ -476,6 +704,21 @@ def _delivery_rejection(
     return None
 
 
+def _held_notice(
+    held_ids: list[str], held_queries: list[dict[str, object]], target_chars: int, *, rounds_left: int
+) -> str:
+    if not held_ids and not held_queries:
+        return ""
+    held = [f"`{item}`" for item in held_ids] + [json.dumps(query, sort_keys=True) for query in held_queries]
+    notice = f"\n\nNot delivered in this exchange because the batch exceeds the {target_chars} character target: "
+    if not rounds_left:
+        return f"{notice}{', '.join(held)}."
+    return (
+        f"{notice}{', '.join(held)}. Evidence cited by a finding is requested again automatically. Request the "
+        "other items in a later exchange only if they are still needed."
+    )
+
+
 def _continue_prompt(
     prompt: EvidencePromptContext,
     instruction: str,
@@ -494,25 +737,6 @@ def _continue_prompt(
     )
 
 
-def _evidence_judgment(
-    *,
-    findings: list[Finding],
-    coverage: GroundingCoverage,
-    source_evidence: list[SourceEvidence],
-    unresolved: tuple[str, ...],
-    failure_reason: str,
-) -> EvidenceJudgment:
-    grounding = (
-        merge_grounding_coverage((coverage, GroundingCoverage(unresolved=unresolved))) if unresolved else coverage
-    )
-    return EvidenceJudgment(
-        findings=findings,
-        grounding=grounding,
-        failure_reason=failure_reason,
-        source_evidence=tuple(source_evidence),
-    )
-
-
 def _accepted_instruction(accepted: tuple[Mapping[str, object], ...]) -> str:
     if not accepted:
         return ""
@@ -524,236 +748,22 @@ def _accepted_instruction(accepted: tuple[Mapping[str, object], ...]) -> str:
     )
 
 
-def _parse_evidence_reply(
-    reply: RoleReply,
-    *,
-    findings_from_reply: Callable[[RoleReply], list[Finding]],
-    available_refs: set[str],
-    evidence_ids: set[str],
-    navigation: SourceNavigationSession | None,
-) -> _ParsedEvidenceReply:
-    findings = findings_from_reply(reply)
-    raw_requests = reply["evidence_requests"]
-    try:
-        requested_evidence_ids = evidence_request_ids(raw_requests)
-    except EvidenceRequestError as exc:
-        well_formed = tuple(item for item in raw_requests if is_evidence_id(item))
-        raise _MalformedEvidenceRequest(str(exc), tuple(findings), tuple(dict.fromkeys(well_formed))) from exc
-    repeated_evidence_requests = tuple(item for item in requested_evidence_ids if item in available_refs)
-    unread_evidence_ids = tuple(item for item in requested_evidence_ids if item not in available_refs)
-    try:
-        source_queries = parse_source_queries(reply["source_queries"])
-    except SourceQueryLimitError as exc:
-        exc.response_findings = tuple(findings)
-        raise
-    requested = _implicit_reference_requests(
-        findings,
-        available=available_refs,
-        evidence_ids=evidence_ids,
-        navigation=navigation,
-        evidence_requests=list(unread_evidence_ids),
-    )
-    accepted, deferred = _partition_evidence_bound_findings(
-        findings,
-        available=available_refs,
-        requested=set(requested),
-    )
-    return _ParsedEvidenceReply(
-        findings=accepted,
-        requested=requested,
-        source_queries=source_queries,
-        deferred=deferred,
-        repeated_evidence_requests=repeated_evidence_requests,
-    )
-
-
-def _with_request_budget(prompt: EvidencePromptContext, remaining: int) -> EvidencePromptContext:
-    return replace(
-        prompt,
-        budget=_request_budget_instruction(remaining, navigation_available=prompt.navigation_available),
-    )
-
-
-def _request_budget_instruction(remaining: int, *, navigation_available: bool) -> str:
-    if remaining == 0:
-        return (
-            "No evidence or source request batches remain. Return the final judgment using only source "
-            "already delivered, with empty `evidence_requests` and `source_queries`. "
-            "A further request makes this judgment incomplete."
-        )
-    label = "batch remains" if remaining == 1 else "batches remain"
-    budget = f"Evidence request budget: {remaining} request {label}."
-    if not navigation_available:
-        return f"Source navigation is unavailable. Return an empty `source_queries` list. {budget}"
-    return budget
-
-
-def _partition_evidence_bound_findings(
-    findings: list[Finding],
-    *,
-    available: set[str],
-    requested: set[str],
-) -> tuple[list[Finding], list[Finding]]:
-    accepted: list[Finding] = []
-    deferred: list[Finding] = []
-    invalid: list[int] = []
-    for index, finding in enumerate(findings):
-        unknown = tuple(ref for ref in finding.evidence_refs if ref not in available)
-        if not unknown:
-            accepted.append(finding)
-        elif set(unknown).issubset(requested):
-            deferred.append(finding)
-        else:
-            invalid.append(index)
-    if invalid:
-        readable = ", ".join(sorted(available))
-        raise CorrectableRoleResponseError(
-            f"{', '.join(f'findings[{index}].evidence_refs' for index in invalid)} cite ids that are not published "
-            f"in this review. Cite only delivered ids ({readable}) or request a published catalog id before citing "
-            "it. Do not invent or alter an evidence id.",
-            response_findings=tuple(accepted),
-            fallback_findings=tuple(findings),
-        )
-    return accepted, deferred
-
-
-def _deliver_evidence_exchange(
-    context: GroundingContext,
-    navigation: SourceNavigationSession | None,
-    *,
-    requested: list[str],
-    source_queries: list[dict[str, object]],
-    target_chars: int,
-) -> SourceNavigationResult:
-    transaction = navigation.transaction() if navigation is not None else nullcontext()
-    with transaction:
-        exact = (
-            _deliver_exact_evidence(context, navigation, requested, target_chars=target_chars)
-            if requested
-            else SourceNavigationResult(text="")
-        )
-        if navigation is not None:
-            navigation.record_delivered(exact.source_evidence)
-        if source_queries and navigation is None:
-            raise SourceNavigationError("source_queries are unavailable for this judgment")
-        navigated = (
-            navigation.execute(source_queries, target_chars=target_chars)
-            if navigation is not None and source_queries
-            else SourceNavigationResult(text="")
-        )
-        navigation_blocks = [exact.text] if exact.text else []
-        if navigated.text:
-            navigation_blocks.append(navigated.text)
-        text = "\n\n".join(navigation_blocks)
-        one_indivisible_item = len(requested) + len(source_queries) == 1
-        if len(text) > target_chars and not one_indivisible_item:
-            raise EvidenceBudgetError(f"evidence exchange exceeds the {target_chars} character target")
-    coverage = merge_grounding_coverage((exact.coverage, navigated.coverage))
-    return SourceNavigationResult(
-        text=text,
-        coverage=coverage,
-        source_evidence=(*exact.source_evidence, *navigated.source_evidence),
-    )
-
-
-def _deliver_within_budget(
-    context: GroundingContext,
-    navigation: SourceNavigationSession | None,
-    *,
-    requested: list[str],
-    source_queries: list[dict[str, object]],
-    target_chars: int,
-) -> tuple[SourceNavigationResult, list[str], list[dict[str, object]]]:
-    capped = requested[: _EXECUTION.max_evidence_requests_per_batch]
-    for kept in range(len(capped) + len(source_queries), 0, -1):
-        kept_ids, kept_queries = capped[:kept], source_queries[: max(0, kept - len(capped))]
-        try:
-            delivered = _deliver_evidence_exchange(
-                context,
-                navigation,
-                requested=kept_ids,
-                source_queries=kept_queries,
-                target_chars=target_chars,
-            )
-        except EvidenceBudgetError:
-            if kept == 1:
-                raise
-            continue
-        return delivered, requested[len(kept_ids) :], source_queries[len(kept_queries) :]
-    raise ValueError("an evidence exchange needs at least one request")
-
-
-def _held_notice(
-    held_ids: list[str], held_queries: list[dict[str, object]], target_chars: int, *, rounds_left: int
-) -> str:
-    if not held_ids and not held_queries:
-        return ""
-    held = [f"`{item}`" for item in held_ids] + [json.dumps(query, sort_keys=True) for query in held_queries]
-    notice = f"\n\nNot delivered in this exchange because the batch exceeds the {target_chars} character target: "
-    if not rounds_left:
-        return f"{notice}{', '.join(held)}."
-    return (
-        f"{notice}{', '.join(held)}. Evidence cited by a finding is requested again automatically. Request the "
-        "other items in a later exchange only if they are still needed."
-    )
-
-
-def _deliver_exact_evidence(
-    context: GroundingContext,
-    navigation: SourceNavigationSession | None,
-    requested: list[str],
-    *,
-    target_chars: int,
-) -> SourceNavigationResult:
-    ids = tuple(requested)
-    published_by_id = {item.id: item for item in context.evidence}
-    published_ids = tuple(item for item in ids if item in published_by_id)
-    source_ids = tuple(
-        item for item in ids if item not in published_by_id and navigation is not None and navigation.can_read(item)
-    )
-    known = {*published_ids, *source_ids}
-    unknown = tuple(item for item in ids if item not in known)
-    if unknown:
-        raise UnknownEvidenceRequest(unknown)
-
-    selected = select_evidence(context.evidence, published_ids)
-    navigated = (
-        navigation.read(list(source_ids), target_chars=target_chars)
-        if navigation is not None and source_ids
-        else SourceNavigationResult(text="")
-    )
-    selected_sources = tuple(
-        SourceEvidence(
-            id=item_id,
-            identity=published_by_id[item_id].identity,
-            text=published_by_id[item_id].text,
-            source_span=published_by_id[item_id].source_span,
-        )
-        for item_id in published_ids
-    )
-    return SourceNavigationResult(
-        text="\n\n".join(block for block in (selected.text, navigated.text) if block),
-        coverage=replace(
-            merge_grounding_coverage((selected.coverage, navigated.coverage)),
-            references=ids,
-        ),
-        source_evidence=(*selected_sources, *navigated.source_evidence),
-    )
-
-
-def _implicit_reference_requests(
-    findings: list[Finding],
-    *,
-    available: set[str],
-    evidence_ids: set[str],
-    navigation: SourceNavigationSession | None,
-    evidence_requests: list[str],
-) -> list[str]:
-    cited: list[str] = []
-    for finding in findings:
-        for reference in finding.evidence_refs:
-            if reference in available or reference in cited:
-                continue
-            if reference in evidence_ids or (navigation is not None and navigation.can_read(reference)):
-                cited.append(reference)
-    return [*cited, *(item for item in evidence_requests if item not in cited)]
+def _exchange_record(turn: _Turn, result: EvidenceJudgment | None) -> dict[str, object]:
+    if result is None:
+        outcome, stop_reason = ("correction" if turn.correction is not None else "evidence"), ""
+    elif result.failure_reason:
+        outcome, stop_reason = "stopped", result.failure_reason
+    else:
+        outcome, stop_reason = "judgment", ""
+    return {
+        "outcome": outcome,
+        "findings": turn.findings,
+        "deferred": turn.deferred,
+        "requested": turn.requested,
+        "source_queries": turn.source_queries,
+        "delivered": turn.delivered,
+        "delivered_chars": turn.delivered_chars,
+        "held": turn.held,
+        "correction": turn.correction,
+        "stop_reason": stop_reason,
+    }

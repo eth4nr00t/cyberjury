@@ -185,7 +185,7 @@ def resolve_diff_target(repository: str | Path, git_range: str) -> ResolvedTarge
 
 @contextlib.contextmanager
 def materialize_diff_target(target: ResolvedTarget) -> Iterator[Path]:
-    """Adapt one resolved diff target to committed Git source acquisition."""
+    """Yield a temporary source root holding the right revision of one resolved diff target."""
     if target.git is None:
         raise TargetResolutionError("a diff target needs its resolved Git revisions")
     try:

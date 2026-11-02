@@ -240,7 +240,7 @@ class SourceSnapshot:
             return True
         try:
             return portable_paths(self._scope_provider()) == self.files
-        except Exception:
+        except SourceSnapshotError:
             return False
 
     @contextlib.contextmanager

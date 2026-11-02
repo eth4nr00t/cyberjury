@@ -29,7 +29,7 @@ class WorkspaceCorruptionError(RuntimeError):
 
 
 class WorkspacePathError(RuntimeError):
-    """A state or session directory is a symlink, not a plain directory, or readable by other users."""
+    """A state or session directory is a symlink, not a plain directory, or open to group or other users."""
 
 
 class SessionConflictError(RuntimeError):
@@ -163,8 +163,8 @@ class SessionLocator:
         """Open the atomic session locators of one state directory."""
         return cls(path=_state_directory(root, "locators", "reviews"))
 
-    def select_with_state(self, key: str, *, reuse: bool) -> tuple[str, bool]:
-        """Return the selected session and whether this call published it."""
+    def select_or_create(self, key: str, *, reuse: bool) -> tuple[str, bool]:
+        """Return the reused or newly published session and whether this call created it."""
         locator = self.path / f"{key}.json"
         directory = os.open(self.path, os.O_RDONLY)
         try:
@@ -323,7 +323,7 @@ class AttemptWorkspace(_JsonDirectory):
         return cls(path=raw_path.resolve(), attempt_id=raw_path.name)
 
     def read_record(self) -> Record:
-        """Return the attempt record."""
+        """Return the attempt record after checking that its id matches the directory."""
         record = read_record(self.path / "record.json")
         if record.id != self.attempt_id:
             raise WorkspaceCorruptionError("attempt record identity does not match its directory")

@@ -180,7 +180,7 @@ cases:
     commit: d60225cf8343490ffb6244239098f81f221401e7
     checks:
       - id: auction-clearable-guard-accounting-error
-        root_cause: The commit adds the Auctions.revertIfAuctionClearable check to removeAllQuoteToken, removeQuoteToken, and _removeCollateral (src/base/Pool.sol:148, src/base/Pool.sol:178, src/base/Pool.sol:555) but not to Pool.moveQuoteToken (src/base/Pool.sol:96), ERC20Pool.moveCollateral (src/erc20/ERC20Pool.sol:81), or ERC20Pool.removeAllCollateral (src/erc20/ERC20Pool.sol:112), so deposit and collateral leave the buckets that heal forgives before a clearable auction settles its bad debt against them
+        root_cause: Pool.moveQuoteToken (src/base/Pool.sol:96), ERC20Pool.moveCollateral (src/erc20/ERC20Pool.sol:81), and ERC20Pool.removeAllCollateral (src/erc20/ERC20Pool.sol:112) lack the Auctions.revertIfAuctionClearable check that the commit adds to removeAllQuoteToken, removeQuoteToken, and _removeCollateral (src/base/Pool.sol:148, src/base/Pool.sol:178, src/base/Pool.sol:555), so deposit and collateral leave the buckets that heal forgives before a clearable auction settles its bad debt against them
         locations:
           - {file: src/base/Pool.sol, line: 96}
           - {file: src/erc20/ERC20Pool.sol, line: 81}

@@ -27,11 +27,11 @@ def candidate_identity(
     category: str,
     entrypoint: str,
     anchor: tuple[str, int, str] | None,
-    root_cause: str,
+    title: str,
     source_operation_id: str,
 ) -> str:
-    """Identify one candidate from its location, class, entrypoint, anchors, and normalized root cause."""
-    normalized_cause = " ".join(root_cause.lower().split())
+    """Identify one candidate from its location, class, entrypoint, anchors, and normalized title."""
+    normalized_title = " ".join(title.lower().split())
     material = "\x1f".join(
         (
             "candidate-v1",
@@ -39,7 +39,7 @@ def candidate_identity(
             normalized_location_path(file),
             str(line),
             category,
-            normalized_cause,
+            normalized_title,
             " ".join(entrypoint.lower().split()),
             _anchor_text(anchor),
             source_operation_id,
