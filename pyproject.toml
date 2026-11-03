@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 authors = [{ name = "eth4nr00t" }]
-keywords = ["appsec", "code review", "llm", "security"]
+keywords = ["appsec", "code-review", "llm", "sast", "security", "vulnerability-detection"]
 classifiers = [
   "Intended Audience :: Developers",
   "Operating System :: OS Independent",
