@@ -12,7 +12,7 @@ from cyberjury.providers.metering import MeteringProvider, UsageMeter
 
 @dataclass(frozen=True, kw_only=True)
 class ProviderSeat:
-    """One resolved model seat with provider specific connection fields."""
+    """One resolved model seat with provider-specific connection fields."""
 
     provider: str
     model: str

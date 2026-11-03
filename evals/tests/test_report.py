@@ -59,7 +59,7 @@ def test_report_counts_recall_per_run_and_check_precision(
     assert "incomplete 1, without ledger 0" in text
     assert f"incomplete: {benchmark_project.diff_case} attempt 3: finder failed" in text
     document = to_json(summary)
-    assert "incomplete" in document
+    assert document["incomplete"] == [f"{benchmark_project.diff_case} attempt 3: finder failed"]
     assert f"{check} 1/2" in text
     assert "report precision 50.0% = supported 1 / (supported 1 + not_actionable 1), reports 3" in text
     assert "excluded from precision: duplicate 1, needs_review 0" in text

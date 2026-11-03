@@ -86,7 +86,7 @@ class UsageMeter:
     _lock: Lock = field(default_factory=Lock, repr=False)
 
     def call_snapshot(self) -> list[dict[str, object]]:
-        """Return per request records in completion order."""
+        """Return per-request records in completion order."""
         with self._lock:
             return [dict(record) for record in self.calls]
 

@@ -107,10 +107,9 @@ def _case_entries(case: BenchmarkCase, reports: list[dict], max_reports: int | N
         "case": case.name,
         "repository": str(target_repository(case.target)),
         "commit": case.target["commit"],
+        **({"base": case.target["base"]} if "base" in case.target else {}),
         "checks": expected_checks(case),
     }
-    if "base" in case.target:
-        entry["base"] = case.target["base"]
     size = max_reports or len(reports) or 1
     located = sorted(reports, key=lambda report: (report["file"], report["line"]))
     chunks = [located[start : start + size] for start in range(0, len(located), size)] or [[]]

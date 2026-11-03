@@ -27,7 +27,7 @@ class ContractReceipt:
 
     @classmethod
     def capture(cls) -> ContractReceipt:
-        """Hash every shipped contract file by its package relative path."""
+        """Hash every shipped contract file by its package-relative path."""
         files = tuple(
             (path.relative_to(_PACKAGE_ROOT).as_posix(), hashlib.sha256(path.read_bytes()).hexdigest())
             for path in _CONTRACT_FILES

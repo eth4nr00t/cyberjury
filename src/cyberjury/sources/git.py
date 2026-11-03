@@ -114,8 +114,16 @@ def merge_bases(repository: str | Path, left: str, right: str) -> tuple[str, ...
     return tuple(line for line in _git(repository, "merge-base", "--all", left, right).splitlines() if line)
 
 
+def inside_worktree(directory: str | Path) -> bool:
+    """Report whether a directory lies inside a Git work tree, so Git decides which of its files exist."""
+    try:
+        return _git(directory, "rev-parse", "--is-inside-work-tree").strip() == "true"
+    except GitSourceError:
+        return False
+
+
 def worktree_files(repository: str | Path) -> tuple[str, ...]:
-    """List the tracked and unignored untracked files present in one Git work tree."""
+    """List the tracked and unignored untracked files present under one directory of a Git work tree."""
     raw = _git_limited_bytes(
         repository,
         ("ls-files", "-z", "--cached", "--others", "--exclude-standard"),

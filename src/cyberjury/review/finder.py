@@ -117,7 +117,7 @@ class ReviewTarget[U: ReviewUnit]:
 
 
 class UnitFinder[U: ReviewUnit]:
-    """One provider backed finder seat bound to one target contract."""
+    """One provider-backed finder seat bound to one target contract."""
 
     def __init__(
         self,

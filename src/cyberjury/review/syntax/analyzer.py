@@ -720,7 +720,7 @@ def parse_file(path: Path, rel: str, spec: LangSpec) -> AnalyzedFile:
 
 
 def analyze_repository(sources: list[AnalyzableSource], *, progress: Callable[[int, int], None]) -> AnalyzedRepository:
-    """Analyze every reviewable source, report each analyzed file, and retain file level limitations."""
+    """Analyze every reviewable source, report each analyzed file, and retain file-level limitations."""
     definitions: list[AnalyzedDefinition] = []
     imports: dict[str, list[AnalyzedImport]] = {}
     namespaces: dict[str, list[AnalyzedNamespace]] = {}

@@ -91,7 +91,7 @@ def test_concurrency_yields_same_union_as_serial(tmp_path):
 
 
 def test_a_failed_unit_keeps_the_findings_of_the_other_units():
-    """A large diff keeps the findings of completed review units while surfacing the failed ones."""
+    """a.py fails on two non-JSON replies, b.py keeps its finding, and failure 1 of 2 names a.py."""
     finding_b = {
         "file": "b.py",
         "line": 1,

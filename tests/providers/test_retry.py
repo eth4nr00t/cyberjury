@@ -226,7 +226,7 @@ def test_retry_after_attribute_sets_the_delay_unless_it_is_not_a_number(raw, exp
 
 
 def test_a_non_rate_limit_error_honors_its_structured_retry_delay():
-    """Provider supplied recovery timing takes precedence over linear backoff."""
+    """Provider-supplied recovery timing takes precedence over linear backoff."""
     exc = RuntimeError("502 bad gateway")
     exc.body = {"retry_after": 7}
     slept = []

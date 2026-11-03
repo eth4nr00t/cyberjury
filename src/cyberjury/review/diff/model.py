@@ -46,7 +46,7 @@ class DiffUnit:
 
     @cached_property
     def line_ranges(self) -> DiffLineRanges:
-        """Return the unit's post change hunk lines and exact old and new change anchors."""
+        """Return the unit's post-change hunk lines and exact old and new change anchors."""
         return diff_line_ranges(self.diff)
 
 
@@ -208,7 +208,7 @@ def _not_utf8(path: Path) -> bool:
 
 
 def strip_unreviewable_files(diff: str, detection: Detection, *, root: Path) -> tuple[str, tuple[SkippedFile, ...]]:
-    """Remove submodule, noise, oversized, non UTF-8, and hunkless file sections before they consume review work."""
+    """Remove submodule, noise, oversized, non-UTF-8, and hunkless file sections before they consume review work."""
     kept: list[str] = []
     skipped: list[SkippedFile] = []
     for chunk in split_diff_by_file(diff):
@@ -338,7 +338,7 @@ def _flush_deletion_anchors(
 
 
 def diff_line_ranges(diff: str) -> DiffLineRanges:
-    """Return post change hunk lines and exact old and new change anchors."""
+    """Return post-change hunk lines and exact old and new change anchors."""
     current: dict[str, list[tuple[int, int]]] = {}
     old: dict[str, list[tuple[int, int]]] = {}
     new: dict[str, list[tuple[int, int]]] = {}

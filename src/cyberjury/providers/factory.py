@@ -25,10 +25,10 @@ class ProviderBackend:
 
 PROVIDERS = {
     "openai": ProviderBackend(
-        backend=OpenAIProvider, default_model="gpt-6-astra", default_base_url=openai.DEFAULT_BASE_URL
+        backend=OpenAIProvider, default_model="gpt-6.1-sol", default_base_url=openai.DEFAULT_BASE_URL
     ),
     "anthropic": ProviderBackend(
-        backend=AnthropicProvider, default_model="claude-fable-5-1", default_base_url=anthropic.DEFAULT_BASE_URL
+        backend=AnthropicProvider, default_model="claude-opus-5-5", default_base_url=anthropic.DEFAULT_BASE_URL
     ),
 }
 

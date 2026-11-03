@@ -9,7 +9,7 @@ from cyberjury.review.paths import normalized_location_path
 
 
 def canonical_category(category: str) -> str:
-    """Normalize a model supplied class without treating qualifiers as new classes."""
+    """Normalize a model-supplied class without treating qualifiers as new classes."""
     raw = category.strip()
     broad_class = re.sub(r"(?:[\s_-]*\([^()]*\))+$", "", raw).strip() or raw
     return broad_class.lower().replace(" ", "-").replace("_", "-")

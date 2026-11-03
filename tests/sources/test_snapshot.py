@@ -106,6 +106,21 @@ def test_git_work_tree_snapshot_lists_tracked_and_unignored_files_without_walkin
     assert not snapshot.matches()
 
 
+def test_a_work_tree_subdirectory_lists_only_its_git_visible_files(tmp_path):
+    """Reviewing src/ of a work tree lists src/app.py and untracked new.py but not the ignored secret.env or build/."""
+    git(tmp_path, "init", "--quiet")
+    (tmp_path / ".gitignore").write_text("secret.env\nbuild/\n", encoding="utf-8")
+    source = tmp_path / "src"
+    (source / "build").mkdir(parents=True)
+    (source / "app.py").write_text("tracked\n", encoding="utf-8")
+    git(tmp_path, "add", ".")
+    (source / "new.py").write_text("untracked\n", encoding="utf-8")
+    (source / "secret.env").write_text("TOKEN=1\n", encoding="utf-8")
+    (source / "build" / "out.js").write_text("generated\n", encoding="utf-8")
+
+    assert source_snapshot_files(source) == ("app.py", "new.py")
+
+
 def test_listing_skips_symlinks_that_do_not_resolve_to_a_contained_file(tmp_path):
     """Directory, dangling, and outside links are left out of a plain tree, and link.py to app.py stays."""
     (tmp_path / "app.py").write_text("app\n", encoding="utf-8")

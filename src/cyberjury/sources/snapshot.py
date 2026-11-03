@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import BinaryIO, Literal
 
 from cyberjury.canonical import canonical_sha256
-from cyberjury.sources.git import GitSourceError, worktree_files
+from cyberjury.sources.git import GitSourceError, inside_worktree, worktree_files
 from cyberjury.sources.paths import (
     MAX_SOURCE_FILE_BYTES,
     MAX_SOURCE_FILES,
@@ -46,11 +46,12 @@ def capture_source_snapshot(root: str | Path) -> SourceSnapshot:
 
 
 def source_snapshot_files(root: str | Path) -> tuple[str, ...]:
-    """List the files a review covers: Git-visible files of a work tree, or every file of a plain directory."""
+    """List the files a review covers: Git-visible files under a work tree directory, or every file of a plain one."""
     base = Path(root).resolve()
     if not base.is_dir():
         raise SourceSnapshotError(f"snapshot root is not a directory: {base}")
-    return portable_paths(_worktree_files(base) if (base / ".git").exists() else _directory_files(base))
+    in_worktree = (base / ".git").exists() or inside_worktree(base)
+    return portable_paths(_worktree_files(base) if in_worktree else _directory_files(base))
 
 
 def _worktree_files(base: Path) -> list[str]:

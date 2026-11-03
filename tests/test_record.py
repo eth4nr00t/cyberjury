@@ -93,7 +93,7 @@ def test_a_record_line_lists_its_fields_and_quotes_values_with_spaces():
     ],
 )
 def test_a_record_line_escapes_control_characters_in_attributes(rationale, escaped):
-    """A model supplied attribute cannot inject a control, bidirectional, or line separator character into the line."""
+    """A model-supplied attribute cannot inject a control, bidirectional, or line separator character into the line."""
     record = Record(
         id="link/pair-1",
         status="ok",

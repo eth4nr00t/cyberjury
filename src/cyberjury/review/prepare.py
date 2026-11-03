@@ -23,7 +23,7 @@ from cyberjury.sources.snapshot import SourceSnapshot
 
 @dataclass(frozen=True, kw_only=True)
 class SharedGrounding:
-    """Facts derived context every unit of one review grounds against."""
+    """Facts-derived context every unit of one review grounds against."""
 
     snapshot: SourceSnapshot
     detection: Detection

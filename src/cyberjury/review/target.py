@@ -148,7 +148,7 @@ def _parse_git_range(value: str) -> tuple[str, str, str]:
 
 
 def resolve_diff_target(repository: str | Path, git_range: str) -> ResolvedTarget:
-    """Resolve a committed two endpoint diff once and generate its canonical patch."""
+    """Resolve a committed two-endpoint diff once and generate its canonical patch."""
     try:
         root = resolve_root(repository)
     except GitSourceError as exc:

@@ -37,6 +37,8 @@ from cyberjury.review.settings import DEFAULT_REVIEW_SETTINGS
 if TYPE_CHECKING:
     from cyberjury.review.finding import Finding
 
+type SourceKind = Literal["production", "documentation", "dependency"]
+
 _SOURCE_LABELS = {"production": "source", "documentation": "documentation", "dependency": "third-party source"}
 _EXECUTION = DEFAULT_REVIEW_SETTINGS.execution
 
@@ -80,7 +82,7 @@ class SourceTarget:
     end: int
     preview: str
     definition_id: str = ""
-    source_kind: Literal["production", "documentation", "dependency"] = "production"
+    source_kind: SourceKind = "production"
 
     @classmethod
     def create(
@@ -92,7 +94,7 @@ class SourceTarget:
         end: int,
         preview: str,
         definition_id: str = "",
-        source_kind: Literal["production", "documentation", "dependency"] = "production",
+        source_kind: SourceKind = "production",
     ) -> SourceTarget:
         """Build a navigable target with an opaque id over one exact repository source range."""
         identity = source_identity(file, name, start, end)
@@ -702,7 +704,7 @@ class SourceNavigationSession:
         self._targets_by_identity[target.identity] = target
         return target
 
-    def _source_kind(self, file: str) -> Literal["production", "documentation", "dependency"]:
+    def _source_kind(self, file: str) -> SourceKind:
         if file in self._navigator.documentation_files:
             return "documentation"
         if file in self._navigator.dependency_files:

@@ -18,8 +18,6 @@ def benchmark_project(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init")
-    git(repo, "config", "user.email", "test@example.com")
-    git(repo, "config", "user.name", "Test User")
     (repo / "views.py").write_text("def create():\n    return save()\n", encoding="utf-8")
     git(repo, "add", "views.py")
     git(repo, "commit", "-m", "base")

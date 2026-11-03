@@ -35,6 +35,6 @@ def analyzable_sources(root: str | Path, files: Sequence[str]) -> list[Analyzabl
 
 
 def extract_syntax_facts(root: str | Path, files: Sequence[str], *, progress: Callable[[int, int], None]) -> Facts:
-    """Extract syntax evidence from the review files and disclose source level limitations."""
+    """Extract syntax evidence from the review files and disclose source-level limitations."""
     analyzed = analyze_repository(analyzable_sources(root, files), progress=progress)
     return replace(facts_from_repository(analyzed), limitations=analyzed.limitations)

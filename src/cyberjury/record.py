@@ -49,12 +49,12 @@ _FIELDS = ("schema", "id", "status", "started_at", "duration_seconds", "metrics"
 
 
 def utc_timestamp(value: datetime | None = None) -> str:
-    """Return one second precision UTC timestamp."""
+    """Return one-second-precision UTC timestamp."""
     return (value or datetime.now(UTC)).astimezone(UTC).strftime(_TIMESTAMP)
 
 
 def parse_timestamp(value: str) -> datetime:
-    """Parse one second precision UTC timestamp written by `utc_timestamp`."""
+    """Parse one-second-precision UTC timestamp written by `utc_timestamp`."""
     return datetime.strptime(value, _TIMESTAMP).replace(tzinfo=UTC)
 
 
@@ -178,7 +178,7 @@ class Record:
         )
 
     def line(self) -> str:
-        """Return the one line view: the record fields in order, without schema, start time, and artifacts."""
+        """Return the one-line view: the record fields in order, without schema, start time, and artifacts."""
         data = self.to_dict()
         parts = [self.id, self.status]
         if self.duration_seconds is not None:

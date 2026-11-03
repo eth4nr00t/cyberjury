@@ -1,4 +1,4 @@
-"""Syntax graph output keeps per file evidence and ambiguity visible."""
+"""Syntax graph output keeps per-file evidence and ambiguity visible."""
 
 import pytest
 

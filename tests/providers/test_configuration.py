@@ -13,11 +13,11 @@ from cyberjury.providers.metering import UsageMeter
 
 
 def test_an_empty_environment_selects_the_openai_seat_defaults():
-    """Without settings the seat is openai with gpt-6-astra and the OpenAI API, 2 retries, and a 240 second timeout."""
+    """Without settings the seat is openai with gpt-6.1-sol and the OpenAI API, 2 retries, and a 240 second timeout."""
     configuration = provider_configuration_from_env()
 
     assert configuration.seat == ProviderSeat(
-        provider="openai", model="gpt-6-astra", base_url="https://api.openai.com/v1"
+        provider="openai", model="gpt-6.1-sol", base_url="https://api.openai.com/v1"
     )
     assert (configuration.api_key, configuration.retries, configuration.timeout) == (None, 2, 240.0)
 
@@ -43,12 +43,12 @@ def test_the_environment_sets_every_seat_field_and_the_key(monkeypatch):
         (
             "openai",
             "OPENAI",
-            ProviderSeat(provider="openai", model="gpt-6-astra", base_url="https://api.openai.com/v1"),
+            ProviderSeat(provider="openai", model="gpt-6.1-sol", base_url="https://api.openai.com/v1"),
         ),
         (
             "anthropic",
             "ANTHROPIC",
-            ProviderSeat(provider="anthropic", model="claude-fable-5-1", base_url="https://api.anthropic.com"),
+            ProviderSeat(provider="anthropic", model="claude-opus-5-5", base_url="https://api.anthropic.com"),
         ),
     ],
 )
@@ -72,7 +72,7 @@ def test_blank_settings_count_as_unset(monkeypatch):
     configuration = provider_configuration_from_env()
 
     assert configuration.seat == ProviderSeat(
-        provider="openai", model="gpt-6-astra", base_url="https://api.openai.com/v1"
+        provider="openai", model="gpt-6.1-sol", base_url="https://api.openai.com/v1"
     )
     assert configuration.api_key is None
 

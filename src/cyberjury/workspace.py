@@ -45,12 +45,12 @@ def _new_id(kind: str) -> str:
 
 
 def new_attempt_id() -> str:
-    """Return one time ordered, collision resistant invocation identity."""
+    """Return one time-ordered, collision-resistant invocation identity."""
     return _new_id("attempt")
 
 
 def new_session_id() -> str:
-    """Return one time ordered, collision resistant review session identity."""
+    """Return one time-ordered, collision-resistant review session identity."""
     return _new_id(_SESSION_KIND)
 
 

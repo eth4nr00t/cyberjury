@@ -28,18 +28,18 @@ All settings come from a `.env` file in the working directory, and an exported s
 | `CYBERJURY_PROVIDER` | Model provider, `openai` or `anthropic`, default `openai`. |
 | `CYBERJURY_API_KEY` | Provider API key, required. |
 | `CYBERJURY_BASE_URL` | Provider endpoint, default `https://api.openai.com/v1` for OpenAI and `https://api.anthropic.com` for Anthropic. |
-| `CYBERJURY_MODEL` | Model name, default `gpt-6-astra` for OpenAI and `claude-fable-5-1` for Anthropic. |
+| `CYBERJURY_MODEL` | Model name, default `gpt-6.1-sol` for OpenAI and `claude-opus-5-5` for Anthropic. |
 | `CYBERJURY_CONCURRENCY` | Number of model requests run in parallel, default `8`. |
 | `CYBERJURY_STATE_DIR` | Review state directory, default `~/.local/share/cyberjury`, or `$XDG_DATA_HOME/cyberjury` when `XDG_DATA_HOME` is set. |
 
 ## Review
 
 ```bash
-cyberjury review diff origin/main...HEAD /path/to/app
+cyberjury review diff origin/main...HEAD /path/to/repo
 cyberjury review repository /path/to/repo
 ```
 
-A repository review of a Git work tree covers the tracked files and the untracked files Git does not ignore, but not the contents of Git submodules. A plain directory is covered completely. Running a repository review again resumes open work. Use `--fresh` to start a new review session.
+A repository review of a Git work tree, or of a directory inside one, covers the tracked files and the untracked files Git does not ignore, but not the contents of Git submodules. A plain directory is covered completely. Running a repository review again resumes open work. Use `--fresh` to start a new review session.
 
 ## Output
 

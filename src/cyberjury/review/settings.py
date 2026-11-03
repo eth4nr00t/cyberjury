@@ -36,7 +36,7 @@ class IssueSettings:
 
 @dataclass(frozen=True, kw_only=True)
 class ReviewExecutionSettings:
-    """Cross target limits on model calls, evidence, source navigation, and reviewed sources."""
+    """Cross-target limits on model calls, evidence, source navigation, and reviewed sources."""
 
     reviewer_max_output_tokens: int = 8_000
     default_model_call_concurrency: int = 8

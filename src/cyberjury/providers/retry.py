@@ -99,7 +99,7 @@ class RetryProvider(Provider):
         sleep: Callable[[float], None] = time.sleep,
         rand: Callable[[float, float], float] = random.uniform,
     ) -> None:
-        """Bind the attempt limit, the per call deadline, and the delay functions around one provider."""
+        """Bind the attempt limit, the per-call deadline, and the delay functions around one provider."""
         self._inner = inner
         self._max_attempts = max_attempts
         self._hard_timeout = hard_timeout
@@ -125,7 +125,7 @@ class RetryProvider(Provider):
         cache_prefix: str = "",
         cache_segments: tuple[str, ...] = (),
     ) -> CompletionResult:
-        """Retry failures other than an access rejection and blank or unparsable replies, summing attempt usage."""
+        """Retry every failure except an access rejection, and blank or unparsable replies, summing attempt usage."""
         usage = Usage()
         for attempt in range(1, self._max_attempts + 1):
             try:

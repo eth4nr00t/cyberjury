@@ -27,7 +27,7 @@ _ANCHOR = ChangeAnchor(file="app.py", line=10, side="new")
 
 @pytest.mark.parametrize("anchor", [None, _ANCHOR], ids=["repository", "diff"])
 def test_findings_at_one_location_stay_separate_unless_they_are_the_same_report(anchor):
-    """Variants differing in title, category, entrypoint, line, or file all count as six new findings."""
+    """Five variants differing in title, category, entrypoint, line, or file stay separate from the first finding."""
     accumulator = FindingAccumulator()
     first = _finding(change_anchor=anchor)
     variants = [

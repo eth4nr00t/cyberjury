@@ -26,7 +26,7 @@ class ReviewUnit(Protocol):
 
     @property
     def id(self) -> str:
-        """Return the content bound unit plan id."""
+        """Return the content-bound unit plan id."""
 
     @property
     def paths(self) -> tuple[str, ...]:

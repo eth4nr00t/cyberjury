@@ -52,7 +52,7 @@ class CompletionResult:
 
 @dataclass(frozen=True, kw_only=True)
 class ResponseSchema:
-    """One provider neutral strict JSON output contract."""
+    """One provider-neutral strict JSON output contract."""
 
     name: str
     schema: dict[str, object]

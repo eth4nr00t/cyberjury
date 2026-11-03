@@ -320,7 +320,7 @@ class GroundingContext:
 
     @property
     def prompt(self) -> EvidencePromptContext:
-        """Separate stable unit evidence from engine owned controls."""
+        """Separate stable unit evidence from engine-owned controls."""
         blocks = (
             self.seed,
             self.text,

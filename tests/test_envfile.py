@@ -46,7 +46,7 @@ def test_env_example_documents_cli_runtime_environment():
 
 
 def test_the_example_spells_out_the_openai_defaults(tmp_path, monkeypatch):
-    """A .env.example copy selects openai, gpt-6-astra, the OpenAI API, concurrency 8, and the state dir."""
+    """A .env.example copy selects openai, gpt-6.1-sol, the OpenAI API, concurrency 8, and the state dir."""
     (tmp_path / ".env").write_text((_ROOT / ".env.example").read_text(encoding="utf-8"), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     _forget_after_test(monkeypatch, *_environment_names_read_by_the_cli())
@@ -54,7 +54,7 @@ def test_the_example_spells_out_the_openai_defaults(tmp_path, monkeypatch):
     load_env_file()
     seat = provider_configuration_from_env().seat
 
-    assert (seat.provider, seat.model, seat.base_url) == ("openai", "gpt-6-astra", "https://api.openai.com/v1")
+    assert (seat.provider, seat.model, seat.base_url) == ("openai", "gpt-6.1-sol", "https://api.openai.com/v1")
     assert int(os.environ["CYBERJURY_CONCURRENCY"]) == DEFAULT_REVIEW_SETTINGS.execution.default_model_call_concurrency
     assert Path(os.environ["CYBERJURY_STATE_DIR"]).expanduser() == Path.home() / ".local" / "share" / "cyberjury"
 

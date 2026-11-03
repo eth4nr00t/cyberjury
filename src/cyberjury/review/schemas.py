@@ -21,7 +21,7 @@ def string_array() -> dict[str, object]:
 
 
 def validate_response_object(value: object, response_schema: ResponseSchema) -> dict[str, object]:
-    """Validate provider output against the exact provider neutral schema."""
+    """Validate provider output against the exact provider-neutral schema."""
     _validate_schema_value(value, response_schema.schema, path="$response")
     if not isinstance(value, dict):
         raise ValueError("$response must be an object")

@@ -2,19 +2,49 @@
 
 from __future__ import annotations
 
-import dataclasses
+from dataclasses import replace
 
-from cyberjury.review import finder
 from cyberjury.review.context import SourceEvidence, SourceSpan, cited_location_file
 from cyberjury.review.diff.model import DiffLineRanges, DiffUnit, canonical_diff_path
 from cyberjury.review.diff.prompts import FINDER_RESPONSE_SCHEMA, diff_finder_system
-from cyberjury.review.finder import ReviewTarget
+from cyberjury.review.finder import ReviewTarget, findings_from_reply
 from cyberjury.review.finding import Finding
 from cyberjury.review.replies import RoleReply
 
 
+def locate(
+    unit: DiffUnit,
+    finding: Finding,
+    source_evidence: tuple[SourceEvidence, ...],
+    seed_spans: tuple[SourceSpan, ...],
+) -> Finding | None:
+    """Require a post-change patch line or a cited source receipt, and one exact change anchor."""
+    ranges = unit.line_ranges
+    current_path = canonical_diff_path(finding.file, ranges.current)
+    primary_in_patch = _line_in_ranges(finding.line, ranges.current.get(current_path, ()))
+    cited = cited_location_file(
+        file=finding.file,
+        line=finding.line,
+        evidence_refs=finding.evidence_refs,
+        seed_spans=seed_spans,
+        source_evidence=source_evidence,
+    )
+    if not primary_in_patch and cited is None:
+        return None
+    anchor = finding.change_anchor
+    anchor_ranges = ranges.new if anchor.side == "new" else ranges.old
+    anchor_file = canonical_diff_path(anchor.file, anchor_ranges)
+    if not _line_in_ranges(anchor.line, anchor_ranges.get(anchor_file, ())):
+        return None
+    return replace(
+        finding,
+        file=current_path if primary_in_patch else cited,
+        change_anchor=replace(anchor, file=anchor_file),
+    )
+
+
 def _findings_from_reply(unit: DiffUnit, reply: RoleReply) -> list[Finding]:
-    return finder.findings_from_reply(
+    return findings_from_reply(
         reply, lambda item, index: _change_anchor_correction(item["change_anchor"], index, unit.line_ranges)
     )
 
@@ -47,37 +77,6 @@ def _change_anchor_correction(anchor: dict[str, object], index: int, ranges: Dif
 
 def _line_in_ranges(line: int, ranges: tuple[tuple[int, int], ...]) -> bool:
     return any(start <= line <= end for start, end in ranges)
-
-
-def locate(
-    unit: DiffUnit,
-    finding: Finding,
-    source_evidence: tuple[SourceEvidence, ...],
-    seed_spans: tuple[SourceSpan, ...],
-) -> Finding | None:
-    """Require a post change patch line or a cited source receipt, and one exact change anchor."""
-    ranges = unit.line_ranges
-    current_path = canonical_diff_path(finding.file, ranges.current)
-    primary_in_patch = _line_in_ranges(finding.line, ranges.current.get(current_path, ()))
-    cited = cited_location_file(
-        file=finding.file,
-        line=finding.line,
-        evidence_refs=finding.evidence_refs,
-        seed_spans=seed_spans,
-        source_evidence=source_evidence,
-    )
-    if not primary_in_patch and cited is None:
-        return None
-    anchor = finding.change_anchor
-    anchor_ranges = ranges.new if anchor.side == "new" else ranges.old
-    anchor_file = canonical_diff_path(anchor.file, anchor_ranges)
-    if not _line_in_ranges(anchor.line, anchor_ranges.get(anchor_file, ())):
-        return None
-    return dataclasses.replace(
-        finding,
-        file=current_path if primary_in_patch else cited,
-        change_anchor=dataclasses.replace(anchor, file=anchor_file),
-    )
 
 
 DIFF_TARGET = ReviewTarget[DiffUnit](
