@@ -83,9 +83,16 @@ def finding_schema(**extension: dict[str, object]) -> dict[str, object]:
             "title": {"type": "string"},
             "category": {"type": "string"},
             "severity": {"type": "string", "enum": list(SEVERITIES)},
-            "entrypoint": {"type": "string"},
             "file": {"type": "string"},
             "line": {"type": "integer"},
+            "entrypoint": {"type": "string"},
+            "reachability": closed_object(
+                {
+                    "established": {"type": "boolean"},
+                    "evidence_ref": {"type": "string"},
+                    "note": {"type": "string"},
+                }
+            ),
             **extension,
             "evidence": {"type": "string"},
             "attack_path": {"type": "string"},
@@ -100,10 +107,17 @@ def finding_fields(extension: str = "") -> str:
         "- `findings`: one entry per reported vulnerability, empty when there is none.\n"
         "- `title`: a short name for the vulnerability.\n"
         "- `category`: the broad security property violated or the direct attacker-visible effect.\n"
-        "- `severity`: the grade on the severity rubric.\n"
-        "- `entrypoint`: the attacker-reachable operation where the exploit path starts."
+        "- `severity`: the grade on the severity rubric."
     )
     location = "- `file`, `line`: where the fix must be applied, inside source covered by a cited evidence id."
+    entrypoint = "- `entrypoint`: the attacker-reachable operation where the exploit path starts."
+    reachability = (
+        "- `reachability`: whether an external actor can reach `entrypoint`. Establish it from delivered source by "
+        "locating the route, caller, exported entry, or other dispatch that leads to it, navigating with "
+        "`source_queries` when needed. Set `established` true only with a cited evidence id in `evidence_ref`; set it "
+        "false with the missing link in `note` when the delivered source shows no external path to it. Do not assume "
+        "reachability."
+    )
     claim = (
         "- `evidence`: the delivered source facts, cited by evidence id, that establish the missing or broken "
         "control and the implementation flaw.\n"
@@ -111,7 +125,7 @@ def finding_fields(extension: str = "") -> str:
         "- `evidence_refs`: the evidence ids that establish the exploit path, including one whose source covers "
         "`file` and `line`."
     )
-    return "\n".join(part for part in (header, location, extension, claim) if part)
+    return "\n".join(part for part in (header, location, entrypoint, reachability, extension, claim) if part)
 
 
 _REQUEST_FIELDS = (

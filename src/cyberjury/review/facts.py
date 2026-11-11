@@ -44,9 +44,8 @@ class FactLimitation:
             "analyzer": self.analyzer,
             "reason": self.reason,
         }
-        if self.line is not None:
+        if self.line is not None and self.column is not None:
             data["line"] = self.line
-        if self.column is not None:
             data["column"] = self.column
         return data
 
@@ -73,7 +72,7 @@ class FactsReceipt:
         """Bind extracted facts and their source limitations to the backend that produced them."""
         evidence = {
             "by_file": dict(facts.by_file),
-            "relationship_evidence": facts.relationships.to_dict(),
+            "relationships": facts.relationships.to_dict(),
             "limitations": [limitation.to_dict() for limitation in facts.limitations],
         }
         semantic = {"backend_id": backend_id, "evidence_sha256": canonical_sha256(evidence)}

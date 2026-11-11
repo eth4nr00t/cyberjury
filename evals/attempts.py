@@ -93,10 +93,11 @@ def load_attempt(path: str | Path) -> Attempt:
 def _issues(path: Path, data: dict, findings: dict[str, dict]) -> tuple[tuple[str, ...], ...]:
     issues = data.get("issues")
     if not isinstance(issues, list) or not all(
-        isinstance(issue, dict) and isinstance(issue.get("members"), list) and issue["members"] for issue in issues
+        isinstance(issue, dict) and isinstance(issue.get("member_ids"), list) and issue["member_ids"]
+        for issue in issues
     ):
-        raise ValueError(f"{path} issues must be records with members")
-    members = tuple(tuple(issue["members"]) for issue in issues)
+        raise ValueError(f"{path} issues must be records with member_ids")
+    members = tuple(tuple(issue["member_ids"]) for issue in issues)
     flat = [identity for group in members for identity in group]
     if len(flat) != len(set(flat)) or set(flat) != set(findings):
         raise ValueError(f"{path} issues must partition its reports")

@@ -95,7 +95,7 @@ def write_attempt(case):
                 }
                 for identity in candidates
             ],
-            "issues": [{"representative": members[0], "members": list(members)} for members in groups],
+            "issues": [{"representative_id": members[0], "member_ids": list(members)} for members in groups],
         }
         path.write_text(json.dumps(record), encoding="utf-8")
         return path

@@ -33,15 +33,40 @@ class ChangeAnchor:
 
 
 @dataclass(frozen=True, kw_only=True)
+class Reachability:
+    """The model's claim, with its cited evidence, that an attacker can reach the entrypoint."""
+
+    established: bool
+    evidence_ref: str = ""
+    note: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the stable reachability wire form."""
+        return {"established": self.established, "evidence_ref": self.evidence_ref, "note": self.note}
+
+    @classmethod
+    def from_dict(cls, value: object) -> Reachability:
+        """Parse one reachability claim written by `to_dict`."""
+        if not isinstance(value, dict) or set(value) != {"established", "evidence_ref", "note"}:
+            raise ValueError("reachability fields are invalid")
+        if not isinstance(value["established"], bool):
+            raise ValueError("reachability established must be a boolean")
+        if not isinstance(value["evidence_ref"], str) or not isinstance(value["note"], str):
+            raise ValueError("reachability evidence_ref and note must be strings")
+        return cls(established=value["established"], evidence_ref=value["evidence_ref"], note=value["note"])
+
+
+@dataclass(frozen=True, kw_only=True)
 class Finding:
     """One reported vulnerability before cross-unit accumulation and issue grouping."""
 
     title: str
     category: str
     severity: str
-    entrypoint: str
     file: str
     line: int
+    entrypoint: str
+    reachability: Reachability = field(default=Reachability(established=True), compare=False)
     evidence: str
     attack_path: str
     change_anchor: ChangeAnchor | None = None
@@ -70,9 +95,10 @@ class Finding:
             "title": self.title,
             "category": self.category,
             "severity": self.severity,
-            "entrypoint": self.entrypoint,
             "file": self.file,
             "line": self.line,
+            "entrypoint": self.entrypoint,
+            "reachability": self.reachability.to_dict(),
         }
         if self.change_anchor is not None:
             record["change_anchor"] = self.change_anchor.to_dict()
@@ -86,6 +112,7 @@ class Finding:
     def to_dict(self) -> dict[str, object]:
         """Return the complete form a unit findings record stores."""
         data = asdict(self)
+        data["reachability"] = self.reachability.to_dict()
         data["evidence_refs"] = list(self.evidence_refs)
         data["cited_spans"] = [span.to_dict() for span in self.cited_spans]
         return data
@@ -96,7 +123,7 @@ class Finding:
         names = {item.name for item in fields(cls)}
         if not isinstance(value, dict) or set(value) != names:
             raise ValueError("finding fields are invalid")
-        text = names - {"line", "change_anchor", "evidence_refs", "cited_spans"}
+        text = names - {"line", "reachability", "change_anchor", "evidence_refs", "cited_spans"}
         if not all(isinstance(value[name], str) for name in text) or value["severity"] not in SEVERITIES:
             raise ValueError("finding text fields are invalid")
         line = value["line"]
@@ -111,11 +138,13 @@ class Finding:
         try:
             anchor = ChangeAnchor.from_dict(value["change_anchor"]) if value["change_anchor"] is not None else None
             cited_spans = tuple(SourceSpan.from_dict(span) for span in spans)
+            reachability = Reachability.from_dict(value["reachability"])
         except ValueError as exc:
             raise ValueError(f"finding {exc}") from exc
         return cls(
             **{name: value[name] for name in text},
             line=line,
+            reachability=reachability,
             change_anchor=anchor,
             evidence_refs=tuple(refs),
             cited_spans=cited_spans,

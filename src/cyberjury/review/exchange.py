@@ -757,13 +757,13 @@ def _exchange_record(turn: _Turn, result: EvidenceJudgment | None) -> dict[str, 
         outcome, stop_reason = "judgment", ""
     return {
         "outcome": outcome,
-        "findings": turn.findings,
-        "deferred": turn.deferred,
+        "findings_count": turn.findings,
+        "deferred_count": turn.deferred,
         "requested": turn.requested,
         "source_queries": turn.source_queries,
         "delivered": turn.delivered,
         "delivered_chars": turn.delivered_chars,
         "held": turn.held,
-        "correction": turn.correction,
+        "correction": turn.correction or "",
         "stop_reason": stop_reason,
     }

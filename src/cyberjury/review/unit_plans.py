@@ -17,13 +17,13 @@ type UnitKind = Literal["diff", "source"]
 class UnitSourceSlice:
     """One normalized source range owned or requested by a unit."""
 
-    path: str
+    file: str
     start: int
     end: int
 
     def to_dict(self) -> dict[str, object]:
         """Return the strict source slice record."""
-        return {"path": self.path, "range": [self.start, self.end]}
+        return {"file": self.file, "range": [self.start, self.end]}
 
 
 @dataclass(frozen=True, kw_only=True)

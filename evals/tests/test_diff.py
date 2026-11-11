@@ -49,6 +49,7 @@ def owner_finding():
         "entrypoint": "POST /create",
         "file": "views.py",
         "line": 2,
+        "reachability": {"established": True, "evidence_ref": "seed", "note": ""},
         "change_anchor": {"file": "views.py", "line": 2, "side": "new"},
         "evidence": "views.py:2 saves with owner=None",
         "attack_path": "anyone creates an unowned record",

@@ -40,6 +40,7 @@ def finding(file: str, line: int, title: str = "finding", **fields: object) -> d
         "entrypoint": "GET /records/<id>",
         "file": file,
         "line": line,
+        "reachability": {"established": True, "evidence_ref": "seed", "note": ""},
         "attack_path": "attacker request reaches the unchecked operation",
         "evidence": f"{file}:{line} has no ownership check",
         "evidence_refs": ["seed"],

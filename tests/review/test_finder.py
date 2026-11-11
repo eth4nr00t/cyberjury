@@ -61,6 +61,14 @@ def test_finder_parses_findings_and_canonicalizes_the_category():
             {"change_anchor": {"file": "app.py", "line": 0, "side": "new"}},
             r"findings\[0\]\.change_anchor must name a nonempty file and a positive line",
         ),
+        (
+            {"reachability": {"established": True, "evidence_ref": "src-absent", "note": ""}},
+            r"findings\[0\]\.reachability\.evidence_ref must cite one of the finding's evidence ids",
+        ),
+        (
+            {"reachability": {"established": False, "evidence_ref": "", "note": ""}},
+            r"findings\[0\]\.reachability\.note must state the missing external path",
+        ),
     ],
 )
 def test_findings_from_reply_requests_a_correction_for_invalid_semantics(change, message):

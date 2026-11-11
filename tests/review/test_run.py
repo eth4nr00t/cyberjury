@@ -326,7 +326,7 @@ def test_diff_review_groups_its_findings_into_issues_through_the_shared_step(tmp
     assert len(judge.pairs) == 1
     (issue,) = result.findings.issues
     assert issue["linked_by"] == ["judgment", "location"]
-    assert set(issue["members"]) == {record["id"] for record in result.findings.findings}
+    assert set(issue["member_ids"]) == {record["id"] for record in result.findings.findings}
     assert result.outcome.complete
 
 
@@ -372,7 +372,7 @@ def test_repository_review_groups_one_line_and_links_judged_issues(tmp_path, sam
     artifact = result.findings
     assert len(artifact.findings) == 3
     assert len(artifact.issues) == issues
-    save = next(issue for issue in artifact.issues if len(issue["members"]) >= 2)
+    save = next(issue for issue in artifact.issues if len(issue["member_ids"]) >= 2)
     assert save["linked_by"] == (["judgment", "location"] if same_fix else ["location"])
     assert len(judge.pairs) == 1
 

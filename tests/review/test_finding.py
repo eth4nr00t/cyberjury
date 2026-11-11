@@ -5,7 +5,7 @@ from dataclasses import replace
 import pytest
 
 from cyberjury.review.context import SourceSpan
-from cyberjury.review.finding import ChangeAnchor, Finding
+from cyberjury.review.finding import ChangeAnchor, Finding, Reachability
 from cyberjury.review.identity import candidate_identity
 
 _FINDING = Finding(
@@ -17,6 +17,7 @@ _FINDING = Finding(
     entrypoint="POST /export",
     evidence="app/v.py:10 has no ownership check",
     attack_path="request reaches unguarded account export",
+    reachability=Reachability(established=False, note="no route mounts the handler"),
     change_anchor=ChangeAnchor(file="app/v.py", line=9, side="old"),
     source_operation_id="call-account-export",
     cited_spans=(SourceSpan(file="app/v.py", start_line=1, end_line=20),),
@@ -25,13 +26,14 @@ _FINDING = Finding(
 
 
 def test_stored_form_preserves_identity_evidence_and_anchor():
-    """A to_dict/from_dict round trip keeps candidate id, operation id, evidence refs, and spans."""
+    """A to_dict/from_dict round trip keeps candidate id, operation id, evidence refs, spans, and reachability."""
     restored = Finding.from_dict(_FINDING.to_dict())
 
     assert restored == _FINDING
     assert restored.candidate_id == _FINDING.candidate_id
     assert (restored.source_operation_id, restored.evidence_refs) == ("call-account-export", ("seed", "src-control"))
     assert restored.cited_spans == _FINDING.cited_spans
+    assert restored.reachability == _FINDING.reachability
 
 
 def test_cited_spans_never_change_the_candidate_identity():

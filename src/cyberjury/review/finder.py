@@ -17,7 +17,7 @@ from cyberjury.review.context import (
 from cyberjury.review.engine import ReviewCycle, ReviewUnit
 from cyberjury.review.exchange import EvidenceJudgment, run_evidence_judgment
 from cyberjury.review.failures import exception_reason
-from cyberjury.review.finding import ChangeAnchor, Finding
+from cyberjury.review.finding import ChangeAnchor, Finding, Reachability
 from cyberjury.review.identity import canonical_category
 from cyberjury.review.knowledge import load_security_kernel, load_severity_rubric
 from cyberjury.review.navigation import SourceNavigationSession, navigation_instructions
@@ -48,6 +48,11 @@ def finding_violations(item: Mapping[str, object], index: int) -> list[str]:
     anchor = item.get("change_anchor")
     if anchor is not None and (not str(anchor["file"]).strip() or anchor["line"] < 1):
         violations.append(f"findings[{index}].change_anchor must name a nonempty file and a positive line.")
+    reachability = item["reachability"]
+    if reachability["established"] and reachability["evidence_ref"].strip() not in item["evidence_refs"]:
+        violations.append(f"findings[{index}].reachability.evidence_ref must cite one of the finding's evidence ids.")
+    if not reachability["established"] and not reachability["note"].strip():
+        violations.append(f"findings[{index}].reachability.note must state the missing external path.")
     return violations
 
 
@@ -63,6 +68,11 @@ def finding_from_item(item: Mapping[str, object]) -> Finding:
         line=item["line"],
         evidence=item["evidence"].strip(),
         attack_path=item["attack_path"].strip(),
+        reachability=Reachability(
+            established=item["reachability"]["established"],
+            evidence_ref=item["reachability"]["evidence_ref"].strip(),
+            note=item["reachability"]["note"].strip(),
+        ),
         change_anchor=(
             ChangeAnchor(file=anchor["file"].strip(), line=anchor["line"], side=anchor["side"])
             if anchor is not None

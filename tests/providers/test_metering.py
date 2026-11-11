@@ -106,7 +106,7 @@ def test_a_call_that_failed_after_retries_records_its_attempts(error):
     with pytest.raises(error):
         _call(MeteringProvider(_Exhausted(), meter))
 
-    assert (meter.call_snapshot()[0]["status"], meter.call_snapshot()[0]["attempt"]) == ("failed", 3)
+    assert (meter.call_snapshot()[0]["status"], meter.call_snapshot()[0]["attempts"]) == ("failed", 3)
 
 
 def test_meter_records_role_unit_prompt_size_usage_duration_and_status():
@@ -130,7 +130,7 @@ def test_meter_records_role_unit_prompt_size_usage_duration_and_status():
         "trigger": "initial_judgment",
         "unit_id": "unit-a",
         "candidate_id": "",
-        "attempt": 1,
+        "attempts": 1,
         "model": "model-a",
         "prompt_chars": len("systemprompt"),
         "input_tokens": 3,

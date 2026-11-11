@@ -147,7 +147,7 @@ class MeteringProvider(Provider):
             "trigger": context.trigger if context is not None else "provider_request",
             "unit_id": context.unit_id if context is not None else "",
             "candidate_id": context.candidate_id if context is not None else "",
-            "attempt": 1,
+            "attempts": 1,
             "model": model,
             "prompt_chars": len(system) + len(prompt),
         }
@@ -163,14 +163,14 @@ class MeteringProvider(Provider):
             )
         except Exception as exc:
             record.update(
-                attempt=exc.attempts if isinstance(exc, (ProviderAccessError, ProviderCallError)) else 1,
+                attempts=exc.attempts if isinstance(exc, (ProviderAccessError, ProviderCallError)) else 1,
                 status="failed",
                 failure_reason=error_message(f"{type(exc).__name__}: {exc}"),
             )
             self._record(record, started, context)
             raise
         record.update(
-            attempt=result.attempts,
+            attempts=result.attempts,
             input_tokens=result.usage.input_tokens,
             cache_read_tokens=result.usage.cache_read_tokens,
             cache_write_tokens=result.usage.cache_write_tokens,

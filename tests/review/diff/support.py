@@ -68,6 +68,10 @@ def reply(findings: list[dict[str, object]]) -> str:
         }
         item["entrypoint"] = item.get("entrypoint") or "changed code path"
         item["attack_path"] = item.get("attack_path") or "attacker input reaches the vulnerable operation"
+        item.setdefault(
+            "reachability",
+            {"established": True, "evidence_ref": (item.get("evidence_refs") or ["seed"])[0], "note": ""},
+        )
         if "file" in item and "line" in item:
             item.setdefault("change_anchor", {"file": item["file"], "line": item["line"], "side": "new"})
         completed.append(item)

@@ -52,7 +52,7 @@ def _review_attempt(directory, reviewed_root, *, target=None):
                 "unit_complete": True,
             }
         ],
-        "issues": [{"id": issue_id((A,)), "representative": A, "members": [A], "linked_by": []}],
+        "issues": [{"id": issue_id((A,)), "representative_id": A, "member_ids": [A], "linked_by": []}],
         "summary": {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 0, "LOW": 0},
     }
     (attempt / "findings.json").write_text(json.dumps(findings), encoding="utf-8")
@@ -73,7 +73,7 @@ def test_recorded_repository_attempt_records_a_review_of_the_case_source(tmp_pat
     assert attempt["attempt"] == 3
     assert attempt["complete"] is True
     assert [item["id"] for item in attempt["findings"]] == [A]
-    assert [issue["members"] for issue in attempt["issues"]] == [[A]]
+    assert [issue["member_ids"] for issue in attempt["issues"]] == [[A]]
 
 
 def test_recorded_repository_attempt_rejects_a_review_of_a_plain_directory(

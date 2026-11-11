@@ -56,7 +56,7 @@ def findings_artifact(
 ) -> FindingsArtifact:
     """Order the findings by severity and location, mark those only failed units reported, and list each issue."""
     issue_of = {member.candidate_id: issue.id for issue in issues for member in issue.members}
-    ordered = sorted(findings, key=report_order)
+    ordered = sorted(findings, key=lambda finding: (not finding.reachability.established, report_order(finding)))
     position = {finding.candidate_id: number for number, finding in enumerate(ordered)}
     return FindingsArtifact(
         findings=tuple(
@@ -68,6 +68,7 @@ def findings_artifact(
                 "file": finding.file,
                 "line": finding.line,
                 "entrypoint": finding.entrypoint,
+                "reachability": finding.reachability.to_dict(),
                 "evidence": finding.evidence,
                 "attack_path": finding.attack_path,
                 "evidence_refs": list(dict.fromkeys(finding.evidence_refs)),
@@ -80,8 +81,8 @@ def findings_artifact(
         issues=tuple(
             {
                 "id": issue.id,
-                "representative": issue.representative.candidate_id,
-                "members": [member.candidate_id for member in issue.members],
+                "representative_id": issue.representative.candidate_id,
+                "member_ids": [member.candidate_id for member in issue.members],
                 "linked_by": list(issue.linked_by),
             }
             for issue in sorted(issues, key=lambda issue: position[issue.representative.candidate_id])

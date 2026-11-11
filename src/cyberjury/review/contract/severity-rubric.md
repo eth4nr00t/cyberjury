@@ -1,6 +1,6 @@
 # Severity Rubric
 
-Grade an evidenced exploit by its reachable impact and required attacker preconditions.
+Grade an evidenced exploit by reachable impact and attacker preconditions.
 
 - **CRITICAL**: broad compromise of protected authority, assets, or confidential data, with few realistic preconditions.
 - **HIGH**: serious unauthorized effect or sensitive disclosure, with practical preconditions.

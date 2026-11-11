@@ -368,7 +368,7 @@ def diff_unit_plan_record(unit: DiffUnit) -> UnitPlanRecord:
         name=f"diff:{unit.index}:{','.join(unit.paths)}",
         owned_paths=unit.paths,
         source_slices=tuple(
-            UnitSourceSlice(path=seed.source.path, start=seed.source.start, end=seed.source.end)
+            UnitSourceSlice(file=seed.source.path, start=seed.source.start, end=seed.source.end)
             for seed in unit.definition_plan.seeds
         ),
         patch_text=unit.diff,

@@ -3,7 +3,7 @@
 from dataclasses import replace
 
 from cyberjury.canonical import canonical_sha256
-from cyberjury.review.finding import ChangeAnchor, Finding
+from cyberjury.review.finding import ChangeAnchor, Finding, Reachability
 from cyberjury.review.issues import Issue
 from cyberjury.review.result import findings_artifact
 
@@ -30,6 +30,7 @@ _FIELDS = {
     "file",
     "line",
     "entrypoint",
+    "reachability",
     "evidence",
     "attack_path",
     "evidence_refs",
@@ -74,8 +75,8 @@ def test_findings_artifact_records_every_member_of_a_grouped_issue_with_its_issu
     assert document["issues"] == [
         {
             "id": issue.id,
-            "representative": first.candidate_id,
-            "members": [first.candidate_id, second.candidate_id],
+            "representative_id": first.candidate_id,
+            "member_ids": [first.candidate_id, second.candidate_id],
             "linked_by": ["location"],
         }
     ]
@@ -103,3 +104,18 @@ def test_findings_artifact_marks_findings_only_failed_units_reported():
     ).to_dict()
 
     assert {record["line"]: record["unit_complete"] for record in document["findings"]} == {3: True, 9: False}
+
+
+def test_findings_artifact_orders_unestablished_reachability_last():
+    """Of two equal-severity findings, the one whose reachability is unestablished is listed after the reachable one."""
+    reachable = _finding(severity="HIGH", file="a.py", reachability=Reachability(established=True, evidence_ref="seed"))
+    orphan = _finding(severity="HIGH", file="b.py", reachability=Reachability(established=False, note="no route"))
+
+    document = findings_artifact(
+        [orphan, reachable],
+        (Issue(members=(orphan,)), Issue(members=(reachable,))),
+        unfinished=frozenset(),
+    ).to_dict()
+
+    assert [record["file"] for record in document["findings"]] == ["a.py", "b.py"]
+    assert document["findings"][1]["reachability"]["established"] is False
