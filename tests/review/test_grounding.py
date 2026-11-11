@@ -12,7 +12,7 @@ def _plan(source_chars: int) -> UnitPlanReceipt:
         kind="source",
         name="app.py",
         owned_paths=("app.py",),
-        source_slices=(UnitSourceSlice(file="app.py", start=0, end=source_chars),),
+        source_slices=(UnitSourceSlice(path="app.py", start=0, end=source_chars),),
     )
     return UnitPlanReceipt.create(
         facts=FactsReceipt.create(backend_id="test", facts=Facts()),

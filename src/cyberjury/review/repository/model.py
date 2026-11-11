@@ -145,5 +145,5 @@ def repository_unit_plan_record(unit: RepositoryUnit) -> UnitPlanRecord:
         kind="source",
         name=unit.name,
         owned_paths=(unit.file,),
-        source_slices=(UnitSourceSlice(file=unit.file, start=unit.span[0], end=unit.span[1]),),
+        source_slices=(UnitSourceSlice(path=unit.file, start=unit.span[0], end=unit.span[1]),),
     )

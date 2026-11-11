@@ -11,7 +11,7 @@ def _unit(name: str = "app.py") -> UnitPlanRecord:
         kind="source",
         name=name,
         owned_paths=("app.py",),
-        source_slices=(UnitSourceSlice(file="app.py", start=0, end=40),),
+        source_slices=(UnitSourceSlice(path="app.py", start=0, end=40),),
     )
 
 
