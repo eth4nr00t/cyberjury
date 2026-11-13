@@ -3,6 +3,7 @@
 import pytest
 
 from cyberjury.review.context import (
+    CitedSource,
     EvidenceItem,
     EvidencePromptContext,
     EvidenceRequestError,
@@ -11,6 +12,7 @@ from cyberjury.review.context import (
     SourceEvidence,
     SourceSpan,
     cited_location_file,
+    cited_sources,
     evidence_index,
     evidence_request_ids,
     source_id,
@@ -84,6 +86,20 @@ def test_cited_location_file_rejects_an_uncited_or_out_of_range_span():
             source_evidence=(),
         )
         is None
+    )
+
+
+def test_cited_sources_keep_each_cited_id_with_its_span_in_citation_order():
+    """A src-handler then seed citation maps each id to its canonical span, and an id with no span yields nothing."""
+    seed = SourceSpan(file="app.py", start_line=1, end_line=8)
+    handler = SourceSpan(file="./handlers.py", start_line=10, end_line=12)
+    source = SourceEvidence(id="src-handler", identity="handlers.py:handle:0:40", text="", source_span=handler)
+
+    sources = cited_sources(("src-handler", "seed", "src-unknown"), seed_spans=(seed,), source_evidence=(source,))
+
+    assert sources == (
+        CitedSource(id="src-handler", span=SourceSpan(file="handlers.py", start_line=10, end_line=12)),
+        CitedSource(id="seed", span=seed),
     )
 
 

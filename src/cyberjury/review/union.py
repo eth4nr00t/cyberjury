@@ -47,5 +47,5 @@ def _union_text(existing: str, incoming: str) -> str:
 def _fold(existing: Finding, incoming: Finding) -> Finding:
     attack_path = _union_text(existing.attack_path, incoming.attack_path)
     evidence_refs = tuple(dict.fromkeys((*existing.evidence_refs, *incoming.evidence_refs)))
-    cited_spans = tuple(dict.fromkeys((*existing.cited_spans, *incoming.cited_spans)))
-    return replace(existing, attack_path=attack_path, evidence_refs=evidence_refs, cited_spans=cited_spans)
+    cited_sources = tuple(dict.fromkeys((*existing.cited_sources, *incoming.cited_sources)))
+    return replace(existing, attack_path=attack_path, evidence_refs=evidence_refs, cited_sources=cited_sources)

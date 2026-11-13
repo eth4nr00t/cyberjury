@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from cyberjury.review.context import SourceSpan
+from cyberjury.review.context import CitedSource, SourceSpan
 from cyberjury.review.finding import ChangeAnchor, Finding, Reachability
 from cyberjury.review.identity import candidate_identity
 
@@ -20,25 +20,25 @@ _FINDING = Finding(
     reachability=Reachability(established=False, note="no route mounts the handler"),
     change_anchor=ChangeAnchor(file="app/v.py", line=9, side="old"),
     source_operation_id="call-account-export",
-    cited_spans=(SourceSpan(file="app/v.py", start_line=1, end_line=20),),
+    cited_sources=(CitedSource(id="seed", span=SourceSpan(file="app/v.py", start_line=1, end_line=20)),),
     evidence_refs=("seed", "src-control"),
 )
 
 
 def test_stored_form_preserves_identity_evidence_and_anchor():
-    """A to_dict/from_dict round trip keeps candidate id, operation id, evidence refs, spans, and reachability."""
+    """A to_dict/from_dict round trip keeps candidate id, operation id, evidence, cited sources, and reachability."""
     restored = Finding.from_dict(_FINDING.to_dict())
 
     assert restored == _FINDING
     assert restored.candidate_id == _FINDING.candidate_id
     assert (restored.source_operation_id, restored.evidence_refs) == ("call-account-export", ("seed", "src-control"))
-    assert restored.cited_spans == _FINDING.cited_spans
+    assert restored.cited_sources == _FINDING.cited_sources
     assert restored.reachability == _FINDING.reachability
 
 
-def test_cited_spans_never_change_the_candidate_identity():
-    """Dropping cited_spans from the finding leaves its candidate_id unchanged."""
-    unbound = replace(_FINDING, cited_spans=())
+def test_cited_sources_never_change_the_candidate_identity():
+    """Dropping cited_sources from the finding leaves its candidate_id unchanged."""
+    unbound = replace(_FINDING, cited_sources=())
 
     assert unbound.candidate_id == _FINDING.candidate_id
 
@@ -55,13 +55,14 @@ def test_cited_spans_never_change_the_candidate_identity():
         ("change_anchor", {"file": "a.py"}),
         ("change_anchor", {"file": "a.py", "line": "1", "side": "new"}),
         ("change_anchor", {"file": "a.py", "line": 1, "side": "middle"}),
-        ("cited_spans", [{"file": "a.py", "start_line": 1}]),
-        ("cited_spans", [{"file": "a.py", "range": [0, 1]}]),
+        ("cited_sources", [{"file": "a.py", "range": [1, 2]}]),
+        ("cited_sources", [{"id": 1, "file": "a.py", "range": [1, 2]}]),
+        ("cited_sources", [{"id": "seed", "file": "a.py", "range": [0, 1]}]),
         ("extra", 1),
     ],
 )
 def test_stored_form_rejects_mistyped_fields(field, value):
-    """Bad severities, string or bool lines, partial or mistyped anchors and spans, and extra keys raise."""
+    """Bad severities, string or bool lines, partial or mistyped anchors and cited sources, and extra keys raise."""
     with pytest.raises(ValueError, match="finding"):
         Finding.from_dict(_FINDING.to_dict() | {field: value})
 

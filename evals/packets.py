@@ -17,7 +17,7 @@ from evals.benchmarks.targets import source_root, target_repository
 from evals.schemas import validate_document
 
 RUBRIC = Path(__file__).resolve().parent / "adjudication-rubric-v1.md"
-_PROVENANCE = frozenset({"id", "evidence_refs", "issue_id", "unit_complete"})
+_PROVENANCE = frozenset({"id", "evidence_refs", "cited_sources", "issue_id", "unit_complete"})
 _INDEX = ("label", "run", "file", "line", "title")
 
 

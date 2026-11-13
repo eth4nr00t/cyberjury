@@ -12,7 +12,7 @@ from cyberjury.review.context import (
     GroundingContext,
     SourceEvidence,
     SourceSpan,
-    cited_source_spans,
+    cited_sources,
 )
 from cyberjury.review.engine import ReviewCycle, ReviewUnit
 from cyberjury.review.exchange import EvidenceJudgment, run_evidence_judgment
@@ -182,7 +182,7 @@ class UnitFinder[U: ReviewUnit]:
                     source_operation_id=(
                         navigation.source_operation_id(finding.file, finding.line) if navigation is not None else ""
                     ),
-                    cited_spans=cited_source_spans(
+                    cited_sources=cited_sources(
                         finding.evidence_refs, seed_spans=grounding.source_spans, source_evidence=evidence
                     ),
                 )

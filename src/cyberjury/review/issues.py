@@ -92,15 +92,16 @@ def group_issues(findings: Sequence[Finding], links: Iterable[tuple[str, str]]) 
 
 def _covers(finding: Finding, other: Finding) -> bool:
     return any(
-        span.file == other.file and span.start_line <= other.line <= span.end_line for span in finding.cited_spans
+        source.span.file == other.file and source.span.start_line <= other.line <= source.span.end_line
+        for source in finding.cited_sources
     )
 
 
 def _shares_cited_source(first: Finding, second: Finding) -> bool:
     return any(
         left.file == right.file and left.start_line <= right.end_line and right.start_line <= left.end_line
-        for left in first.cited_spans
-        for right in second.cited_spans
+        for left in (source.span for source in first.cited_sources)
+        for right in (source.span for source in second.cited_sources)
     )
 
 

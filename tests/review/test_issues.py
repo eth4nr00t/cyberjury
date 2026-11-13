@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 
-from cyberjury.review.context import SourceSpan
+from cyberjury.review.context import CitedSource, SourceSpan
 from cyberjury.review.finding import Finding, Reachability
 from cyberjury.review.issues import (
     _SYSTEM,
@@ -36,7 +36,10 @@ def _finding(title: str, *, file: str = "views.py", line: int = 2, cites=()) -> 
         line=line,
         evidence=f"{file}:{line} skips the owner check",
         attack_path="a member writes another member's record",
-        cited_spans=tuple(SourceSpan(file=path, start_line=start, end_line=end) for path, start, end in cites),
+        cited_sources=tuple(
+            CitedSource(id="seed", span=SourceSpan(file=path, start_line=start, end_line=end))
+            for path, start, end in cites
+        ),
     )
 
 

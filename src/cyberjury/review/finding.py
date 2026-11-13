@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, fields
 from typing import Literal
 
-from cyberjury.review.context import SourceSpan, is_line
+from cyberjury.review.context import CitedSource, is_line
 from cyberjury.review.identity import candidate_identity
 from cyberjury.severity import SEVERITIES, severity_rank
 
@@ -71,7 +71,7 @@ class Finding:
     attack_path: str
     change_anchor: ChangeAnchor | None = None
     source_operation_id: str = field(default="", repr=False, compare=False)
-    cited_spans: tuple[SourceSpan, ...] = field(default=(), repr=False, compare=False)
+    cited_sources: tuple[CitedSource, ...] = field(default=(), repr=False, compare=False)
     evidence_refs: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     @property
@@ -114,7 +114,7 @@ class Finding:
         data = asdict(self)
         data["reachability"] = self.reachability.to_dict()
         data["evidence_refs"] = list(self.evidence_refs)
-        data["cited_spans"] = [span.to_dict() for span in self.cited_spans]
+        data["cited_sources"] = [source.to_dict() for source in self.cited_sources]
         return data
 
     @classmethod
@@ -123,7 +123,7 @@ class Finding:
         names = {item.name for item in fields(cls)}
         if not isinstance(value, dict) or set(value) != names:
             raise ValueError("finding fields are invalid")
-        text = names - {"line", "reachability", "change_anchor", "evidence_refs", "cited_spans"}
+        text = names - {"line", "reachability", "change_anchor", "evidence_refs", "cited_sources"}
         if not all(isinstance(value[name], str) for name in text) or value["severity"] not in SEVERITIES:
             raise ValueError("finding text fields are invalid")
         line = value["line"]
@@ -132,12 +132,12 @@ class Finding:
         refs = value["evidence_refs"]
         if not isinstance(refs, list) or not all(isinstance(item, str) for item in refs):
             raise ValueError("finding evidence_refs must be a list of strings")
-        spans = value["cited_spans"]
-        if not isinstance(spans, list):
-            raise ValueError("finding cited spans must be a list")
+        sources = value["cited_sources"]
+        if not isinstance(sources, list):
+            raise ValueError("finding cited sources must be a list")
         try:
             anchor = ChangeAnchor.from_dict(value["change_anchor"]) if value["change_anchor"] is not None else None
-            cited_spans = tuple(SourceSpan.from_dict(span) for span in spans)
+            cited_sources = tuple(CitedSource.from_dict(source) for source in sources)
             reachability = Reachability.from_dict(value["reachability"])
         except ValueError as exc:
             raise ValueError(f"finding {exc}") from exc
@@ -147,7 +147,7 @@ class Finding:
             reachability=reachability,
             change_anchor=anchor,
             evidence_refs=tuple(refs),
-            cited_spans=cited_spans,
+            cited_sources=cited_sources,
         )
 
 

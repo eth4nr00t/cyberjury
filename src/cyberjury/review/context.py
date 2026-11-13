@@ -80,6 +80,27 @@ class SourceSpan:
         return cls(file=file, start_line=lines[0], end_line=lines[1])
 
 
+@dataclass(frozen=True, kw_only=True)
+class CitedSource:
+    """One source line range a finding cites, under the evidence id that delivered it."""
+
+    id: str
+    span: SourceSpan
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the evidence id with its source line range."""
+        return {"id": self.id, **self.span.to_dict()}
+
+    @classmethod
+    def from_dict(cls, value: object) -> CitedSource:
+        """Parse one cited source written by `to_dict`."""
+        if not isinstance(value, dict) or set(value) != {"id", "file", "range"}:
+            raise ValueError("cited source fields are invalid")
+        if not isinstance(value["id"], str):
+            raise ValueError("cited source id must be a string")
+        return cls(id=value["id"], span=SourceSpan.from_dict({"file": value["file"], "range": value["range"]}))
+
+
 def is_line(value: object) -> bool:
     """Report whether a value is a 1-based line number."""
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
@@ -350,25 +371,35 @@ def cited_location_file(
 ) -> str | None:
     """Return the canonical path of the first cited source span that covers one exact location."""
     requested = normalized_location_path(file)
-    spans = cited_source_spans(evidence_refs, seed_spans=seed_spans, source_evidence=source_evidence)
+    sources = cited_sources(evidence_refs, seed_spans=seed_spans, source_evidence=source_evidence)
     return next(
-        (span.file for span in spans if span.file == requested and span.start_line <= line <= span.end_line), None
+        (
+            source.span.file
+            for source in sources
+            if source.span.file == requested and source.span.start_line <= line <= source.span.end_line
+        ),
+        None,
     )
 
 
-def cited_source_spans(
+def cited_sources(
     evidence_refs: tuple[str, ...],
     *,
     seed_spans: tuple[SourceSpan, ...],
     source_evidence: tuple[SourceEvidence, ...],
-) -> tuple[SourceSpan, ...]:
-    """Return the distinct source spans that one finding's evidence refs cite, in canonical path form."""
-    cited = set(evidence_refs)
-    spans = (
-        *(seed_spans if "seed" in cited else ()),
-        *(item.source_span for item in source_evidence if item.id in cited and item.source_span is not None),
+) -> tuple[CitedSource, ...]:
+    """Return the distinct evidence id and source span pairs one finding cites, in citation order and canonical form."""
+    spans_of: dict[str, list[SourceSpan]] = {"seed": list(seed_spans)}
+    for item in source_evidence:
+        if item.source_span is not None:
+            spans_of.setdefault(item.id, []).append(item.source_span)
+    return tuple(
+        dict.fromkeys(
+            CitedSource(id=ref, span=replace(span, file=normalized_location_path(span.file)))
+            for ref in evidence_refs
+            for span in spans_of.get(ref, ())
+        )
     )
-    return tuple(dict.fromkeys(replace(span, file=normalized_location_path(span.file)) for span in spans))
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -72,6 +72,7 @@ def findings_artifact(
                 "evidence": finding.evidence,
                 "attack_path": finding.attack_path,
                 "evidence_refs": list(dict.fromkeys(finding.evidence_refs)),
+                "cited_sources": [source.to_dict() for source in finding.cited_sources],
                 "issue_id": issue_of[finding.candidate_id],
                 "change_anchor": finding.change_anchor.to_dict() if finding.change_anchor is not None else None,
                 "unit_complete": finding.candidate_id not in unfinished,

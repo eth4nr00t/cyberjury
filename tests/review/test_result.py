@@ -3,6 +3,7 @@
 from dataclasses import replace
 
 from cyberjury.canonical import canonical_sha256
+from cyberjury.review.context import CitedSource, SourceSpan
 from cyberjury.review.finding import ChangeAnchor, Finding, Reachability
 from cyberjury.review.issues import Issue
 from cyberjury.review.result import findings_artifact
@@ -34,6 +35,7 @@ _FIELDS = {
     "evidence",
     "attack_path",
     "evidence_refs",
+    "cited_sources",
     "issue_id",
     "change_anchor",
     "unit_complete",
@@ -61,6 +63,24 @@ def test_findings_artifact_maps_every_target_onto_the_same_fields():
     assert document["findings"][0]["change_anchor"] == {"file": "middleware.py", "line": 8, "side": "old"}
     assert document["findings"][1]["change_anchor"] is None
     assert all(set(record) == _FIELDS for record in document["findings"])
+
+
+def test_findings_artifact_resolves_each_evidence_id_to_its_cited_source():
+    """A finding citing seed and src-control lists each id with its file and line range."""
+    finding = _finding(
+        evidence_refs=("seed", "src-control"),
+        cited_sources=(
+            CitedSource(id="seed", span=SourceSpan(file="views.py", start_line=1, end_line=9)),
+            CitedSource(id="src-control", span=SourceSpan(file="auth.py", start_line=20, end_line=31)),
+        ),
+    )
+
+    document = findings_artifact([finding], (Issue(members=(finding,)),), unfinished=frozenset()).to_dict()
+
+    assert document["findings"][0]["cited_sources"] == [
+        {"id": "seed", "file": "views.py", "range": [1, 9]},
+        {"id": "src-control", "file": "auth.py", "range": [20, 31]},
+    ]
 
 
 def test_findings_artifact_records_every_member_of_a_grouped_issue_with_its_issue_id():
