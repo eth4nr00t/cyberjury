@@ -1,4 +1,4 @@
-"""The findings artifact maps every target onto one field set, ordered by severity, with its issues."""
+"""The findings artifact maps every target onto one field set, in report order, with its issues."""
 
 from dataclasses import replace
 
@@ -78,6 +78,7 @@ def test_findings_artifact_records_every_member_of_a_grouped_issue_with_its_issu
             "representative_id": first.candidate_id,
             "member_ids": [first.candidate_id, second.candidate_id],
             "linked_by": ["location"],
+            "unit_complete": True,
         }
     ]
     assert document["summary"] == {"CRITICAL": 0, "HIGH": 2, "MEDIUM": 0, "LOW": 0}
@@ -104,6 +105,19 @@ def test_findings_artifact_marks_findings_only_failed_units_reported():
     ).to_dict()
 
     assert {record["line"]: record["unit_complete"] for record in document["findings"]} == {3: True, 9: False}
+
+
+def test_an_issue_is_complete_when_any_member_came_from_a_finished_unit():
+    """An issue whose unfinished representative has a finished member is complete, and a lone unfinished one is not."""
+    unfinished, finished, alone = _finding(severity="HIGH"), _finding(line=9), _finding(line=20)
+
+    document = findings_artifact(
+        [finished, unfinished, alone],
+        (Issue(members=(unfinished, finished)), Issue(members=(alone,))),
+        unfinished=frozenset({unfinished.candidate_id, alone.candidate_id}),
+    ).to_dict()
+
+    assert [issue["unit_complete"] for issue in document["issues"]] == [True, False]
 
 
 def test_findings_artifact_orders_unestablished_reachability_last():

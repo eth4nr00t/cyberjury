@@ -47,7 +47,7 @@ class Issue:
 
     @property
     def representative(self) -> Finding:
-        """Return the first member in report order: the most severe, then the earliest location."""
+        """Return the first member in report order: reachable first, then most severe, then earliest location."""
         return self.members[0]
 
 

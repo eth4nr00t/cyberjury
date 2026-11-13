@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from cyberjury.review.context import SourceSpan
-from cyberjury.review.finding import Finding
+from cyberjury.review.finding import Finding, Reachability
 from cyberjury.review.issues import (
     _SYSTEM,
     LinkDecision,
@@ -65,6 +65,18 @@ def test_the_representative_is_the_most_severe_member_in_any_union_order():
     for order in ([low, high], [high, low]):
         (issue,) = group_issues(order, link)
         assert issue.members == (high, low)
+
+
+def test_the_representative_is_a_reachable_member_before_a_more_severe_unreachable_one():
+    """A reachable LOW report linked to an unreachable HIGH report yields the LOW representative in any union order."""
+    low = replace(_finding("verbose error", line=2), severity="LOW")
+    unreachable = Reachability(established=False, note="no route")
+    high = replace(_finding("owner check missing", line=9), reachability=unreachable)
+    link = [(low.candidate_id, high.candidate_id)]
+
+    for order in ([low, high], [high, low]):
+        (issue,) = group_issues(order, link)
+        assert issue.members == (low, high)
 
 
 def test_findings_at_one_line_with_different_categories_are_separate_issues():

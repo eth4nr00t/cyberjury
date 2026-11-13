@@ -151,6 +151,12 @@ class Finding:
         )
 
 
-def report_order(finding: Finding) -> tuple[int, str, int, str]:
-    """Order findings by severity, then file, line, and candidate id, as every review output lists them."""
-    return severity_rank(finding.severity), finding.file, finding.line, finding.candidate_id
+def report_order(finding: Finding) -> tuple[bool, int, str, int, str]:
+    """Order findings reachable first, then by severity, file, line, and candidate id, as review outputs list them."""
+    return (
+        not finding.reachability.established,
+        severity_rank(finding.severity),
+        finding.file,
+        finding.line,
+        finding.candidate_id,
+    )

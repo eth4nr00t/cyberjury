@@ -39,7 +39,7 @@ class SkippedFiles:
 
 @dataclass(frozen=True, kw_only=True)
 class FindingsArtifact:
-    """The findings of one review in severity order, their issues, and the count per severity."""
+    """The findings of one review in report order, their issues, and the count per severity."""
 
     findings: tuple[dict[str, object], ...]
     issues: tuple[dict[str, object], ...]
@@ -54,9 +54,9 @@ class FindingsArtifact:
 def findings_artifact(
     findings: Iterable[Finding], issues: Sequence[Issue], *, unfinished: frozenset[str]
 ) -> FindingsArtifact:
-    """Order the findings by severity and location, mark those only failed units reported, and list each issue."""
+    """Order the findings, mark those only failed units reported, and list issues, complete if any member finished."""
     issue_of = {member.candidate_id: issue.id for issue in issues for member in issue.members}
-    ordered = sorted(findings, key=lambda finding: (not finding.reachability.established, report_order(finding)))
+    ordered = sorted(findings, key=report_order)
     position = {finding.candidate_id: number for number, finding in enumerate(ordered)}
     return FindingsArtifact(
         findings=tuple(
@@ -84,6 +84,7 @@ def findings_artifact(
                 "representative_id": issue.representative.candidate_id,
                 "member_ids": [member.candidate_id for member in issue.members],
                 "linked_by": list(issue.linked_by),
+                "unit_complete": any(member.candidate_id not in unfinished for member in issue.members),
             }
             for issue in sorted(issues, key=lambda issue: position[issue.representative.candidate_id])
         ),
